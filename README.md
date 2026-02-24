@@ -21,7 +21,7 @@
 
 ```bash
 # 创建 conda 环境（推荐）
-conda create -n qwen3vl python=3.10 -y
+conda create -n qwen3vl python=3.11.14 -y
 conda activate qwen3vl
 
 # 安装 PyTorch（根据你的 CUDA 版本选择）
