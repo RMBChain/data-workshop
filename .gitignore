@@ -2,3 +2,4 @@
 /.idea/
 /label-studio/data
 /__pycache__/
+/.env

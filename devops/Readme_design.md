@@ -9,8 +9,12 @@
 
 **范围限定：**
 - 专注于图片+文本的多模态任务（VQA、图像描述、OCR 等）
-- 支持 CPU 训练，用于快速验证初步想法
-- 降低显存门槛，让普通设备也能体验大模型训练
+- 只支持 CPU 训练，用于快速验证初步想法
+- ms-swift 版本为4.0.3
+- 开发环境使用docker，参考 devops/swift4.03-cpu.dockerfile
+- 训练任务在容器内运行。
+- 仅支持本机运行
+- labelStudio包含在docker compose中。
 
 ## 一、数据导入与连接
 
@@ -18,8 +22,8 @@
 
 | 数据源 | 支持状态 | 说明 |
 |--------|----------|------|
-| 本地 JSONL / JSON 文件 | ✅ 首发支持 | 标准 SFT 格式，每行包含图片路径和对话 |
 | Label Studio | ✅ 首发支持 | 通过 API 拉取标注项目数据 |
+| 本地文件jsonl | ✅ 首发支持 | 辅助入口 |
 
 ### 1.2 数据格式要求（图片 SFT）
 ```json
@@ -61,13 +65,10 @@
 ### 3.1 模型选择与加载
 
 **首发支持的模型（图片多模态）：**
-
-| 模型 | 参数量 | 显存要求 (LoRA) |
+| 模型 | 参数量 | 内存要求 (LoRA) |
 |------|--------|-----------------|
-| Qwen-VL-Chat | 7B | ~12GB |
 | Qwen3-VL-2B-Instruct | 2B | ~10GB |
 | Qwen3-VL-2B-Thinking | 2B | ~10GB |
-| DeepSeek-VL-7B | 7B | ~12GB |
 
 **模型来源：**
 - 自动从 ModelScope 下载
@@ -84,20 +85,20 @@
 
 | 参数类别 | 参数名 | 推荐值 | 说明 |
 |----------|--------|--------|------|
-| 微调策略 | LoRA rank | 8/16/32 | 数值越大效果越好，显存占用越高 |
+| 微调策略 | LoRA rank | 8/16/32 | 数值越大效果越好，内存占用越高 |
 | | LoRA alpha | 16 | 通常设为 rank 的 1-2 倍 |
 | | Target modules | q_proj,v_proj | 默认全选 attention 层 |
 | 训练超参 | Learning rate | 1e-4 | 典型范围 1e-5 ~ 5e-4 |
-| | Batch size | 1/2/4 | 受显存限制，图片任务通常较小 |
+| | Batch size | 1/2/4 | 受内存限制，图片任务通常较小 |
 | | Gradient accumulation | 4 | 有效 batch = batch × 积累步数 |
 | | Epochs | 3 | 根据数据量调整 |
-| 图片处理 | Image resolution | 448/512 | 越大越清晰，显存占用越高 |
+| 图片处理 | Image resolution | 448/512 | 越大越清晰，内存占用越高 |
 | | Max pixels | 256x256 | 自动缩放宽高 |
 
 #### LoRA 配置向导
 ```bash
 Step 1: 选择基础模型
-Step 2: 设置 LoRA rank（提供显存预估）
+Step 2: 设置 LoRA rank
 Step 3: 设置训练轮数
 Step 4: 预览生成的 swift 命令
 ```
@@ -121,10 +122,9 @@ Step 4: 预览生成的 swift 命令
 #### 指标可视化
 - **Loss 曲线**：实时绘制训练/验证 loss
 - **学习率变化**：展示 scheduler 调整过程
-- 使用 matplotlib 直接嵌入 UI，无需额外打开 TensorBoard
+- 使用 echart 直接嵌入 UI，无需额外打开 TensorBoard
 
 #### 资源监控
-- GPU：显存占用、利用率、温度
 - CPU：各核心利用率
 - 内存：已用/总量
 - 更新频率：2 秒/次
@@ -170,15 +170,15 @@ Step 4: 预览生成的 swift 命令
 ### 6.1 4-bit 量化
 
 - 使用 `bitsandbytes` 库
-- 量化后显存占用降低约 75%
 - 支持加载 4-bit 模型进行推理
+
 
 ### 6.2 导出格式
 
 | 格式 | 支持状态 | 用途 |
 |------|----------|------|
 | 原始 HF 格式 | ✅ 首发 | 通用保存 |
-| 4-bit (bnb) | ✅ 首发 | 低显存推理 |
+| 4-bit (bnb) | ✅ 首发 | 低内存推理 |
 | GPTQ / AWQ | ⏳ 后续 | 更高推理速度 |
 
 ## 七、模型评测模块（简化版）
@@ -201,16 +201,13 @@ Step 4: 预览生成的 swift 命令
 
 | 检测项 | 显示内容 |
 |--------|----------|
-| Python 版本 | x.x.x |
-| PyTorch 版本 | x.x.x + CUDA/cpu |
-| CUDA 版本 | x.x（如有） |
-| 可用 GPU | 型号、显存大小、数量 |
-| ms-swift 版本 | x.x.x |
+| Python 版本 | x.x.x (训练仅使用 CPU)|
+| PyTorch 版本 | x.x.x + CUDA/cpu (训练仅使用 CPU)|
+| CUDA 版本 | x.x（如有） (训练仅使用 CPU)|
+| 可用 GPU | 型号、显存大小、数量 (训练仅使用 CPU) |
 
 ### 8.2 硬件识别
-
-- NVIDIA GPU（CUDA）
-- Apple MPS（Mac 加速）
+- NVIDIA GPU（CUDA）- 检测项保留，训练仅使用 CPU
 - CPU（fallback）
 
 ### 8.3 路径配置
@@ -243,16 +240,41 @@ Step 4: 预览生成的 swift 命令
 
 所有底层能力来自 ms-swift，本工具只做图形化封装和流程编排。
 
-## 十、局限性与免责声明
-
-1. **仅支持图片多模态任务**，纯文本 SFT 不在首发范围内
-2. **仍需用户自行安装 Python + CUDA + PyTorch**，但提供一键环境配置脚本
-3. **训练速度受限于本地硬件**，建议至少 8GB 显存
-4. **本工具不修改 ms-swift 核心代码**，所有问题可追溯至 ms-swift 原项目
+## 十、开发语言及框架
+- Vue3 + Ant Design Vue + Vite + TypeScript
+- python
+- nginx
+- FastAPI
+- ms-swift4.0.3
+- echart
 
 ## 十一、快速开始（docker 示例）
-
+使用docker compose
 ```bash
-
-
+docker build -f devops/swift4.03-cpu.dockerfile -t swift4.03-cpu:latest .
+docker compose up -d --build
 ```
+docker compose 会启动动服务：前端（nginx的9000端口指向VUE的dist）、API 服务、labelstudio等。
+
+服务说明：
+- UI(nginx): http://127.0.0.1:9000
+- node（22.x）
+- API 文档：http://127.0.0.1:8000/docs
+- 健康检查：http://127.0.0.1:8000/api/health
+- Label Studio：http://127.0.0.1:8080
+- Label 探测：http://127.0.0.1:8000/api/label-studio/status
+
+## 十二、局限性与免责声明
+1. **仅支持图片多模态任务**，纯文本 SFT 不在首发范围内
+2. **训练速度受限于本地硬件**，建议至少 16GB 内存
+3. **本工具不修改 ms-swift 核心代码**，所有问题可追溯至 ms-swift 原项目
+
+## 十三、代码生成要求
+- 产品名与仓库策略：仍叫「数据工坊」、在当前 qwen3-vl-finetuning 里演进。
+- 语言与地区：只支持中文即可。
+- 只在win11下运行，docker需要使用linux容器。
+- 前端VUE工程也放在当前目录下。
+- MVP：数据导入 + 训练任务下发 + 日志 + 推理沙盒
+- 4-bit 都放到镜像。
+- 前端目录名frontend，后端目录名backend。
+
