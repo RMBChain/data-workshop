@@ -243,22 +243,42 @@ Step 4: 预览生成的 swift 命令
 ## 十、开发语言及框架
 - Vue3 + Ant Design Vue + Vite + TypeScript
 - python
+- nvm、node（22.22.2）、pnpm
 - nginx
 - FastAPI
 - ms-swift4.0.3
 - echart
 
-## 十一、快速开始（docker 示例）
-使用docker compose
+## 十一、快速开始（Docker + 本机前端开发）
+
+### 环境约定
+- **后端**：开发与生产均在 **Docker**（`api` 容器挂载仓库目录；开发可叠加 `devops/docker-compose.dev.yml` 启用 `uvicorn --reload`）。
+- **前端**：开发在 **本机**（Node 22 + `npm run dev`）；生产在 **Docker**（`devops/Dockerfile.frontend` 内构建，由 `web` 容器 nginx 提供）。
+
+### 生产（全栈 Docker，宿主机无需 Node）
+**Windows（推荐）：** 仓库根目录执行 `devops/build-compose.ps1`。
+
+**命令行：**
 ```bash
 docker build -f devops/swift4.03-cpu.dockerfile -t swift4.03-cpu:latest .
 docker compose up -d --build
 ```
-docker compose 会启动动服务：前端（nginx的9000端口指向VUE的dist）、API 服务、labelstudio等。
+会构建并启动：`web`（多阶段前端镜像 + nginx:9000）、`api`、`label-studio`。
 
-服务说明：
+### 后端开发（仅 Docker：api + Label Studio，热重载）
+**Windows（推荐）：** `devops/run-backend-dev.ps1`。
+
+**命令行：**
+```bash
+docker build -f devops/swift4.03-cpu.dockerfile -t swift4.03-cpu:latest .
+docker compose -f docker-compose.yml -f devops/docker-compose.dev.yml up -d --build label-studio api
+```
+
+### 前端开发（本机）
+在仓库根目录：`cd frontend`，`nvm use`（见 `.nvmrc`），`npm install`，`npm run dev` → 默认 http://127.0.0.1:5173 ，通过 Vite 代理访问 `/api`（需本机 `8000` 已由后端容器映射，见上节先启动后端）。
+
+### 服务说明（端口）
 - UI(nginx): http://127.0.0.1:9000
-- node（22.x）
 - API 文档：http://127.0.0.1:8000/docs
 - 健康检查：http://127.0.0.1:8000/api/health
 - Label Studio：http://127.0.0.1:8080
@@ -277,4 +297,6 @@ docker compose 会启动动服务：前端（nginx的9000端口指向VUE的dist�
 - MVP：数据导入 + 训练任务下发 + 日志 + 推理沙盒
 - 4-bit 都放到镜像。
 - 前端目录名frontend，后端目录名backend。
-
+- AI要从编码开始，然后自动运行并进行测试。
+- 后端开发和生产都在 Docker 环境中进行（开发可叠加 `devops/docker-compose.dev.yml` 热重载）。
+- 前端开发在本机（Vite），生产环境在 Docker（`Dockerfile.frontend` + `web` 服务）。

@@ -29,7 +29,7 @@ cmd
 cd /d D:/_git/codeup-spooner/llm-train-learning/qwen3-vl-finetuning
 docker rm -f swift403-cpu
 # cmd 续行：行末 ^，且 ^ 后不能有空格
-# --shm-size：默认 /dev/shm 仅约 64MB，训练时 DataLoader 多进程易报 bus error；与 train.py 默认 dataloader_num_workers=0 配合更稳
+# --shm-size：默认 /dev/shm 仅约 64MB，训练时 DataLoader 多进程易报 bus error；与 backend/scripts/train.py 默认 dataloader_num_workers=0 配合更稳
 docker run -it -d --name swift403-cpu                            ^
            --hostname swift403-cpu                               ^
            --shm-size=4g                                         ^
@@ -59,18 +59,18 @@ docker exec -it -w /workspace/project swift403-cpu swift web-ui --server_name 0.
 ## step1 数据清洗（在容器内、项目根目录）
 ```bash
 cd /workspace/project
-python cleanData.py
+python backend/scripts/cleanData.py
 
 ```
 
 ## step2 准备数据
 ```bash
-docker exec -it -w /workspace/project swift403-cpu python prepare_data.py
+docker exec -it -w /workspace/project swift403-cpu python backend/scripts/prepare_data.py
 ```
 
 ## step3 使用ms-swift进行训练
 ```bash
-docker exec -it -w /workspace/project swift403-cpu python train.py --model Qwen/Qwen3-VL-2B-Instruct
+docker exec -it -w /workspace/project swift403-cpu python backend/scripts/train.py --model Qwen/Qwen3-VL-2B-Instruct
 
 ```
 
@@ -83,24 +83,24 @@ curl 6006
 
 ## 查看 logging.jsonl
 ```bash
-docker exec -it -w /workspace/project swift403-cpu python view-train-logs.py
+docker exec -it -w /workspace/project swift403-cpu python backend/scripts/view-train-logs.py
 
 ```
 
 ## 测试模型（使用未合并的模型）
 ```bash
-docker exec -it -w /workspace/project swift403-cpu python infer1.py --image_path "data/cable-001.jpeg" --prompt "请描述这张图片中的电缆状况，包括是否有损坏、弯曲或异常情况。"
+docker exec -it -w /workspace/project swift403-cpu python backend/scripts/infer1.py
 
 ```
 
 ## 合并LoRA权重（用于部署）
 ```bash
-docker exec -it -w /workspace/project swift403-cpu python merge_lora.py
+docker exec -it -w /workspace/project swift403-cpu python backend/scripts/merge_lora.py
 
 ```
 
 ## 测试模型（使用合并后的模型）
 ```bash
-docker exec -it -w /workspace/project swift403-cpu python infer2.py --image_path "data/cable-001.jpeg" --prompt "请描述这张图片中的电缆状况，包括是否有损坏、弯曲或异常情况。"
+docker exec -it -w /workspace/project swift403-cpu python backend/scripts/infer2.py
 
 ```

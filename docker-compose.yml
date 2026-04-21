@@ -1,0 +1,51 @@
+# 仅本机：端口绑定在 127.0.0.1
+# 生产全栈：devops/build-compose.ps1（含 web 多阶段镜像）
+# 仅后端开发（热重载、不启 web）：devops/run-backend-dev.ps1 或叠加 devops/docker-compose.dev.yml
+#
+# UI: http://127.0.0.1:9000
+# Label Studio: http://127.0.0.1:8080
+# API 文档: http://127.0.0.1:8000/docs
+
+services:
+  label-studio:
+    image: heartexlabs/label-studio:20260421.012345-main-a5c6f37
+    container_name: workshop-label-studio
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./label-studio/data:/label-studio/data
+    environment:
+      - LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: devops/Dockerfile.workshop
+    image: data-workshop-api:latest
+    container_name: workshop-api
+    working_dir: /workspace/project
+    # 与 Readme_dev 一致：训练 DataLoader 多进程时避免 /dev/shm 过小
+    shm_size: "4g"
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - .:/workspace/project
+    environment:
+      - WORKSHOP_LABEL_STUDIO_URL=http://label-studio:8080
+      - WORKSHOP_WORKSPACE_ROOT=/workspace/project
+    depends_on:
+      - label-studio
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: devops/Dockerfile.frontend
+    image: data-workshop-web:latest
+    container_name: workshop-web
+    ports:
+      - "127.0.0.1:9000:80"
+    depends_on:
+      - api
+    restart: unless-stopped

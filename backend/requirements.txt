@@ -1,0 +1,8 @@
+# 与 devops/workshop-requirements.txt 保持同步（Docker 构建 COPY 后者）
+fastapi>=0.115
+uvicorn[standard]>=0.32
+python-multipart
+pyyaml
+httpx
+pydantic-settings>=2.0
+bitsandbytes>=0.43.0

@@ -115,7 +115,7 @@ callbacks_map["phase_log"] = PhaseLogCallback
 
 class TrainApiEventCallback(TrainerCallback):
     """
-    供 train.py 直接调用 sft_main 时使用：打印关键训练事件与 metrics / logs（避免与 phase_log 完全重复）。
+    供 backend/scripts/train.py 直接调用 sft_main 时使用：打印关键训练事件与 metrics / logs（避免与 phase_log 完全重复）。
     步级事件默认关闭，与 phase_log 一致，可用 SWIFT_PHASE_HOOK_VERBOSE=1 打开。
     """
 

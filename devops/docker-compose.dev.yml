@@ -1,0 +1,15 @@
+# 与 docker-compose.yml 叠加使用：后端在容器内开发（uvicorn --reload）。
+# 典型用法（不启动生产用 web 镜像，省构建时间）：
+#   docker compose -f docker-compose.yml -f devops/docker-compose.dev.yml up -d --build label-studio api
+# 前端在本机：cd frontend && npm run dev（见 Readme_design §十一）
+
+services:
+  api:
+    command:
+      - uvicorn
+      - backend.app.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --reload
