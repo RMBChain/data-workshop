@@ -12,3 +12,8 @@ docker logs -f workshop-api-dev
 ```
 
 若容器名因 compose 配置不同（例如 `workshop-api`），先用 `docker ps` 确认服务名后再替换上述名称。
+
+# 重启api
+```bash
+docker restart workshop-api-dev
+```

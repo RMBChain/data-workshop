@@ -12,6 +12,21 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
+def _parse_cli_bool(value: str | bool) -> bool:
+    """
+    argparse 的 type=bool 会执行 bool(字符串) —— 而 bool("false") 在 Python 中为 True。
+    对 `--packing false` 等参数必须使用本解析器。
+    """
+    if isinstance(value, bool):
+        return value
+    s = str(value).strip().lower()
+    if s in ("1", "true", "t", "yes", "y", "on"):
+        return True
+    if s in ("0", "false", "f", "no", "n", "off"):
+        return False
+    raise ValueError(f"invalid boolean: {value!r}")
+
+
 def _parse_torch_version() -> tuple[int, int, int] | None:
     s = torch.__version__.split("+", 1)[0]
     m = re.match(r"^(\d+)\.(\d+)\.(\d+)", s)
@@ -116,6 +131,8 @@ def train_with_swift(
     kwargs.setdefault("dataloader_num_workers", 0)
     # 必须显式传入；若省略，swift 可能对部分模板默认开启 packing，而 packing 依赖 flash_attn（与 CPU/eager 冲突）
     kwargs.setdefault("packing", False)
+    if kwargs.get("attn_impl") == "eager":
+        kwargs["packing"] = False
 
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = ""
@@ -231,7 +248,12 @@ def main():
     parser.add_argument("--lora_rank", type=int, default=8, help="LoRA rank")
     parser.add_argument("--lora_alpha", type=int, default=16, help="LoRA alpha")
     parser.add_argument("--target_modules", type=str, default="all-linear", help="LoRA 目标模块")
-    parser.add_argument("--freeze_vit", type=bool, default=True, help="是否冻结 ViT")
+    parser.add_argument(
+        "--freeze_vit",
+        type=_parse_cli_bool,
+        default=True,
+        help="是否冻结 ViT（可传 true/false）",
+    )
 
     parser.add_argument("--num_train_epochs", type=int, default=3, help="训练轮数")
     parser.add_argument("--per_device_train_batch_size", type=int, default=1, help="训练 batch size")
@@ -252,8 +274,18 @@ def main():
     parser.add_argument("--save_total_limit", type=int, default=2, help="最多保留 checkpoint 数")
     parser.add_argument("--warmup_ratio", type=float, default=0.03, help="预热比例")
     parser.add_argument("--lr_scheduler_type", type=str, default="cosine", help="学习率调度")
-    parser.add_argument("--gradient_checkpointing", type=bool, default=True, help="梯度检查点")
-    parser.add_argument("--packing", type=bool, default=False, help="序列打包")
+    parser.add_argument(
+        "--gradient_checkpointing",
+        type=_parse_cli_bool,
+        default=True,
+        help="梯度检查点（可传 true/false）",
+    )
+    parser.add_argument(
+        "--packing",
+        type=_parse_cli_bool,
+        default=False,
+        help="序列打包；CPU/eager 下须为 false，否则需 flash_attn",
+    )
     parser.add_argument("--image_max_token_num", type=int, default=512, help="图片最大 token 数")
     parser.add_argument("--video_max_token_num", type=int, default=128, help="视频最大 token 数")
     parser.add_argument(
