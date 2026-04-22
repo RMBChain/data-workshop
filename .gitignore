@@ -9,7 +9,4 @@ __pycache__/
 /frontend/dist/
 /uploads/
 /imports/
-/imports/
-/state/workshop.db
-/state/workshop.db-shm
-/state/workshop.db-wal
+/state/
