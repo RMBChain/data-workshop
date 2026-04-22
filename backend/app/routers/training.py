@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from backend.app.config import get_settings
 from backend.app.services.job_manager import TrainJobCreate, TrainingJobManager
-from backend.app.services.training_metrics import parse_training_log_metrics
+from backend.app.services.training_metrics import parse_training_log_metrics, parse_training_progress
 
 router = APIRouter(tags=["training"])
 
@@ -115,7 +115,19 @@ async def get_training_metrics(job_id: str) -> dict:
     if not j:
         raise HTTPException(status_code=404, detail="任务不存在")
     text, _t = _manager_singleton().read_log(job_id, max_bytes=2_000_000)
-    return {"job_id": job_id, "series": parse_training_log_metrics(text)}
+    ne: int | None = None
+    if j.request and isinstance(j.request, dict):
+        raw = j.request.get("num_train_epochs")
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            ne = int(raw)
+    prog = parse_training_progress(text, num_train_epochs=ne)
+    st = j.status
+    if st == "succeeded" and isinstance(prog.get("percent"), (int, float)) and float(prog["percent"]) < 100:
+        prog = {**prog, "percent": 100.0, "label": "任务成功"}
+    elif st in ("failed", "cancelled"):
+        if prog.get("percent") is None:
+            prog = {**prog, "label": f"已结束（{st}）"}
+    return {"job_id": job_id, "series": parse_training_log_metrics(text), "progress": prog}
 
 
 @router.get("/training/jobs/{job_id}/logs/stream")

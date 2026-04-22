@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { message } from "ant-design-vue";
 import * as echarts from "echarts";
-import { onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { http } from "../api/http";
 
 const form = reactive({
@@ -31,9 +31,20 @@ let resPoll: ReturnType<typeof setInterval> | null = null;
 const resInfo = ref("");
 const chartRef = ref<HTMLDivElement | null>(null);
 let chart: echarts.ECharts | null = null;
+const progressPercent = ref<number | null>(null);
+const progressLabel = ref("");
+
+const progressStatus = computed(() => {
+  if (jobStatus.value === "succeeded") return "success" as const;
+  if (jobStatus.value === "failed" || jobStatus.value === "cancelled") return "exception" as const;
+  if (["running", "pending"].includes(jobStatus.value) && progressPercent.value == null) return "active" as const;
+  return "normal" as const;
+});
 
 const jobColumns = [
   { title: "ID", dataIndex: "id", key: "id", ellipsis: true, width: 200 },
+  { title: "开始时间", dataIndex: "created_at", key: "created_at", width: 170 },
+  { title: "结束时间", dataIndex: "finished_at", key: "finished_at", width: 170 },
   { title: "状态", dataIndex: "status", key: "status", width: 100 },
   {
     title: "操作",
@@ -41,6 +52,25 @@ const jobColumns = [
     width: 100,
   },
 ];
+
+function formatJobTime(t: unknown): string {
+  if (t == null || t === "") return "—";
+  const n = typeof t === "number" ? t : Number(t);
+  if (Number.isNaN(n)) return "—";
+  const d = new Date(n * 1000);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("zh-CN", { hour12: false });
+}
+
+function formatJobEnd(finished: unknown, status: string | undefined): string {
+  if (finished != null && finished !== "") {
+    return formatJobTime(finished);
+  }
+  if (status === "running" || status === "pending") {
+    return "未结束";
+  }
+  return "—";
+}
 
 onMounted(() => {
   void refreshJobs();
@@ -108,8 +138,14 @@ async function refreshJobs() {
 }
 
 async function updateChart() {
-  if (!currentJobId.value || !chartRef.value) return;
+  if (!currentJobId.value) return;
   const m = await http.get(`/api/training/jobs/${currentJobId.value}/metrics`);
+  const pr = m.data.progress as { percent: number | null; label?: string } | undefined;
+  if (pr) {
+    progressPercent.value = typeof pr.percent === "number" ? pr.percent : null;
+    progressLabel.value = typeof pr.label === "string" ? pr.label : "";
+  }
+  if (!chartRef.value) return;
   const s = m.data.series as {
     train_loss: { step: number; value: number }[];
     learning_rate: { value: number }[];
@@ -185,6 +221,8 @@ async function delJob() {
   message.success("已删除");
   currentJobId.value = null;
   logText.value = "";
+  progressPercent.value = null;
+  progressLabel.value = "";
   await refreshJobs();
 }
 
@@ -300,6 +338,12 @@ watch(logText, () => {
             <template v-if="column.key === 'act' && record && typeof record === 'object' && 'id' in record">
               <a @click="selectJob(String((record as { id: string }).id))">查看</a>
             </template>
+            <span v-else-if="column.key === 'created_at' && record && typeof record === 'object'">{{
+              formatJobTime((record as Record<string, unknown>).created_at)
+            }}</span>
+            <span v-else-if="column.key === 'finished_at' && record && typeof record === 'object'">{{
+              formatJobEnd((record as Record<string, unknown>).finished_at, (record as { status?: string }).status)
+            }}</span>
             <span v-else>{{ text }}</span>
           </template>
         </a-table>
@@ -310,6 +354,15 @@ watch(logText, () => {
         <a-typography-paragraph style="word-break: break-all; font-size: 12px; color: #666">
           {{ resInfo || "—" }}
         </a-typography-paragraph>
+        <a-typography-title :level="5">训练进度</a-typography-title>
+        <div v-if="currentJobId" style="margin-bottom: 10px">
+          <a-progress
+            :percent="progressPercent === null ? 0 : progressPercent"
+            :status="progressStatus"
+            :show-info="progressPercent !== null"
+          />
+          <div style="font-size: 12px; color: #666; margin-top: 4px">{{ progressLabel || "—" }}</div>
+        </div>
         <a-typography-title :level="5">日志</a-typography-title>
         <a-button v-if="!stick" type="dashed" size="small" style="margin-bottom: 8px" @click="scrollToBottom"
           >跟随最新 / 回到底部</a-button
