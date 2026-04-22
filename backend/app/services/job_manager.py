@@ -46,7 +46,7 @@ class TrainJobCreate(BaseModel):
 @dataclass
 class TrainJob:
     id: str
-    status: str  # pending | running | completed | failed | cancelled
+    status: str  # pending | running | succeeded | failed | cancelled
     created_at: float
     finished_at: float | None = None
     log_path: Path | None = None
@@ -143,7 +143,7 @@ class TrainingJobManager:
                 if j.status == "cancelled":
                     return
                 if code == 0:
-                    j.status = "completed"
+                    j.status = "succeeded"
                 else:
                     j.status = "failed"
                     j.error_message = f"进程退出码 {code}"
@@ -172,6 +172,28 @@ class TrainingJobManager:
             "utf-8", errors="replace"
         )
         return text, truncated
+
+    def delete_job(self, job_id: str) -> bool:
+        with self._lock:
+            j = self._jobs.get(job_id)
+            if not j:
+                return False
+            if j.status in ("pending", "running"):
+                return False
+            del self._jobs[job_id]
+            if j.log_path and j.log_path.is_file():
+                try:
+                    j.log_path.unlink()
+                except OSError:
+                    pass
+            return True
+
+    def retry_job(self, job_id: str) -> TrainJob | None:
+        j = self.get_job(job_id)
+        if not j or not j.request:
+            return None
+        body = TrainJobCreate.model_validate(j.request)
+        return self.create_job(body)
 
     def _build_command(self, body: TrainJobCreate) -> list[str]:
         exe = sys.executable

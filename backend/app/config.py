@@ -13,13 +13,16 @@ class Settings(BaseSettings):
 
     # 默认本机为仓库根；Docker Compose 中通过 WORKSHOP_WORKSPACE_ROOT=/workspace/project 覆盖
     workspace_root: Path = _DEFAULT_WORKSPACE
-    # Label Studio 在 compose 中的服务地址（浏览器访问仍用 127.0.0.1:8080）
-    label_studio_url: str = "http://label-studio:8080"
+    # 单独部署的 Label Studio；Docker 中 API 通过 host.docker.internal 访问宿主机端口（见 README）
+    label_studio_url: str = "http://host.docker.internal:8080"
     # 本地开发前端（Vite 等）
     cors_origins: str = (
         "http://127.0.0.1:5173,http://localhost:5173,"
-        "http://127.0.0.1:9000,http://localhost:9000"
+        "http://127.0.0.1:8601,http://localhost:8601,"
+        "http://127.0.0.1:8701,http://localhost:8701"
     )
+    # ms-swift 可执行文件（或 `python -m swift` 由实现侧切分），Docker 中通常为 PATH 内 `swift`
+    swift_executable: str = "swift"
 
 
 def get_settings() -> Settings:

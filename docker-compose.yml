@@ -1,23 +1,13 @@
 # 仅本机：端口绑定在 127.0.0.1
 # 生产全栈：devops/build-compose.ps1（含 web 多阶段镜像）
 # 仅后端开发（热重载、不启 web）：devops/run-backend-dev.ps1 或叠加 devops/docker-compose.dev.yml
+# Label Studio 不随本仓库 Compose 启动，需单独部署，见根目录 README.md
 #
-# UI: http://127.0.0.1:9000
-# Label Studio: http://127.0.0.1:8080
-# API 文档: http://127.0.0.1:8000/docs
+# 宿主机端口见 ${WORKSHOP_HOST_*} 或根目录 .env；默认 8601/8602（与 devops/Readme_design 一致）
+# UI: http://127.0.0.1:${WORKSHOP_HOST_WEB_PORT:-8601}
+# API 文档: http://127.0.0.1:${WORKSHOP_HOST_API_PORT:-8602}/docs
 
 services:
-  label-studio:
-    image: heartexlabs/label-studio:20260421.012345-main-a5c6f37
-    container_name: workshop-label-studio
-    ports:
-      - "127.0.0.1:8080:8080"
-    volumes:
-      - ./label-studio/data:/label-studio/data
-    environment:
-      - LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
-    restart: unless-stopped
-
   api:
     build:
       context: .
@@ -28,14 +18,15 @@ services:
     # 与 Readme_dev 一致：训练 DataLoader 多进程时避免 /dev/shm 过小
     shm_size: "4g"
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${WORKSHOP_HOST_API_PORT:-8602}:8000"
     volumes:
       - .:/workspace/project
     environment:
-      - WORKSHOP_LABEL_STUDIO_URL=http://label-studio:8080
+      # 与单独部署的 Label Studio 通信：默认宿主机 127.0.0.1:8080（见 README）
+      - WORKSHOP_LABEL_STUDIO_URL=http://host.docker.internal:8080
       - WORKSHOP_WORKSPACE_ROOT=/workspace/project
-    depends_on:
-      - label-studio
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   web:
@@ -45,7 +36,7 @@ services:
     image: data-workshop-web:latest
     container_name: workshop-web
     ports:
-      - "127.0.0.1:9000:80"
+      - "127.0.0.1:${WORKSHOP_HOST_WEB_PORT:-8601}:80"
     depends_on:
       - api
     restart: unless-stopped
