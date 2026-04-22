@@ -290,7 +290,7 @@ docker compose -f docker-compose.yml -f devops/docker-compose.dev.yml up -d --bu
 3. **本工具不修改 ms-swift 核心代码**，所有问题可追溯至 ms-swift 原项目
 
 ## 十三、代码生成要求
-- 产品名与仓库策略：仍叫「数据工坊」、在当前 qwen3-vl-finetuning 里演进。
+- 产品名与仓库策略：仍叫「数据工坊」、在当前 data-workshop 里演进。
 - 语言与地区：只支持中文即可。
 - 只在win11下运行，docker需要使用linux容器。
 - 前端VUE工程也放在当前目录下。

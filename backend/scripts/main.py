@@ -1,5 +1,5 @@
 def main():
-    print("Hello from qwen3-vl-finetuning!")
+    print("Hello from data-workshop!")
 
 
 if __name__ == "__main__":

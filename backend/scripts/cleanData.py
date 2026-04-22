@@ -3,7 +3,7 @@ from cleanvision.imagelab import Imagelab
 
 if __name__ == '__main__':
     # 1. 指向你的图片文件夹（支持子文件夹递归）
-    imagelab = Imagelab(data_path="./data/")  # 或 "D:/_git/codeup-spooner/qwen3-vl-finetuning/data"
+    imagelab = Imagelab(data_path="./data/")  # 或 "D:/_git/codeup-spooner/llm-train-learning/data-workshop/data"
 
     # 2. 自动运行所有检查（或指定部分issue）
     imagelab.find_issues()  # 默认跑全部

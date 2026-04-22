@@ -14,7 +14,7 @@
 ```bash
 # 编译镜像（构建上下文为仓库根目录）
 cmd
-cd /d D:/_git/codeup-spooner/llm-train-learning/qwen3-vl-finetuning/devops
+cd /d D:/_git/codeup-spooner/llm-train-learning/data-workshop/devops
 docker pull python:3.11
 docker build -f swift4.03-cpu.dockerfile -t swift4.03-cpu:latest .
 
@@ -26,7 +26,7 @@ docker build -f swift4.03-cpu.dockerfile -t swift4.03-cpu:latest .
 # 重要：代码挂到 /workspace/project，不要挂到 /workspace 根目录。
 # 若 -v 宿主: /workspace，会盖住镜像里 /workspace/.venv，容器里就只剩系统 python、无依赖。
 cmd
-cd /d D:/_git/codeup-spooner/llm-train-learning/qwen3-vl-finetuning
+cd /d D:/_git/codeup-spooner/llm-train-learning/data-workshop
 docker rm -f swift403-cpu
 # cmd 续行：行末 ^，且 ^ 后不能有空格
 # --shm-size：默认 /dev/shm 仅约 64MB，训练时 DataLoader 多进程易报 bus error；与 backend/scripts/train.py 默认 dataloader_num_workers=0 配合更稳

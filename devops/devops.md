@@ -10,7 +10,7 @@ docker pull heartexlabs/label-studio:20260421.012345-main-a5c6f37
 # 运行
 ```bash
 cmd
-cd /d D:/_git/codeup-spooner/llm-train-learning/qwen3-vl-finetuning
+cd /d D:/_git/codeup-spooner/llm-train-learning/data-workshop
 docker rm -f label-studio
 docker run -it -p 28080:8080 --name label-studio -v "%CD%"/label-studio/data:/label-studio/data heartexlabs/label-studio:20260421.012345-main-a5c6f37
 
