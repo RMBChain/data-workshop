@@ -3,9 +3,11 @@ import { message } from "ant-design-vue";
 import { onMounted, reactive, ref } from "vue";
 import { http } from "../api/http";
 
-const baseUrl = ref("http://127.0.0.1:8080");
+/** 与 backend Settings.label_studio_url 默认一致；容器内访问宿主机 LS 需 host.docker.internal */
+const baseUrl = ref("http://host.docker.internal:8080");
 const token = ref("");
 const testMsg = ref("");
+const testMsgOk = ref(true);
 const testing = ref(false);
 const projects = ref<{ id: number; title: string; task_number: number }[]>([]);
 const projectId = ref<number | null>(null);
@@ -22,27 +24,56 @@ onMounted(() => {
   void refreshConfigStatus();
 });
 
+function formatApiDetail(detail: unknown): string {
+  if (detail == null) return "连接失败";
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item: { msg?: string; loc?: unknown[] }) => {
+        const loc = Array.isArray(item.loc) ? item.loc.filter((x) => x !== "body").join(".") : "";
+        return loc ? `${loc}: ${item.msg ?? ""}` : (item.msg ?? JSON.stringify(item));
+      })
+      .join("；");
+  }
+  return String(detail);
+}
+
 async function refreshConfigStatus() {
   try {
     const r = await http.get("/api/label-studio/status");
     status.value = r.data;
+    const u = r.data?.url;
+    if (typeof u === "string" && u.trim()) {
+      baseUrl.value = u.trim().replace(/\/$/, "");
+    }
   } catch {
     /* ignore */
   }
 }
 
 async function testConnection() {
+  if (!baseUrl.value.trim()) {
+    message.warning("请填写 Label Studio 基址");
+    return;
+  }
+  if (!token.value.trim()) {
+    message.warning("请填写 API Token 后再测试");
+    return;
+  }
   testing.value = true;
   testMsg.value = "";
+  testMsgOk.value = true;
   try {
-    await http.post("/api/label-studio/test-connection", { base_url: baseUrl.value, token: token.value });
+    await http.post("/api/label-studio/test-connection", { base_url: baseUrl.value.trim(), token: token.value.trim() });
     testMsg.value = "连接成功，Token 有效。";
+    testMsgOk.value = true;
     message.success("已连接");
   } catch (e: unknown) {
-    const err = e as { response?: { data?: { detail?: string } } };
-    const d = err.response?.data?.detail ?? "连接失败";
-    testMsg.value = String(d);
-    message.error(String(d));
+    const err = e as { response?: { data?: { detail?: unknown } } };
+    const d = formatApiDetail(err.response?.data?.detail ?? "连接失败");
+    testMsg.value = d;
+    testMsgOk.value = false;
+    message.error(d);
   } finally {
     testing.value = false;
   }
@@ -145,8 +176,11 @@ const messageJsonExample = `{"messages": [{"role": "user", "content": [{"type": 
       <code>WORKSHOP_LABEL_STUDIO_URL</code> 与网络可达性。
     </a-typography-paragraph>
     <a-form layout="vertical" style="max-width: 720px">
-      <a-form-item label="Label Studio 基址" extra="在容器内访问宿主机可用 host.docker.internal；开发机多为 127.0.0.1:8080。">
-        <a-input v-model:value="baseUrl" placeholder="http://127.0.0.1:8080" />
+      <a-form-item
+        label="Label Studio 基址"
+        extra="后端在 Docker 内时请用 host.docker.internal（或与本机 WORKSHOP_LABEL_STUDIO_URL 一致）；仅当 API 与本机进程同机直连 LS 时用 127.0.0.1。"
+      >
+        <a-input v-model:value="baseUrl" placeholder="http://host.docker.internal:8080" />
       </a-form-item>
       <a-form-item label="API Token" extra="在 Label Studio 账户/设置中创建。">
         <a-input-password v-model:value="token" />
@@ -156,7 +190,13 @@ const messageJsonExample = `{"messages": [{"role": "user", "content": [{"type": 
           <a-button :loading="testing" @click="testConnection">测试连接</a-button>
           <a-button :loading="loadingProjects" @click="loadProjects">刷新项目列表</a-button>
         </a-space>
-        <a-alert v-if="testMsg" :message="testMsg" type="success" show-icon style="margin-top: 8px" />
+        <a-alert
+          v-if="testMsg"
+          :message="testMsg"
+          :type="testMsgOk ? 'success' : 'error'"
+          show-icon
+          style="margin-top: 8px"
+        />
       </a-form-item>
       <a-form-item label="项目">
         <a-select

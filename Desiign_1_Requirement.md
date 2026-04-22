@@ -102,10 +102,15 @@
 **PowerShell：**
 ```powershell
 docker pull heartexlabs/label-studio:20260421.012345-main-a5c6f37
-docker run -d --name label-studio -p 127.0.0.1:8080:8080 `
+docker rm -f label-studio
+docker run -it -d --name label-studio -p 127.0.0.1:8080:8080 `
   -e LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true `
   -v "$((Get-Location).Path -replace '\\','/')/label-studio-data:/label-studio/data" `
   heartexlabs/label-studio:20260421.012345-main-a5c6f37
+
+# xwhoyeah@sohu.com/xwhoyeah/RUI_887Ytewr
+# eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6ODA4NDAzMjY2NiwiaWF0IjoxNzc2ODMyNjY2LCJqdGkiOiI5MzMzZDU2YzFjNWU0Yjg4YjYwMzA5YmQ0MWFiYzIyZCIsInVzZXJfaWQiOiIxIn0
+
 ```
 **Bash：**
 ```bash
@@ -115,10 +120,10 @@ docker run -d --name label-studio -p 127.0.0.1:8080:8080 \
   -v "${PWD}/label-studio-data:/label-studio/data" \
   heartexlabs/label-studio:20260421.012345-main-a5c6f37
 ```
-API 容器内用 `http://host.docker.internal:8080` 时配 `WORKSHOP_LABEL_STUDIO_URL`（同根目录说明）。
+API 访问宿主机上 LS 的基址默认即为 `http://host.docker.internal:8080`（`backend/app/config.py`），**无需在容器启动时**设置 `WORKSHOP_LABEL_STUDIO_URL`；仅当 LS 基址与默认不同再覆盖（同根目录说明）。
 
 ### 服务约定
-- 后端：开发与生产均 **Docker**；开发叠加 `devops/docker-compose.dev.yml` 热重载。
+- 后端：开发与生产均 **Docker**；开发可用 **Compose** 叠加 `devops/docker-compose.dev.yml` 热重载，或 **等价 `docker run`**（见下「仅后端开发」），二者选其一即可。
 - 前端：开发本机 `npm run dev`；生产由 `devops/Dockerfile.frontend` 打入 `web` 镜像。
 
 **生产全栈**（`devops/build-compose.ps1` 或）：
@@ -128,14 +133,24 @@ docker compose up -d --build
 ```
 起 `web` + `api`；LS 不在此 Compose 内。
 
-**仅后端开发：**
-`devops/run-backend-dev.ps1` 或
-```bash
+**仅后端开发**
+```powershell
 docker build -f devops/swift4.03-cpu.dockerfile -t swift4.03-cpu:latest .
-docker compose --env-file devops/compose.env.dev -f docker-compose.yml -f devops/docker-compose.dev.yml up -d --build api
+docker build -f devops/Dockerfile.workshop -t data-workshop-api:latest .
+docker rm -f workshop-api-dev
+docker run -d --name workshop-api-dev  `
+  --shm-size=4g  `
+  -p 127.0.0.1:8702:8000  `
+  -v "${PWD}:/workspace/project"  `
+  -w /workspace/project  `
+  -e WORKSHOP_WORKSPACE_ROOT=/workspace/project  `
+  --add-host=host.docker.internal:host-gateway  `
+  data-workshop-api:latest  `
+  uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
+  PowerShell 下将卷挂载中的 `${PWD}` 换为当前目录的绝对路径（或将仓库根路径写死为 `-v "D:/path/to/data-workshop:/workspace/project"`）。停止/删除：`docker stop workshop-api-dev && docker rm workshop-api-dev`。
 
-**本机前端：** `cd frontend` → `nvm use` → `npm run dev`（默认 5173，代理到宿主机 `8702` 上的 API，与 `devops/compose.env.dev` 一致）。
+**本机前端：** `cd frontend` → `nvm use` → `npm run dev`（**8701**，代理到宿主机 **8702** 上的 API，与上表开发 API 端口一致）。
 
 **端口**（`127.0.0.1`）
 
@@ -144,10 +159,10 @@ docker compose --env-file devops/compose.env.dev -f docker-compose.yml -f devops
 - API       : http://127.0.0.1:8602/api，
 - health    : http://127.0.0.1:8602/api/health
 
-**开发**（`devops/compose.env.dev`）
-- UI(nginx) : http://127.0.0.1:8701
-- API       : http://127.0.0.1:8702/api，
-- health    : http://127.0.0.1:8702/api/health
+**开发**
+- UI(Vite) : http://127.0.0.1:8701
+- API      : http://127.0.0.1:8702/api，
+- health   : http://127.0.0.1:8702/api/health
 
 ## 十一、使用约束
 - 建议本机 **≥16GB 内存**；速度与体验受 **CPU/内存** 影响。

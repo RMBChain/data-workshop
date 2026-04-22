@@ -58,10 +58,11 @@ async def label_studio_test_connection(body: TestConnectionBody) -> dict[str, An
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"连接失败：{e}") from e
     if not r.get("ok"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"无法访问或 Token 无效（HTTP {r.get('http_status')}）",
-        )
+        extra = r.get("error_body")
+        msg = f"无法访问或 Token 无效（HTTP {r.get('http_status')}）"
+        if isinstance(extra, str) and extra.strip():
+            msg = f"{msg} {extra.strip()}"
+        raise HTTPException(status_code=400, detail=msg)
     return {"ok": True, **r, "message": "连接成功，Token 有效"}
 
 
