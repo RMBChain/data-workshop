@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { message } from "ant-design-vue";
-import { onMounted, ref, computed } from "vue";
+import { onMounted, onUnmounted, ref, computed } from "vue";
 import { useRouter } from "vue-router";
 import { http } from "../api/http";
 
@@ -20,9 +20,21 @@ const activeVersion = ref<string | null>(null);
 const preview = ref<unknown>(null);
 const autoImageLabel = computed(() => "自动在文本中补全 <image> 提示");
 
+/** 轮询间隔（毫秒）；1s 会使 uvicorn 访问日志很密 */
+const DATASET_JOB_POLL_MS = 2500;
+/** 超过该时长仍无终态则停止轮询（正常构建一般远小于此；避免异常卡死一直请求） */
+const DATASET_JOB_POLL_MAX_MS = 60 * 60 * 1000;
+
 onMounted(() => {
   void refreshImports();
   void refreshVersions();
+});
+
+onUnmounted(() => {
+  if (pollT.value) {
+    clearInterval(pollT.value);
+    pollT.value = null;
+  }
 });
 
 async function refreshImports() {
@@ -57,18 +69,41 @@ async function startBuild() {
     const jid = r.data.job_id as string;
     buildJob.value = { id: jid, status: "pending" };
     if (pollT.value) clearInterval(pollT.value);
-    pollT.value = setInterval(async () => {
-      const st = await http.get(`/api/datasets/jobs/${jid}`);
-      buildJob.value = st.data;
-      if (["succeeded", "failed", "cancelled"].includes(String(st.data.status))) {
-        if (pollT.value) clearInterval(pollT.value);
-        pollT.value = null;
-        if (st.data.status === "succeeded") {
-          message.success("数据集已生成");
-          await refreshVersions();
+    const buildPollStart = Date.now();
+    pollT.value = setInterval(() => {
+      void (async () => {
+        if (Date.now() - buildPollStart > DATASET_JOB_POLL_MAX_MS) {
+          if (pollT.value) clearInterval(pollT.value);
+          pollT.value = null;
+          message.warning("构建状态长时间未结束，已停止轮询。请查看「版本」或刷新后重试。");
+          return;
         }
-      }
-    }, 1000);
+        try {
+          const st = await http.get(`/api/datasets/jobs/${jid}`);
+          buildJob.value = st.data;
+          if (["succeeded", "failed", "cancelled"].includes(String(st.data.status))) {
+            if (pollT.value) clearInterval(pollT.value);
+            pollT.value = null;
+            if (st.data.status === "succeeded") {
+              message.success("数据集已生成");
+              await refreshVersions();
+            } else if (st.data.status === "failed") {
+              const em = (st.data as { error_message?: string }).error_message;
+              message.error(em && String(em).trim() ? em : "数据集构建失败");
+            }
+          }
+        } catch (e: unknown) {
+          if (pollT.value) clearInterval(pollT.value);
+          pollT.value = null;
+          const err = e as { response?: { status?: number } };
+          if (err.response?.status === 404) {
+            message.error("构建任务已不存在，已停止轮询。");
+          } else {
+            message.error("获取构建状态失败，已停止轮询。");
+          }
+        }
+      })();
+    }, DATASET_JOB_POLL_MS);
   } catch (e: unknown) {
     const err = e as { response?: { data?: { detail?: string } } };
     message.error(err.response?.data?.detail ?? "失败");

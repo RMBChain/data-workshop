@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import json
+import logging
 import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, HTTPException
@@ -16,6 +17,48 @@ from backend.app.services import label_studio_api as ls
 from backend.app.services.paths import resolve_under_workspace
 
 router = APIRouter(tags=["label-studio"])
+log = logging.getLogger(__name__)
+
+
+async def _resolve_import_image(
+    client: httpx.AsyncClient,
+    root: Path,
+    base: str,
+    token: str,
+    imp_dir: Path,
+    ls_task_id: int | None,
+    img: str,
+    note: str | None,
+) -> tuple[str | None, int, str | None]:
+    """
+    得到写入 import_tasks 的 image_rel、resolved、thumb_note。
+    优先工作区内已有文件，否则从 LS/外链下载到 imports/<batch>/files/。
+    """
+    s = (img or "").strip()
+    if not s:
+        return None, 0, note
+    b = base.rstrip("/")
+    if not s.startswith("http://") and not s.startswith("https://"):
+        try:
+            p = (root / s.replace("\\", "/").lstrip("/")).resolve()
+            p.relative_to(root)
+            if p.is_file():
+                return str(p.relative_to(root)).replace("\\", "/"), 1, note
+        except Exception:
+            pass
+
+    fetch_url = ls.source_to_fetch_url(b, s)
+    raw_name = Path(urlparse(fetch_url).path).name
+    base_fn = ls.safe_import_filename(raw_name, f"task{ls_task_id or 0}")
+    if "." not in base_fn:
+        base_fn = f"{base_fn}.jpg"
+    dest = imp_dir / "files" / f"{int(ls_task_id) if ls_task_id is not None else 0}_{base_fn}"
+    ok = await ls.fetch_image_to_path(client, b, token, s, dest)
+    if ok:
+        return str(dest.resolve().relative_to(root.resolve())).replace("\\", "/"), 1, note
+    if s.startswith("http://") or s.startswith("https://"):
+        return s, 0, ((note or "") + "（未下载到工作区，保留 URL）").strip() or "（未下载到工作区，保留 URL）"
+    return s, 0, ((note or "") + "（图片下载失败，请检查基址与网络）").strip() or "（图片下载失败）"
 
 
 class TestConnectionBody(BaseModel):
@@ -112,40 +155,66 @@ async def label_studio_import(body: LabelStudioImportBody) -> dict[str, Any]:
         (batch_id, int(body.project_id), str(proj.get("title") or ""), base, len(tasks), rel_dir, now),
     )
 
+    (imp_dir / "files").mkdir(parents=True, exist_ok=True)
+
     stored = 0
-    for t in tasks:
-        tid = t.get("id")
-        data = t.get("data") or {}
-        if not isinstance(data, dict):
-            data = {}
-        img, note = ls.pick_image_from_task_data(data)
-        resolved = 0
-        image_rel: str | None = None
-        if img:
-            # 本工作区内相对路径，或已存在于 workspace 下
-            if not img.startswith("http://") and not img.startswith("https://"):
-                try:
-                    candidate = Path(img)
-                    if not candidate.is_absolute():
-                        p = (root / img.replace("\\", "/").lstrip("/")).resolve()
-                        p.relative_to(root)
-                        image_rel = str(p.relative_to(root)).replace("\\", "/")
-                        resolved = 1 if p.is_file() else 0
-                    else:
-                        image_rel = img
-                except Exception:
-                    image_rel = img
-            else:
-                image_rel = img
-        row_id = f"{batch_id}-{tid}"
-        conn.execute(
-            """
-            INSERT INTO import_tasks (id, batch_id, ls_task_id, image_rel, resolved, thumb_note, raw_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (row_id, batch_id, int(tid) if tid is not None else 0, image_rel, resolved, note, json_dumps(t)),
-        )
-        stored += 1
+    resolved_count = 0
+    log.info(
+        "Label Studio 导入开始: batch_id=%s project_id=%s title=%s task_count=%d base=%s",
+        batch_id,
+        int(body.project_id),
+        str(proj.get("title") or ""),
+        len(tasks),
+        base,
+    )
+    async with httpx.AsyncClient(timeout=120.0) as dl_client:
+        n_tasks = len(tasks)
+        for t in tasks:
+            tid = t.get("id")
+            data = t.get("data") or {}
+            if not isinstance(data, dict):
+                data = {}
+            img, thumb_note = ls.pick_image_from_task_data(data)
+            resolved = 0
+            image_rel: str | None = None
+            if img:
+                image_rel, resolved, thumb_note = await _resolve_import_image(
+                    dl_client,
+                    root,
+                    base,
+                    body.token,
+                    imp_dir,
+                    int(tid) if tid is not None else None,
+                    img,
+                    thumb_note,
+                )
+                if resolved:
+                    resolved_count += 1
+            row_id = f"{batch_id}-{tid}"
+            conn.execute(
+                """
+                INSERT INTO import_tasks (id, batch_id, ls_task_id, image_rel, resolved, thumb_note, raw_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (row_id, batch_id, int(tid) if tid is not None else 0, image_rel, resolved, thumb_note, json_dumps(t)),
+            )
+            stored += 1
+            if stored == 1 or stored % 10 == 0 or stored == n_tasks:
+                log.info(
+                    "Label Studio 导入进度: %d/%d 已写入 (resolved 本地/落盘=%d) batch_id=%s",
+                    stored,
+                    n_tasks,
+                    resolved_count,
+                    batch_id,
+                )
+
+    log.info(
+        "Label Studio 导入完成: batch_id=%s 任务行=%d 条图片标记为已解析(resolved)=%d 目录=%s",
+        batch_id,
+        stored,
+        resolved_count,
+        rel_dir,
+    )
 
     manifest = imp_dir / "tasks_manifest.jsonl"
     with open(manifest, "w", encoding="utf-8") as f:

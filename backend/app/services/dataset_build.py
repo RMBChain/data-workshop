@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 import threading
 import time
@@ -11,6 +12,8 @@ from typing import Any
 
 from backend.app.db import get_connection, json_dumps
 from backend.app.services.paths import resolve_under_workspace
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -58,6 +61,26 @@ def _build_line_messages(
     *,
     prepend_image_token: bool = True,
 ) -> dict[str, Any] | None:
+    u = (image_rel or "").strip()
+    if u.startswith("http://") or u.startswith("https://"):
+        user_msg = user_text
+        if prepend_image_token and "<image>" not in user_msg:
+            user_msg = f"<image>{user_msg}"
+        return {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": u},
+                        {"type": "text", "text": user_msg},
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": answer}],
+                },
+            ]
+        }
     try:
         p = resolve_under_workspace(workspace, image_rel) if not image_rel.startswith("http") else None
     except Exception:
@@ -138,6 +161,15 @@ class DatasetBuildManager:
         )
         conn.commit()
 
+        log.info(
+            "数据集构建任务已入队: job_id=%s import_batch_id=%s train/val/test=%d/%d/%d seed=%s",
+            job_id,
+            import_batch_id,
+            train_ratio,
+            val_ratio,
+            test_ratio,
+            seed,
+        )
         t = threading.Thread(
             target=self._run,
             args=(job_id, add_image_token, train_ratio, val_ratio, test_ratio, seed, note or ""),
@@ -161,21 +193,28 @@ class DatasetBuildManager:
             return
         job.status = "running"
         _db_update_job(self._workspace, job_id, "running", None, 0.05, None)
+        log.info("数据集构建开始: job_id=%s batch_id=%s", job_id, job.import_batch_id)
 
         conn = get_connection(self._workspace)
         rows = conn.execute(
             "SELECT image_rel, raw_json FROM import_tasks WHERE batch_id = ? AND image_rel IS NOT NULL",
             (job.import_batch_id,),
         ).fetchall()
+        log.info("数据集构建: 待处理 import 行数=%d (有 image_rel)", len(rows))
         lines: list[dict[str, Any]] = []
+        skipped_resolve = 0
+        skipped_build = 0
         for row in rows:
             rel, raw = row[0], row[1]
-            if not rel or rel.startswith("http://") or rel.startswith("https://"):
+            if not rel:
                 continue
-            try:
-                resolve_under_workspace(self._workspace, rel)
-            except Exception:
-                continue
+            is_url = rel.startswith("http://") or rel.startswith("https://")
+            if not is_url:
+                try:
+                    resolve_under_workspace(self._workspace, rel)
+                except Exception:
+                    skipped_resolve += 1
+                    continue
             ans = _extract_answer_from_ls_task(raw)
             ut = _default_question()
             obj = _build_line_messages(
@@ -183,12 +222,20 @@ class DatasetBuildManager:
             )
             if obj:
                 lines.append(obj)
+            else:
+                skipped_build += 1
             if job.cancel_event.is_set():
                 _finish_cancel(self._workspace, job_id, job)
                 return
 
         job.progress = 0.4
         _db_update_job(self._workspace, job_id, "running", None, 0.4, None)
+        log.info(
+            "数据集构建: 可写入样本行=%d 跳过(路径/解析)=%d 跳过(建样本失败)=%d",
+            len(lines),
+            skipped_resolve,
+            skipped_build,
+        )
 
         rng = random.Random(seed if seed is not None else int(time.time()))
         rng.shuffle(lines)
@@ -198,11 +245,28 @@ class DatasetBuildManager:
             job.error_message = "没有可用的本地图片样本，请检查导入任务路径是否位于工作区内"
             job.finished_at = time.time()
             _db_update_job(self._workspace, job_id, "failed", job.error_message, 1.0, None)
+            log.error(
+                "数据集构建失败 job_id=%s: 无有效样本 (import行=%d skip_resolve=%d skip_build=%d)",
+                job_id,
+                len(rows),
+                skipped_resolve,
+                skipped_build,
+            )
             return
 
         n_train = n * tr // 100
         n_val = n * vr // 100
         n_test = n - n_train - n_val
+        log.info(
+            "数据集构建: 划分 train=%d val=%d test=%d (总 %d 条, 比例 %d/%d/%d)",
+            n_train,
+            n_val,
+            n_test,
+            n,
+            tr,
+            vr,
+            te,
+        )
         if n > 0 and n_train == 0 and tr > 0:
             n_train = 1
             n_test = max(0, n - n_train - n_val)
@@ -214,7 +278,8 @@ class DatasetBuildManager:
 
         version_id = uuid.uuid4().hex[:12]
         rel_dir = f"versions/{version_id}"
-        vdir = self._workspace / rel_dir.replace("/", Path.sep)
+        # Path 与 / 拼接时接受正斜杠子路径，勿用 Path.sep（不存在于 pathlib.Path）
+        vdir = self._workspace / rel_dir
         vdir.mkdir(parents=True, exist_ok=True)
 
         def _write(p: Path, items: list[dict[str, Any]]) -> str:
@@ -260,6 +325,12 @@ class DatasetBuildManager:
         job.progress = 1.0
         job.result_version_id = version_id
         _db_update_job(self._workspace, job_id, "succeeded", None, 1.0, version_id)
+        log.info(
+            "数据集构建成功: job_id=%s version_id=%s 目录=%s",
+            job_id,
+            version_id,
+            rel_dir,
+        )
 
     def cancel(self, job_id: str) -> bool:
         with self._lock:
@@ -320,6 +391,31 @@ def _finish_cancel(workspace: Path, job_id: str, job: DatasetBuildJob) -> None:
     job.status = "cancelled"
     job.finished_at = time.time()
     _db_update_job(workspace, job_id, "cancelled", None, 1.0, None)
+    log.info("数据集构建已取消: job_id=%s", job_id)
+
+
+def mark_stale_build_jobs_failed_on_restart(workspace: Path) -> int:
+    """
+    服务重启后内存中的构建线程与 DatasetBuildManager 内状态已丢失；
+    若库中任务仍为 pending/running，接口将一直返回该状态。启动时记为 failed。
+    返回被更新的行数。
+    """
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    msg = "服务已重启，该构建任务已中断。请重新点击「生成数据集」。"
+    conn = get_connection(workspace)
+    conn.execute(
+        """
+        UPDATE dataset_build_jobs
+        SET status = 'failed', error_message = ?, progress = 1.0, finished_at = ?
+        WHERE status IN ('pending', 'running')
+        """,
+        (msg, now),
+    )
+    n_row = int(conn.execute("SELECT changes()").fetchone()[0])
+    conn.commit()
+    if n_row:
+        log.info("已标记 %d 条未完成的构建任务为 failed（服务重启）", n_row)
+    return n_row
 
 
 _dataset_mgr: DatasetBuildManager | None = None

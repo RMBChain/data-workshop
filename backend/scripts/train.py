@@ -114,6 +114,8 @@ def train_with_swift(
     kwargs.setdefault("lora_alpha", 16)
     # ms-swift 在 Linux 上默认 dataloader_num_workers=1；Docker 默认 /dev/shm 很小，易触发 bus error
     kwargs.setdefault("dataloader_num_workers", 0)
+    # 必须显式传入；若省略，swift 可能对部分模板默认开启 packing，而 packing 依赖 flash_attn（与 CPU/eager 冲突）
+    kwargs.setdefault("packing", False)
 
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = ""
@@ -185,14 +187,14 @@ def train_with_swift(
         argv.extend(["--lr_scheduler_type", kwargs["lr_scheduler_type"]])
     if kwargs.get("gradient_checkpointing"):
         argv.extend(["--gradient_checkpointing", str(kwargs["gradient_checkpointing"]).lower()])
-    if kwargs.get("packing"):
-        argv.extend(["--packing", str(kwargs["packing"]).lower()])
+    argv.extend(["--packing", str(bool(kwargs.get("packing", False))).lower()])
 
     print("=" * 80)
     print("训练配置 (CPU)")
     print(f"  模型: {model_name}")
     print(f"  dtype / attn: {kwargs.get('torch_dtype')} / {kwargs.get('attn_impl')}")
     print(f"  max_length: {kwargs.get('max_length', 1024)}")
+    print(f"  packing: {kwargs.get('packing', False)} (关闭时勿依赖 flash_attn)")
     print(f"  dataloader_num_workers: {kwargs.get('dataloader_num_workers', 0)}")
     print("=" * 80)
     print("环境变量:")

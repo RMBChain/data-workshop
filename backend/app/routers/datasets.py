@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from backend.app.services.dataset_build import get_dataset_manager
 from backend.app.services.paths import resolve_under_workspace
 
 router = APIRouter(tags=["datasets"])
+log = logging.getLogger(__name__)
 
 
 class DatasetBuildBody(BaseModel):
@@ -49,6 +51,14 @@ async def dataset_build(body: DatasetBuildBody) -> dict[str, Any]:
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    log.info(
+        "已提交数据集构建: job_id=%s import_batch_id=%s 比例 t/v/te=%d/%d/%d",
+        job.id,
+        body.import_batch_id,
+        body.train_ratio,
+        body.val_ratio,
+        body.test_ratio,
+    )
     return {"job_id": job.id, "status": job.status}
 
 
