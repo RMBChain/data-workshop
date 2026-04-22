@@ -1,8 +1,7 @@
 /output/
 /.idea/
-/label-studio/data
-# 单独部署 Label Studio 时若把数据目录放在仓库根目录
 /label-studio-data
+# 单独部署 Label Studio 时若把数据目录放在仓库根目录
 __pycache__/
 /.env
 /frontend/node_modules/
