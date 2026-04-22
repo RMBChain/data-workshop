@@ -208,6 +208,13 @@ def parse_training_progress(
                     "label": f"轮次约 {e:.2f} / {n_epochs:g}（on_epoch_end）",
                 }
 
+    # 已有 on_train_begin 但尚未出现任何 on_log 时，仍用 tqdm 的 Train/Eval 行（首轮步进或崩溃前唯一进度）
+    m_before_tqdm = re.findall(r"\[train_api\]\s+on_log\s+\|\s+global_step=(\d+)", log)
+    if re.search(r"\[train_api\]\s+on_train_begin", log) and not m_before_tqdm:
+        from_tqdm = _progress_from_tqdm_tail(log)
+        if from_tqdm is not None:
+            return from_tqdm
+
     if not re.search(r"\[train_api\]\s+on_train_begin", log):
         from_tqdm = _progress_from_tqdm_tail(log)
         if from_tqdm is not None:

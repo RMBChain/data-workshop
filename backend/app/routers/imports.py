@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import logging
 import math
+import shutil
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
 from backend.app.config import get_settings
 from backend.app.db import get_connection, row_to_dict
+from backend.app.services.paths import resolve_under_workspace
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["imports"])
 
@@ -56,3 +61,32 @@ async def list_import_tasks(
         "total": n,
         "pages": max(1, math.ceil(n / page_size) if page_size else 1),
     }
+
+
+@router.delete("/imports/{import_batch_id}")
+async def delete_import_batch(import_batch_id: str) -> dict[str, Any]:
+    """删除源导入批次：清除数据库记录、工作区中该批次的导入目录；已生成的数据集版本保留，仅解除 batch 关联。"""
+    settings = get_settings()
+    root = settings.workspace_root.resolve()
+    conn = get_connection(root)
+    row = conn.execute(
+        "SELECT id, workspace_dir FROM import_batches WHERE id = ?",
+        (import_batch_id,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="导入批次不存在")
+    rel = row["workspace_dir"] or ""
+    conn.execute("UPDATE dataset_versions SET import_batch_id = NULL WHERE import_batch_id = ?", (import_batch_id,))
+    conn.execute("DELETE FROM dataset_build_jobs WHERE import_batch_id = ?", (import_batch_id,))
+    conn.execute("DELETE FROM import_batches WHERE id = ?", (import_batch_id,))
+    conn.commit()
+
+    if rel and str(rel).strip():
+        try:
+            imp = resolve_under_workspace(root, str(rel).strip())
+            if imp.exists():
+                shutil.rmtree(imp)
+        except (ValueError, OSError) as e:
+            log.warning("已删除数据库记录，但清理工作区目录失败: %s", e, exc_info=True)
+            return {"ok": True, "id": import_batch_id, "warning": f"工作区文件未完全清理: {e}"}
+    return {"ok": True, "id": import_batch_id}

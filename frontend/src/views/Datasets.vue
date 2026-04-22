@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { message } from "ant-design-vue";
+import { message, Modal } from "ant-design-vue";
 import { onMounted, onUnmounted, ref, computed } from "vue";
 import { useRouter } from "vue-router";
 import { http } from "../api/http";
@@ -40,9 +40,38 @@ onUnmounted(() => {
 async function refreshImports() {
   const r = await http.get("/api/imports");
   imports.value = r.data.items;
-  if (imports.value.length && !selectedBatch.value) {
-    selectedBatch.value = imports.value[0].id;
+  if (imports.value.length) {
+    if (!selectedBatch.value || !imports.value.some((i) => i.id === selectedBatch.value)) {
+      selectedBatch.value = imports.value[0].id;
+    }
+  } else {
+    selectedBatch.value = null;
   }
+}
+
+function deleteCurrentBatch() {
+  if (!selectedBatch.value) {
+    message.warning("请选择要删除的批次");
+    return;
+  }
+  const id = selectedBatch.value;
+  Modal.confirm({
+    title: "删除该源导入批次？",
+    content:
+      "将删除该批次在工作区中的原始导入数据与任务记录。已由此批次生成的「数据集版本」会保留在列表中，仅解除与批次的关联。此操作不可恢复。",
+    okText: "删除",
+    okType: "danger",
+    cancelText: "取消",
+    async onOk() {
+      const r = await http.delete(`/api/imports/${encodeURIComponent(id)}`);
+      if (r.data?.warning) {
+        message.warning(String(r.data.warning));
+      } else {
+        message.success("已删除");
+      }
+      await refreshImports();
+    },
+  });
 }
 
 async function refreshVersions() {
@@ -136,12 +165,16 @@ function goTrain() {
     />
     <a-form layout="vertical" style="max-width: 640px">
       <a-form-item label="源导入批次">
-        <a-select
-          v-model:value="selectedBatch"
-          :options="imports.map((i) => ({ value: i.id, label: `${i.id} — ${i.project_title}（${i.task_count} 条）` }))"
-          style="width: 100%"
-          placeholder="无批次时请先到「数据导入」"
-        />
+        <a-space style="width: 100%; align-items: center" :size="8" wrap>
+          <a-select
+            v-model:value="selectedBatch"
+            :options="imports.map((i) => ({ value: i.id, label: `${i.id} — ${i.project_title}（${i.task_count} 条）` }))"
+            style="min-width: 0; flex: 1"
+            :disabled="!imports.length"
+            placeholder="无批次时请先到「数据导入」"
+          />
+          <a-button danger :disabled="!selectedBatch" @click="deleteCurrentBatch">删除</a-button>
+        </a-space>
       </a-form-item>
       <a-form-item :label="autoImageLabel">
         <a-switch v-model:checked="addImageToken" />

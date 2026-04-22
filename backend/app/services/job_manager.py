@@ -20,8 +20,8 @@ class TrainJobCreate(BaseModel):
     train_dataset: str = "data/train.jsonl"
     val_dataset: str = "data/val.jsonl"
     output_dir: str = "output/qwen3vl-2b-lora"
-    lora_rank: int = 8
-    lora_alpha: int = 16
+    lora_rank: int = 4
+    lora_alpha: int = 8
     target_modules: str = "all-linear"
     freeze_vit: bool = True
     num_train_epochs: int = 3
@@ -30,17 +30,26 @@ class TrainJobCreate(BaseModel):
     gradient_accumulation_steps: int = 8
     learning_rate: float = 1e-4
     dataloader_num_workers: int = 0
-    max_length: int = 1024
-    logging_steps: int = 5
-    save_steps: int = 200
-    eval_steps: int = 200
-    save_total_limit: int = 2
+    max_length: int = 512
+    logging_steps: int = 20
+    save_steps: int = 500
+    eval_steps: int = 500
+    save_total_limit: int = 1
     warmup_ratio: float = 0.03
     lr_scheduler_type: str = "cosine"
     gradient_checkpointing: bool = True
     packing: bool = False
-    image_max_token_num: int = 512
-    video_max_token_num: int = 128
+    image_max_token_num: int = 256
+    video_max_token_num: int = 64
+
+
+def _format_train_exit_message(code: int) -> str:
+    """子进程非 0 退出时的人类可读说明（Unix 下负数多为 -signal）。"""
+    if code == -9 or code == 137:
+        return f"进程退出码 {code}（SIGKILL：常见为内存不足 OOM、容器内存上限或手动 kill -9）"
+    if code < 0:
+        return f"进程退出码 {code}（被系统信号 {-code} 终止）"
+    return f"进程退出码 {code}"
 
 
 @dataclass
@@ -97,6 +106,10 @@ class TrainingJobManager:
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = ""
         env.setdefault("PYTHONUNBUFFERED", "1")
+        # 降低多线程与 glibc arena 的内存尖峰，利于小内存 / 容器内训练
+        env.setdefault("MALLOC_ARENA_MAX", "2")
+        env.setdefault("OMP_NUM_THREADS", "1")
+        env.setdefault("MKL_NUM_THREADS", "1")
 
         with self._lock:
             self._jobs[job_id] = job
@@ -146,7 +159,7 @@ class TrainingJobManager:
                     j.status = "succeeded"
                 else:
                     j.status = "failed"
-                    j.error_message = f"进程退出码 {code}"
+                    j.error_message = _format_train_exit_message(code)
 
         threading.Thread(target=_wait, daemon=True).start()
         return job

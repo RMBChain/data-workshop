@@ -21,6 +21,7 @@ from backend.app.routers import (
     inference_routes,
     label_studio,
     merge_routes,
+    models_routes,
     system_routes,
     training,
 )
@@ -88,6 +89,7 @@ def create_app() -> FastAPI:
     app.include_router(eval_routes.router, prefix="/api")
     app.include_router(export_routes.router, prefix="/api")
     app.include_router(system_routes.router, prefix="/api")
+    app.include_router(models_routes.router, prefix="/api")
     return app
 
 

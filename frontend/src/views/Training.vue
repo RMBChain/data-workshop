@@ -9,14 +9,20 @@ const form = reactive({
   train_dataset: "data/train.jsonl",
   val_dataset: "data/val.jsonl",
   output_dir: "output/qwen3vl-2b-lora",
-  lora_rank: 8,
-  lora_alpha: 16,
+  lora_rank: 4,
+  lora_alpha: 8,
   target_modules: "all-linear",
   num_train_epochs: 3,
   per_device_train_batch_size: 1,
   gradient_accumulation_steps: 8,
   learning_rate: 0.0001,
-  max_length: 1024,
+  max_length: 512,
+  image_max_token_num: 256,
+  video_max_token_num: 64,
+  gradient_checkpointing: true,
+  save_steps: 500,
+  eval_steps: 500,
+  save_total_limit: 1,
 });
 
 const submitting = ref(false);
@@ -33,6 +39,7 @@ const chartRef = ref<HTMLDivElement | null>(null);
 let chart: echarts.ECharts | null = null;
 const progressPercent = ref<number | null>(null);
 const progressLabel = ref("");
+const jobError = ref("");
 
 const progressStatus = computed(() => {
   if (jobStatus.value === "succeeded") return "success" as const;
@@ -165,8 +172,12 @@ async function updateChart() {
 
 async function refreshLogs() {
   if (!currentJobId.value) return;
-  const st = await http.get(`/api/training/jobs/${currentJobId.value}`);
+  const st = await http.get<{
+    status: string;
+    error_message?: string | null;
+  }>(`/api/training/jobs/${currentJobId.value}`);
   jobStatus.value = String(st.data.status);
+  jobError.value = st.data.error_message != null && String(st.data.error_message).trim() ? String(st.data.error_message) : "";
   const logs = await http.get<{ text: string; truncated: boolean }>(
     `/api/training/jobs/${currentJobId.value}/logs`,
   );
@@ -189,9 +200,15 @@ async function refreshLogs() {
 async function startTraining() {
   submitting.value = true;
   try {
-    const r = await http.post<{ id: string; status: string }>("/api/training/jobs", { ...form });
+    const r = await http.post<{
+      id: string;
+      status: string;
+      error_message?: string | null;
+    }>("/api/training/jobs", { ...form });
     currentJobId.value = r.data.id;
     jobStatus.value = r.data.status;
+    jobError.value =
+      r.data.error_message != null && String(r.data.error_message).trim() ? String(r.data.error_message) : "";
     message.success(`任务已创建：${r.data.id}`);
     stopLogPoll();
     logPoll = setInterval(() => {
@@ -223,6 +240,7 @@ async function delJob() {
   logText.value = "";
   progressPercent.value = null;
   progressLabel.value = "";
+  jobError.value = "";
   await refreshJobs();
 }
 
@@ -257,7 +275,7 @@ watch(logText, () => {
     <a-alert
       type="info"
       show-icon
-      message="训练与日志解析均在纯 CPU 上执行，速度受本机资源影响。"
+      message="训练与日志解析均在纯 CPU 上执行。默认已按省内存设置：较短 max_length、较小图像/视频 token、较小 LoRA、较少 checkpoint；仍 OOM 时可再降 max_length / image_max_token_num。"
       style="margin-bottom: 12px"
     />
     <a-row :gutter="16">
@@ -312,8 +330,27 @@ watch(logText, () => {
               style="width: 100%"
             />
           </a-form-item>
-          <a-form-item label="max_length">
+          <a-form-item label="max_length（序列越长越吃内存）">
             <a-input-number v-model:value="form.max_length" :min="128" :max="8192" style="width: 100%" />
+          </a-form-item>
+          <a-form-item label="image_max_token_num（视觉 token 上限）">
+            <a-input-number v-model:value="form.image_max_token_num" :min="64" :max="2048" style="width: 100%" />
+          </a-form-item>
+          <a-form-item label="video_max_token_num">
+            <a-input-number v-model:value="form.video_max_token_num" :min="16" :max="512" style="width: 100%" />
+          </a-form-item>
+          <a-form-item label="gradient_checkpointing">
+            <a-switch v-model:checked="form.gradient_checkpointing" />
+          </a-form-item>
+          <a-form-item label="save_steps / eval_steps">
+            <a-space>
+              <a-input-number v-model:value="form.save_steps" :min="10" :max="100000" style="width: 120px" />
+              <span>/</span>
+              <a-input-number v-model:value="form.eval_steps" :min="10" :max="100000" style="width: 120px" />
+            </a-space>
+          </a-form-item>
+          <a-form-item label="save_total_limit">
+            <a-input-number v-model:value="form.save_total_limit" :min="1" :max="10" style="width: 100%" />
           </a-form-item>
           <a-space wrap>
             <a-button type="primary" :loading="submitting" @click="startTraining">提交训练</a-button>
@@ -362,6 +399,12 @@ watch(logText, () => {
             :show-info="progressPercent !== null"
           />
           <div style="font-size: 12px; color: #666; margin-top: 4px">{{ progressLabel || "—" }}</div>
+          <a-typography-text
+            v-if="jobError && (jobStatus === 'failed' || jobStatus === 'cancelled')"
+            type="danger"
+            style="display: block; margin-top: 8px; font-size: 12px"
+            >原因（任务）: {{ jobError }}</a-typography-text
+          >
         </div>
         <a-typography-title :level="5">日志</a-typography-title>
         <a-button v-if="!stick" type="dashed" size="small" style="margin-bottom: 8px" @click="scrollToBottom"

@@ -3,6 +3,7 @@ import Datasets from "../views/Datasets.vue";
 import DataImport from "../views/DataImport.vue";
 import Eval from "../views/Eval.vue";
 import Export from "../views/Export.vue";
+import Home from "../views/Home.vue";
 import Playground from "../views/Playground.vue";
 import Merge from "../views/Merge.vue";
 import Training from "../views/Training.vue";
@@ -10,7 +11,7 @@ import Training from "../views/Training.vue";
 const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: "/", redirect: "/import" },
+    { path: "/", name: "home", component: Home, meta: { title: "设置" } },
     { path: "/import", name: "import", component: DataImport, meta: { title: "数据导入" } },
     { path: "/datasets", name: "datasets", component: Datasets, meta: { title: "数据集" } },
     { path: "/train", name: "train", component: Training, meta: { title: "训练" } },

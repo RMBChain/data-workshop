@@ -125,8 +125,19 @@ async def get_training_metrics(job_id: str) -> dict:
     if st == "succeeded" and isinstance(prog.get("percent"), (int, float)) and float(prog["percent"]) < 100:
         prog = {**prog, "percent": 100.0, "label": "任务成功"}
     elif st in ("failed", "cancelled"):
-        if prog.get("percent") is None:
-            prog = {**prog, "label": f"已结束（{st}）"}
+        pl = prog.get("label")
+        if isinstance(pl, str) and pl and prog.get("percent") is not None:
+            base = f"已结束（{st}） · 最近进度: {pl}"
+        elif prog.get("percent") is None:
+            base = f"已结束（{st}）"
+        else:
+            base = f"已结束（{st}）"
+        em = (j.error_message or "").strip()
+        if em:
+            base = f"{base} — {em}"
+        elif j.return_code is not None and j.return_code != 0:
+            base = f"{base}（子进程退出码 {j.return_code}）"
+        prog = {**prog, "label": base}
     return {"job_id": job_id, "series": parse_training_log_metrics(text), "progress": prog}
 
 
