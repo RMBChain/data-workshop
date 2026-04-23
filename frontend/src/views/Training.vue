@@ -1,10 +1,16 @@
 <script setup lang="ts">
 import { message } from "ant-design-vue";
-import { ReloadOutlined } from "@ant-design/icons-vue";
+import { InfoCircleOutlined, ReloadOutlined } from "@ant-design/icons-vue";
 import * as echarts from "echarts";
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { http } from "../api/http";
+
+type SystemResourcesPayload = {
+  cpu_percent: number;
+  memory: { used_bytes: number; total_bytes: number; percent: number };
+  note?: string;
+};
 
 type HubModelRow = { model_id: string; path: string; size_bytes: number };
 
@@ -47,9 +53,14 @@ const logPre = ref<HTMLPreElement | null>(null);
 const jobStatus = ref("");
 const stick = ref(true);
 const jobs = ref<Record<string, unknown>[]>([]);
+const jobsTableActiveKeys = ref<string[]>(["jobs"]);
 let logPoll: ReturnType<typeof setInterval> | null = null;
 let resPoll: ReturnType<typeof setInterval> | null = null;
-const resInfo = ref("");
+const resourceSnapshot = ref<SystemResourcesPayload | null>(null);
+const resCpuChartRef = ref<HTMLDivElement | null>(null);
+const resMemChartRef = ref<HTMLDivElement | null>(null);
+let resCpuChart: echarts.ECharts | null = null;
+let resMemChart: echarts.ECharts | null = null;
 const chartRef = ref<HTMLDivElement | null>(null);
 let chart: echarts.ECharts | null = null;
 const progressPercent = ref<number | null>(null);
@@ -68,6 +79,167 @@ function formatBytes(n: number) {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+/** 纵轴刻度用，避免过长 */
+function formatBytesAxis(n: number) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v < 0) return "0";
+  if (v < 1024) return `${Math.round(v)}`;
+  if (v < 1024 * 1024) return `${(v / 1024).toFixed(0)}K`;
+  if (v < 1024 * 1024 * 1024) return `${(v / 1024 / 1024).toFixed(1)}M`;
+  return `${(v / 1024 / 1024 / 1024).toFixed(1)}G`;
+}
+
+function clamp01to100(n: number) {
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(100, Math.max(0, n));
+}
+
+/** 资源折线图历史点（每约 2s 追加），最多保留约 5 分钟 @ 2s 间隔；内存为已用字节数 */
+const MAX_RESOURCE_LINE_POINTS = 150;
+const resourceTimeSeries: { t: number; cpu: number; memBytes: number }[] = [];
+
+function emptyCpuLineOption() {
+  return {
+    xAxis: { type: "time" as const },
+    yAxis: { type: "value" as const, name: "占用率 (%)", min: 0, max: 100 },
+    series: [],
+  };
+}
+
+function emptyMemLineOption() {
+  return {
+    xAxis: { type: "time" as const },
+    yAxis: { type: "value" as const, name: "已用内存", min: 0 },
+    series: [],
+  };
+}
+
+function buildSingleLineOption(
+  color: string,
+  name: string,
+  points: [number, number][],
+) {
+  const n = points.length;
+  const showSymbol = n <= 3;
+  return {
+    color: [color],
+    animationDurationUpdate: 300,
+    tooltip: {
+      trigger: "axis" as const,
+      axisPointer: { type: "cross" as const },
+      valueFormatter: (v: string | number) => `${Number(v).toFixed(1)}%`,
+    },
+    grid: { left: 50, right: 20, top: 16, bottom: 24, containLabel: true },
+    xAxis: { type: "time" as const },
+    yAxis: {
+      type: "value" as const,
+      name: "占用率 (%)",
+      min: 0,
+      max: 100,
+      splitLine: { show: true, lineStyle: { type: "dashed" } },
+    },
+    series: [
+      {
+        name,
+        type: "line" as const,
+        smooth: 0.2,
+        showSymbol,
+        symbolSize: 6,
+        lineStyle: { width: 2 },
+        data: points,
+      },
+    ],
+  };
+}
+
+function buildMemBytesLineOption(
+  color: string,
+  name: string,
+  points: [number, number][],
+  totalBytes?: number,
+) {
+  const n = points.length;
+  const showSymbol = n <= 3;
+  const dataMax = n ? Math.max(...points.map((p) => p[1]), 0) : 0;
+  const cap =
+    typeof totalBytes === "number" && totalBytes > 0 && totalBytes >= dataMax ? totalBytes : undefined;
+  return {
+    color: [color],
+    animationDurationUpdate: 300,
+    tooltip: {
+      trigger: "axis" as const,
+      axisPointer: { type: "cross" as const },
+      valueFormatter: (v: string | number) => formatBytes(Number(v)),
+    },
+    grid: { left: 56, right: 20, top: 16, bottom: 24, containLabel: true },
+    xAxis: { type: "time" as const },
+    yAxis: {
+      type: "value" as const,
+      name: "已用内存",
+      min: 0,
+      max: cap ?? (dataMax > 0 ? Math.ceil(dataMax * 1.08) : undefined),
+      splitLine: { show: true, lineStyle: { type: "dashed" } },
+      axisLabel: {
+        formatter: (val: string | number) => formatBytesAxis(Number(val)),
+      },
+    },
+    series: [
+      {
+        name,
+        type: "line" as const,
+        smooth: 0.2,
+        showSymbol,
+        symbolSize: 6,
+        lineStyle: { width: 2 },
+        data: points,
+      },
+    ],
+  };
+}
+
+function updateResourceLineCharts() {
+  const elCpu = resCpuChartRef.value;
+  const elMem = resMemChartRef.value;
+  if (!elCpu || !elMem) return;
+  if (!resCpuChart) resCpuChart = echarts.init(elCpu);
+  if (!resMemChart) resMemChart = echarts.init(elMem);
+
+  if (resourceTimeSeries.length === 0) {
+    resCpuChart.setOption({ ...emptyCpuLineOption(), color: ["#5470c6"] }, true);
+    resMemChart.setOption({ ...emptyMemLineOption(), color: ["#91cc75"] }, true);
+    return;
+  }
+
+  const cpuPts = resourceTimeSeries.map((p) => [p.t, p.cpu] as [number, number]);
+  const memPts = resourceTimeSeries.map((p) => [p.t, p.memBytes] as [number, number]);
+  const totalB = resourceSnapshot.value?.memory?.total_bytes;
+  resCpuChart.setOption(buildSingleLineOption("#5470c6", "CPU (%)", cpuPts), true);
+  resMemChart.setOption(
+    buildMemBytesLineOption("#91cc75", "已用内存", memPts, typeof totalB === "number" ? totalB : undefined),
+    true,
+  );
+}
+
+async function loadSystemResources() {
+  try {
+    const r = await http.get<SystemResourcesPayload>("/api/system/resources");
+    resourceSnapshot.value = r.data;
+    const t = Date.now();
+    const cpu = clamp01to100(r.data.cpu_percent);
+    const memBytes = Math.max(0, Math.floor(Number(r.data.memory?.used_bytes ?? 0)));
+    resourceTimeSeries.push({ t, cpu, memBytes });
+    while (resourceTimeSeries.length > MAX_RESOURCE_LINE_POINTS) {
+      resourceTimeSeries.shift();
+    }
+    updateResourceLineCharts();
+  } catch {
+    resourceSnapshot.value = null;
+    resourceTimeSeries.length = 0;
+    resCpuChart?.clear();
+    resMemChart?.clear();
+  }
 }
 
 function syncModelFromHub() {
@@ -94,6 +266,9 @@ type DatasetVersionRow = {
   id: string;
   name?: string | null;
   note?: string | null;
+  import_batch_id?: string | null;
+  project_title?: string | null;
+  batch_name?: string | null;
   train_relpath?: string | null;
   val_relpath?: string | null;
   is_active?: boolean;
@@ -257,13 +432,16 @@ const progressStatus = computed(() => {
 
 const jobColumns = [
   { title: "ID", dataIndex: "id", key: "id", ellipsis: true, width: 200 },
+  { title: "项目名称", dataIndex: "project_title", key: "project_title", ellipsis: true, width: 120 },
+  { title: "批次名称", dataIndex: "batch_name", key: "batch_name", ellipsis: true, width: 120 },
+  { title: "数据名称", dataIndex: "dataset_name", key: "dataset_name", ellipsis: true, width: 140 },
   { title: "开始时间", dataIndex: "created_at", key: "created_at", width: 170 },
   { title: "结束时间", dataIndex: "finished_at", key: "finished_at", width: 170 },
   { title: "状态", dataIndex: "status", key: "status", width: 100 },
   {
     title: "操作",
     key: "act",
-    width: 100,
+    width: 150,
   },
 ];
 
@@ -286,22 +464,33 @@ function formatJobEnd(finished: unknown, status: string | undefined): string {
   return "—";
 }
 
+function onChartsResize() {
+  resCpuChart?.resize();
+  resMemChart?.resize();
+  chart?.resize();
+}
+
 onMounted(() => {
   void loadHubModels();
   void loadDatasetVersions();
   void refreshJobs();
-  resPoll = setInterval(async () => {
-    try {
-      const r = await http.get("/api/system/resources");
-      resInfo.value = JSON.stringify(r.data);
-    } catch {
-      resInfo.value = "";
-    }
-  }, 2000);
+  void loadSystemResources();
+  resPoll = setInterval(() => void loadSystemResources(), 2000);
+  window.addEventListener("resize", onChartsResize);
 });
 onUnmounted(() => {
+  window.removeEventListener("resize", onChartsResize);
   stopLogPoll();
   if (resPoll) clearInterval(resPoll);
+  resourceTimeSeries.length = 0;
+  if (resCpuChart) {
+    resCpuChart.dispose();
+    resCpuChart = null;
+  }
+  if (resMemChart) {
+    resMemChart.dispose();
+    resMemChart = null;
+  }
   if (chart) {
     chart.dispose();
     chart = null;
@@ -428,11 +617,21 @@ async function startTraining() {
   }
   submitting.value = true;
   try {
+    const ver =
+      selectedDatasetVersionId.value != null && selectedDatasetVersionId.value !== ""
+        ? datasetVersionItems.value.find((x) => x.id === selectedDatasetVersionId.value) ?? null
+        : null;
+    const dataLabel = (ver?.name ?? "").trim() || (ver ? String(ver.id) : "");
     const r = await http.post<{
       id: string;
       status: string;
       error_message?: string | null;
-    }>("/api/training/jobs", { ...form });
+    }>("/api/training/jobs", {
+      ...form,
+      project_title: (ver?.project_title ?? "").trim(),
+      batch_name: (ver?.batch_name ?? "").trim(),
+      dataset_name: dataLabel,
+    });
     currentJobId.value = r.data.id;
     jobStatus.value = r.data.status;
     jobError.value =
@@ -460,15 +659,18 @@ async function cancelJob() {
   await refreshJobs();
 }
 
-async function delJob() {
-  if (!currentJobId.value) return;
-  await http.delete(`/api/training/jobs/${currentJobId.value}`);
+async function deleteJobById(jobId: string) {
+  if (!jobId) return;
+  await http.delete(`/api/training/jobs/${jobId}`);
   message.success("已删除");
-  currentJobId.value = null;
-  logText.value = "";
-  progressPercent.value = null;
-  progressLabel.value = "";
-  jobError.value = "";
+  if (currentJobId.value === jobId) {
+    currentJobId.value = null;
+    logText.value = "";
+    progressPercent.value = null;
+    progressLabel.value = "";
+    jobError.value = "";
+    stopLogPoll();
+  }
   await refreshJobs();
 }
 
@@ -500,6 +702,41 @@ watch(logText, () => {
 <template>
   <div>
     <a-typography-title :level="4">训练</a-typography-title>
+    <a-collapse v-model:activeKey="jobsTableActiveKeys" :bordered="false" style="margin-bottom: 8px; background: transparent">
+      <a-collapse-panel key="jobs" header="训练任务列表">
+        <a-table
+          :columns="jobColumns"
+          :data-source="(jobs as Record<string, unknown>[]) as any"
+          :pagination="false"
+          size="small"
+          row-key="id"
+        >
+          <template #bodyCell="{ column, text, record }">
+            <template v-if="column.key === 'act' && record && typeof record === 'object' && 'id' in record">
+              <a-space :size="8" align="center">
+                <a @click="selectJob(String((record as { id: string }).id))">查看</a>
+                <a-popconfirm
+                  title="确定删除该条训练任务记录？"
+                  ok-text="确定"
+                  cancel-text="取消"
+                  @confirm="deleteJobById(String((record as { id: string }).id))"
+                >
+                  <a-button type="link" danger size="small" style="padding: 0; height: auto">删除</a-button>
+                </a-popconfirm>
+              </a-space>
+            </template>
+            <span v-else-if="column.key === 'created_at' && record && typeof record === 'object'">{{
+              formatJobTime((record as Record<string, unknown>).created_at)
+            }}</span>
+            <span v-else-if="column.key === 'finished_at' && record && typeof record === 'object'">{{
+              formatJobEnd((record as Record<string, unknown>).finished_at, (record as { status?: string }).status)
+            }}</span>
+            <span v-else>{{ text }}</span>
+          </template>
+        </a-table>
+      </a-collapse-panel>
+    </a-collapse>
+    <a-divider />
     <a-alert
       type="info"
       show-icon
@@ -507,7 +744,7 @@ watch(logText, () => {
       style="margin-bottom: 12px"
     />
     <a-form layout="horizontal">
-      <a-row :gutter="[16, 16]">
+      <a-row :gutter="16">
         <a-col :span="10">
           <a-form-item label="数据集选择">
             <div style="display: flex; align-items: center; gap: 8px; width: 100%">
@@ -571,6 +808,168 @@ watch(logText, () => {
         <a-col :span="2">
           <a-button type="link" size="small" style="padding: 0" @click="goDatasets">去「数据集」管理</a-button>
         </a-col>
+
+        <a-col :span="10">
+          <a-form-item>
+            <template #label>
+              <span style="display: inline-flex; align-items: center; gap: 4px">
+                基于模型
+                <a-tooltip title="仅本机已下载">
+                  <InfoCircleOutlined
+                    style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                    aria-label="仅本机已下载"
+                    role="img"
+                  />
+                </a-tooltip>
+              </span>
+            </template>
+            <div style="display: flex; align-items: center; gap: 8px">
+              <a-select
+                v-model:value="form.model"
+                :options="modelSelectOptions"
+                :loading="loadingHub"
+                :disabled="loadingHub"
+                show-search
+                option-filter-prop="label"
+                placeholder="无可用模型时请先到设置中下载"
+                style="flex: 1; min-width: 0"
+              />
+              <a-tooltip title="刷新模型列表">
+                <a-button
+                  type="text"
+                  size="small"
+                  :loading="loadingHub"
+                  aria-label="刷新模型列表"
+                  @click="loadHubModels"
+                >
+                  <template #icon>
+                    <ReloadOutlined />
+                  </template>
+                </a-button>
+              </a-tooltip>
+            </div>
+            <a-typography-text v-if="!loadingHub && hubModels.length === 0" type="secondary" style="display: block; margin-top: 6px"
+              >当前没有检测到魔搭本机已缓存的模型。下载完成后点右侧刷新。</a-typography-text
+            >
+          </a-form-item>
+        </a-col>
+        <a-col :span="6">
+          <a-form-item label="输出目录">
+            <a-input v-model:value="form.output_dir" />
+          </a-form-item>
+        </a-col>
+      </a-row>
+      <a-row :gutter="16">
+        <a-col :span="8">
+          <a-form-item label="LoRA rank">
+            <a-input-number v-model:value="form.lora_rank" :min="1" :max="128" style="width: 100%" />
+          </a-form-item>
+        </a-col>
+        <a-col :span="8">
+          <a-form-item label="LoRA alpha">
+            <a-input-number v-model:value="form.lora_alpha" :min="1" :max="256" style="width: 100%" />
+          </a-form-item>
+        </a-col>
+        <a-col :span="8">
+          <a-form-item label="目标模块">
+            <a-input v-model:value="form.target_modules" />
+          </a-form-item>
+        </a-col>
+      </a-row>
+      <a-row :gutter="16">
+        <a-col :span="8">
+          <a-form-item label="Epochs">
+            <a-input-number v-model:value="form.num_train_epochs" :min="1" :max="200" style="width: 100%" />
+          </a-form-item>
+        </a-col>
+        <a-col :span="8">
+          <a-form-item label="Batch size">
+            <a-input-number
+              v-model:value="form.per_device_train_batch_size"
+              :min="1"
+              :max="16"
+              style="width: 100%"
+            />
+          </a-form-item>
+        </a-col>
+        <a-col :span="8">
+          <a-form-item label="梯度累积">
+            <a-input-number
+              v-model:value="form.gradient_accumulation_steps"
+              :min="1"
+              :max="128"
+              style="width: 100%"
+            />
+          </a-form-item>
+        </a-col>
+      </a-row>
+      <a-row :gutter="16">
+        <a-col :span="8">
+          <a-form-item label="学习率">
+            <a-input-number
+              v-model:value="form.learning_rate"
+              :min="1e-6"
+              :max="1e-2"
+              :step="0.00001"
+              style="width: 100%"
+            />
+          </a-form-item>
+        </a-col>
+        <a-col :span="8">
+          <a-form-item label="max_length（序列越长越吃内存）">
+            <a-input-number v-model:value="form.max_length" :min="128" :max="8192" style="width: 100%" />
+          </a-form-item>
+        </a-col>
+        <a-col :span="8">
+          <a-form-item label="image_max_token_num（视觉 token 上限）">
+            <a-input-number v-model:value="form.image_max_token_num" :min="64" :max="2048" style="width: 100%" />
+          </a-form-item>
+        </a-col>
+      </a-row>
+      <a-row :gutter="16">
+        <a-col :span="8">
+          <a-form-item label="video_max_token_num">
+            <a-input-number v-model:value="form.video_max_token_num" :min="16" :max="512" style="width: 100%" />
+          </a-form-item>
+        </a-col>
+        <a-col :span="8">
+          <a-form-item label="gradient_checkpointing">
+            <a-switch v-model:checked="form.gradient_checkpointing" />
+          </a-form-item>
+        </a-col>
+        <a-col :span="8">
+          <a-form-item label="save_total_limit">
+            <a-input-number v-model:value="form.save_total_limit" :min="1" :max="10" style="width: 100%" />
+          </a-form-item>
+        </a-col>
+      </a-row>
+      <a-row :gutter="16">
+        <a-col :span="24">
+          <a-form-item label="save_steps / eval_steps">
+            <a-space>
+              <a-input-number v-model:value="form.save_steps" :min="10" :max="10000000" style="width: 120px" />
+              <span>/</span>
+              <a-input-number v-model:value="form.eval_steps" :min="10" :max="10000000" style="width: 120px" />
+            </a-space>
+          </a-form-item>
+        </a-col>
+      </a-row>
+      <a-row :gutter="16">
+        <a-col :span="24" style="margin-top: 4px; margin-bottom: 4px">
+          <a-space wrap>
+            <a-button
+              type="primary"
+              :loading="submitting"
+              :disabled="loadingHub || !hubModels.length || !form.model"
+              @click="startTraining"
+              >提交训练</a-button
+            >
+            <a-button :disabled="!currentJobId" @click="cancelJob">取消</a-button>
+            <a-button :disabled="!currentJobId" @click="retryJob">重试</a-button>
+            <a-button @click="applyYaml">从 YAML 导入</a-button>
+            <a-button @click="downloadYaml">导出 YAML</a-button>
+          </a-space>
+        </a-col>
       </a-row>
     </a-form>
     <a-modal
@@ -606,135 +1005,70 @@ watch(logText, () => {
     </a-modal>
     <a-divider />
     <a-row :gutter="16">
-      <a-col :span="8">
-        <a-form layout="vertical">
-          <a-form-item label="基础模型/路径（仅本机已下载）">
-            <a-select
-              v-model:value="form.model"
-              :options="modelSelectOptions"
-              :loading="loadingHub"
-              :disabled="loadingHub"
-              show-search
-              option-filter-prop="label"
-              placeholder="无可用模型时请先到设置中下载"
-              style="width: 100%"
-            />
-            <div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center">
-              <a-button type="link" size="small" style="padding: 0" @click="goModelSettings">去「设置 → 模型管理」下载</a-button>
-              <a-button size="small" :loading="loadingHub" @click="loadHubModels">刷新模型列表</a-button>
-            </div>
-            <a-typography-text v-if="!loadingHub && hubModels.length === 0" type="secondary" style="display: block; margin-top: 6px"
-              >当前没有检测到魔搭本机已缓存的模型。下载完成后点「刷新模型列表」。</a-typography-text
-            >
-          </a-form-item>
+      <a-col :span="24">
+        <a-typography-title :level="5">训练任务</a-typography-title>
 
-          <a-form-item label="输出目录">
-            <a-input v-model:value="form.output_dir" />
-          </a-form-item>
-          <a-form-item label="LoRA rank">
-            <a-input-number v-model:value="form.lora_rank" :min="1" :max="128" style="width: 100%" />
-          </a-form-item>
-          <a-form-item label="LoRA alpha">
-            <a-input-number v-model:value="form.lora_alpha" :min="1" :max="256" style="width: 100%" />
-          </a-form-item>
-          <a-form-item label="目标模块">
-            <a-input v-model:value="form.target_modules" />
-          </a-form-item>
-          <a-form-item label="Epochs">
-            <a-input-number v-model:value="form.num_train_epochs" :min="1" :max="200" style="width: 100%" />
-          </a-form-item>
-          <a-form-item label="Batch size">
-            <a-input-number
-              v-model:value="form.per_device_train_batch_size"
-              :min="1"
-              :max="16"
-              style="width: 100%"
-            />
-          </a-form-item>
-          <a-form-item label="梯度累积">
-            <a-input-number
-              v-model:value="form.gradient_accumulation_steps"
-              :min="1"
-              :max="128"
-              style="width: 100%"
-            />
-          </a-form-item>
-          <a-form-item label="学习率">
-            <a-input-number
-              v-model:value="form.learning_rate"
-              :min="1e-6"
-              :max="1e-2"
-              :step="0.00001"
-              style="width: 100%"
-            />
-          </a-form-item>
-          <a-form-item label="max_length（序列越长越吃内存）">
-            <a-input-number v-model:value="form.max_length" :min="128" :max="8192" style="width: 100%" />
-          </a-form-item>
-          <a-form-item label="image_max_token_num（视觉 token 上限）">
-            <a-input-number v-model:value="form.image_max_token_num" :min="64" :max="2048" style="width: 100%" />
-          </a-form-item>
-          <a-form-item label="video_max_token_num">
-            <a-input-number v-model:value="form.video_max_token_num" :min="16" :max="512" style="width: 100%" />
-          </a-form-item>
-          <a-form-item label="gradient_checkpointing">
-            <a-switch v-model:checked="form.gradient_checkpointing" />
-          </a-form-item>
-          <a-form-item label="save_steps / eval_steps">
-            <a-space>
-              <a-input-number v-model:value="form.save_steps" :min="10" :max="10000000" style="width: 120px" />
-              <span>/</span>
-              <a-input-number v-model:value="form.eval_steps" :min="10" :max="10000000" style="width: 120px" />
-            </a-space>
-          </a-form-item>
-          <a-form-item label="save_total_limit">
-            <a-input-number v-model:value="form.save_total_limit" :min="1" :max="10" style="width: 100%" />
-          </a-form-item>
-          <a-space wrap>
-            <a-button
-              type="primary"
-              :loading="submitting"
-              :disabled="loadingHub || !hubModels.length || !form.model"
-              @click="startTraining"
-              >提交训练</a-button
-            >
-            <a-button :disabled="!currentJobId" @click="cancelJob">取消</a-button>
-            <a-button :disabled="!currentJobId" @click="delJob">删除记录</a-button>
-            <a-button :disabled="!currentJobId" @click="retryJob">重试</a-button>
-            <a-button @click="applyYaml">从 YAML 导入</a-button>
-            <a-button @click="downloadYaml">导出 YAML</a-button>
-          </a-space>
-        </a-form>
-      </a-col>
-      <a-col :span="16">
-        <a-typography-title :level="5">任务</a-typography-title>
-        <a-table
-          :columns="jobColumns"
-          :data-source="(jobs as Record<string, unknown>[]) as any"
-          :pagination="false"
-          size="small"
-          row-key="id"
-        >
-          <template #bodyCell="{ column, text, record }">
-            <template v-if="column.key === 'act' && record && typeof record === 'object' && 'id' in record">
-              <a @click="selectJob(String((record as { id: string }).id))">查看</a>
-            </template>
-            <span v-else-if="column.key === 'created_at' && record && typeof record === 'object'">{{
-              formatJobTime((record as Record<string, unknown>).created_at)
-            }}</span>
-            <span v-else-if="column.key === 'finished_at' && record && typeof record === 'object'">{{
-              formatJobEnd((record as Record<string, unknown>).finished_at, (record as { status?: string }).status)
-            }}</span>
-            <span v-else>{{ text }}</span>
-          </template>
-        </a-table>
         <a-typography-paragraph
           >当前：{{ currentJobId || "—" }} <a-tag v-if="jobStatus">{{ jobStatus }}</a-tag></a-typography-paragraph
         >
         <a-typography-title :level="5">资源（约 2s）</a-typography-title>
-        <a-typography-paragraph style="word-break: break-all; font-size: 12px; color: #666">
-          {{ resInfo || "—" }}
-        </a-typography-paragraph>
+        <a-row :gutter="[16, 16]">
+          <a-col :xs="24" :lg="12">
+            <div
+              style="
+                display: flex;
+                align-items: baseline;
+                justify-content: space-between;
+                gap: 8px;
+                flex-wrap: wrap;
+                margin-bottom: 4px;
+              "
+            >
+              <span style="font-size: 12px; color: rgba(0, 0, 0, 0.45)">CPU 使用率</span>
+              <span
+                v-if="resourceSnapshot"
+                style="font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; color: rgba(0, 0, 0, 0.88)"
+                >{{ resourceSnapshot.cpu_percent.toFixed(1) }}%</span
+              >
+              <span v-else style="font-size: 12px; color: rgba(0, 0, 0, 0.25)">—</span>
+            </div>
+            <div ref="resCpuChartRef" style="height: 200px; width: 100%" />
+          </a-col>
+          <a-col :xs="24" :lg="12">
+            <div
+              style="
+                display: flex;
+                align-items: baseline;
+                justify-content: space-between;
+                gap: 8px;
+                flex-wrap: wrap;
+                margin-bottom: 4px;
+              "
+            >
+              <span style="font-size: 12px; color: rgba(0, 0, 0, 0.45)"
+                >内存（已用字节，若在 docker 或 wsl 中，可能会和宿主机不同）</span
+              >
+              <span
+                v-if="resourceSnapshot"
+                style="font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; color: rgba(0, 0, 0, 0.88); text-align: right"
+              >
+                {{ formatBytes(resourceSnapshot.memory.used_bytes) }}
+                <template v-if="resourceSnapshot.memory.total_bytes > 0">
+                  &nbsp;/ {{ formatBytes(resourceSnapshot.memory.total_bytes) }}
+                </template>
+                &nbsp;（{{ resourceSnapshot.memory.percent.toFixed(1) }}%）
+              </span>
+              <span v-else style="font-size: 12px; color: rgba(0, 0, 0, 0.25)">—</span>
+            </div>
+            <div ref="resMemChartRef" style="height: 200px; width: 100%" />
+          </a-col>
+        </a-row>
+        <a-typography-text v-if="resourceSnapshot?.note" type="warning" style="display: block; margin-top: 4px; font-size: 12px">
+          {{ resourceSnapshot.note }}
+        </a-typography-text>
+        <a-typography-text v-else-if="!resourceSnapshot" type="secondary" style="display: block; margin-top: 4px; font-size: 12px">
+          暂无资源数据
+        </a-typography-text>
         <a-typography-title :level="5">训练进度</a-typography-title>
         <div v-if="currentJobId" style="margin-bottom: 10px">
           <a-progress

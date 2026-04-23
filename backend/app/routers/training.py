@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -10,6 +11,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.app.config import get_settings
+from backend.app.db import get_connection
 from backend.app.services import modelscope_manager as mscm
 from backend.app.services.job_manager import TrainJobCreate, TrainingJobManager
 from backend.app.services.training_metrics import parse_training_log_metrics, parse_training_progress
@@ -24,6 +26,40 @@ def _manager_singleton() -> TrainingJobManager:
     if _manager is None:
         _manager = TrainingJobManager(get_settings().workspace_root.resolve())
     return _manager
+
+
+def _display_names_for_job_request(workspace: Path, req: dict[str, Any]) -> tuple[str, str, str]:
+    """合并请求中携带的展示字段与按 train_relpath 在库中的回退（旧任务、或无展示字段时）。"""
+
+    def _pick(stored: str, fallback: str) -> str:
+        s = (stored or "").strip()
+        if s:
+            return s
+        f = (fallback or "").strip()
+        return f or "—"
+
+    s_pt = str(req.get("project_title") or "")
+    s_bn = str(req.get("batch_name") or "")
+    s_dn = str(req.get("dataset_name") or "")
+    tr = str(req.get("train_dataset") or "").strip()
+    d_pt, d_bn, d_dn = "", "", ""
+    if tr:
+        try:
+            conn = get_connection(workspace)
+            row = conn.execute(
+                "SELECT v.name, b.project_title, b.batch_name "
+                "FROM dataset_versions v "
+                "LEFT JOIN import_batches b ON b.id = v.import_batch_id "
+                "WHERE v.train_relpath = ? "
+                "ORDER BY v.created_at DESC "
+                "LIMIT 1",
+                (tr,),
+            ).fetchone()
+            if row:
+                d_dn, d_pt, d_bn = (row[0] or ""), (row[1] or ""), (row[2] or "")
+        except Exception:
+            pass
+    return _pick(s_pt, d_pt), _pick(s_bn, d_bn), _pick(s_dn, d_dn)
 
 
 def _require_model_downloaded_in_hub(model: str) -> None:
@@ -41,9 +77,13 @@ def _require_model_downloaded_in_hub(model: str) -> None:
 
 @router.get("/training/jobs")
 async def list_training_jobs() -> dict:
+    root = get_settings().workspace_root.resolve()
     jobs = _manager_singleton().list_jobs()
-    return {
-        "items": [
+    result = []
+    for j in jobs:
+        req = j.request or {}
+        pt, bn, dn = _display_names_for_job_request(root, req)
+        result.append(
             {
                 "id": j.id,
                 "status": j.status,
@@ -51,11 +91,13 @@ async def list_training_jobs() -> dict:
                 "finished_at": j.finished_at,
                 "return_code": j.return_code,
                 "error_message": j.error_message,
-                "request": j.request,
+                "project_title": pt,
+                "batch_name": bn,
+                "dataset_name": dn,
+                "request": req,
             }
-            for j in jobs
-        ]
-    }
+        )
+    return {"items": result}
 
 
 @router.post("/training/jobs")
@@ -75,6 +117,9 @@ async def get_training_job(job_id: str) -> dict:
     job = _manager_singleton().get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    root = get_settings().workspace_root.resolve()
+    req = job.request or {}
+    pt, bn, dn = _display_names_for_job_request(root, req)
     return {
         "id": job.id,
         "status": job.status,
@@ -82,7 +127,10 @@ async def get_training_job(job_id: str) -> dict:
         "finished_at": job.finished_at,
         "return_code": job.return_code,
         "error_message": job.error_message,
-        "request": job.request,
+        "project_title": pt,
+        "batch_name": bn,
+        "dataset_name": dn,
+        "request": req,
     }
 
 
