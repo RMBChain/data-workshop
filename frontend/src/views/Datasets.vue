@@ -12,8 +12,7 @@ const imports = ref<
 const selectedBatch = ref<string | null>(null);
 const buildNote = ref("");
 const trainRatio = ref(80);
-const valRatio = ref(10);
-const testRatio = ref(10);
+const valRatio = ref(20);
 const seed = ref<number | null>(null);
 const addImageToken = ref(true);
 const buildJob = ref<Record<string, unknown> | null>(null);
@@ -32,7 +31,6 @@ type VersionDataPayload = {
   meta: unknown;
   train_samples: unknown[];
   val_samples: unknown[];
-  test_samples: unknown[];
 };
 const versionViewOpen = ref(false);
 const versionViewLoading = ref(false);
@@ -182,7 +180,7 @@ function deleteVersion(versionId: string) {
   Modal.confirm({
     title: "删除数据集版本？",
     content:
-      "将永久删除该版本对应的 versions/ 目录（含 train/val/test.jsonl 和 meta.json）及数据库记录。若为当前活跃版本，激活标记将被清除。此操作不可恢复。",
+      "将永久删除该版本对应的 versions/ 目录（含 train/val.jsonl 和 meta.json）及数据库记录。若为当前活跃版本，激活标记将被清除。此操作不可恢复。",
     okText: "删除",
     okType: "danger",
     cancelText: "取消",
@@ -214,7 +212,6 @@ async function startBuild() {
       add_image_token: addImageToken.value,
       train_ratio: trainRatio.value,
       val_ratio: valRatio.value,
-      test_ratio: testRatio.value,
       random_seed: seed.value,
       note: buildNote.value || null,
     });
@@ -283,7 +280,7 @@ function goTrain() {
     <a-alert
       type="info"
       show-icon
-      message="将导入数据转为 SFT 对话格式（qwen-vl 模板族），并划分训练/验证/测试。产物位于工作区 versions/。"
+      message="将导入数据转为 SFT 对话格式（qwen-vl 模板族），并划分训练集与验证集。产物位于工作区 versions/。"
       style="margin-bottom: 12px"
     />
     <a-form layout="vertical">
@@ -319,10 +316,10 @@ function goTrain() {
           </a-form-item>
         </a-col>
         <a-col  :span="5">
-          <a-form-item label="划分比例（训练/验证/测试）">
-            <a-input-number v-model:value="trainRatio" :min="0" :max="100" /> /
-            <a-input-number v-model:value="valRatio" :min="0" :max="100" /> /
-            <a-input-number v-model:value="testRatio" :min="0" :max="100" />
+          <a-form-item label="划分比例（训练 : 验证，默认 8:2）">
+            <a-input-number v-model:value="trainRatio" :min="0" :max="100" /> :
+            <a-input-number v-model:value="valRatio" :min="0" :max="100" />
+            <span style="margin-left: 8px; color: #666; font-size: 12px">两数之和须为 100</span>
           </a-form-item>
         </a-col>
         <a-col  :span="2">
@@ -333,7 +330,6 @@ function goTrain() {
         <a-col :span="5">
           <a-form-item style="padding-top: 28px">
             <a-button type="primary" @click="startBuild">生成数据集</a-button>
-            <a-button style="margin-left: 8px" @click="loadPreview">预览一条样本</a-button>
             <a-button type="link" @click="goTrain">去训练</a-button>
           </a-form-item>
         </a-col>
@@ -343,7 +339,7 @@ function goTrain() {
       >当前构建任务：{{ String((buildJob as { id?: string }).id) }} ·
       {{ String((buildJob as { status?: string }).status) }}</a-typography-paragraph
     >
-    <a-typography-title :level="5">版本</a-typography-title>
+    <a-divider />
     <a-table
       :columns="[
         { title: '名称', dataIndex: 'name', key: 'name', ellipsis: true, width: 280 },
@@ -352,7 +348,6 @@ function goTrain() {
         { title: '批次名称', dataIndex: 'batch_name', key: 'batch_name', ellipsis: true },
         { title: '训练', dataIndex: 'train_count', key: 'train_count', width: 72 },
         { title: '验证', dataIndex: 'val_count', key: 'val_count', width: 72 },
-        { title: '测试', dataIndex: 'test_count', key: 'test_count', width: 72 },
         { title: '备注', dataIndex: 'note', key: 'note' },
         { title: '激活', dataIndex: 'is_active', key: 'is_active', width: 80 },
         {
@@ -391,11 +386,6 @@ function goTrain() {
         <span v-else>{{ record?.[column.dataIndex as string] ?? '-' }}</span>
       </template>
     </a-table>
-    <a-typography-title :level="5" style="margin-top: 16px">样本预览</a-typography-title>
-    <pre v-if="preview" style="max-height: 240px; overflow: auto; font-size: 12px">{{
-      JSON.stringify(preview, null, 2)
-    }}</pre>
-    <a-typography-paragraph v-else type="secondary">未加载</a-typography-paragraph>
 
     <a-modal
       v-model:open="versionNameEditOpen"
@@ -439,13 +429,6 @@ function goTrain() {
               versionViewPayload.val_samples.length
                 ? formatJson(versionViewPayload.val_samples)
                 : '（无样本或 val.jsonl 不存在）'
-            }}</pre>
-          </a-tab-pane>
-          <a-tab-pane key="test" :tab="`测试样本 (${versionViewPayload.test_samples.length})`">
-            <pre class="dataset-version-view-pre">{{
-              versionViewPayload.test_samples.length
-                ? formatJson(versionViewPayload.test_samples)
-                : '（无样本或 test.jsonl 不存在）'
             }}</pre>
           </a-tab-pane>
         </a-tabs>

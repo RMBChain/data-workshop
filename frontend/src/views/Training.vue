@@ -13,8 +13,8 @@ const loadingHub = ref(false);
 
 const form = reactive({
   model: "" as string,
-  train_dataset: "data/train.jsonl",
-  val_dataset: "data/val.jsonl",
+  train_dataset: "",
+  val_dataset: "",
   output_dir: "output/qwen3vl-2b-lora",
   lora_rank: 1,
   lora_alpha: 2,
@@ -32,6 +32,8 @@ const form = reactive({
   save_total_limit: 1,
 });
 
+const activeDatasetHint = ref("");
+const loadingDatasetPaths = ref(false);
 const submitting = ref(false);
 const currentJobId = ref<string | null>(null);
 const logText = ref("");
@@ -82,8 +84,122 @@ async function loadHubModels() {
   }
 }
 
+type DatasetVersionRow = {
+  id: string;
+  name?: string | null;
+  note?: string | null;
+  train_relpath?: string | null;
+  val_relpath?: string | null;
+  is_active?: boolean;
+  train_count?: number;
+  val_count?: number;
+};
+
+const datasetVersionItems = ref<DatasetVersionRow[]>([]);
+const serverActiveVersionId = ref<string | null>(null);
+const selectedDatasetVersionId = ref<string | null | undefined>(null);
+
+const datasetSelectOptions = computed(() =>
+  datasetVersionItems.value.map((v) => ({
+    value: v.id,
+    label: versionRowLabel(v),
+  })),
+);
+
+function versionRowLabel(v: DatasetVersionRow) {
+  const name = (v.name ?? v.id).trim() || v.id;
+  const tr = v.train_count;
+  const va = v.val_count;
+  const cnt =
+    typeof tr === "number" || typeof va === "number" ? ` · train ${tr ?? "—"}/val ${va ?? "—"}` : "";
+  return `${name}${cnt} · ${v.id}`;
+}
+
+function applyVersionToForm(row: DatasetVersionRow | null) {
+  if (!row) {
+    form.train_dataset = "";
+    form.val_dataset = "";
+    activeDatasetHint.value = "暂无可用数据集版本，请先在「数据集」中构建一版。";
+    return;
+  }
+  const tr = (row.train_relpath ?? "").trim();
+  const va = (row.val_relpath ?? "").trim();
+  form.train_dataset = tr;
+  form.val_dataset = va;
+  const name = (row.name ?? row.id).trim() || row.id;
+  const active = Boolean(row.is_active) || row.id === serverActiveVersionId.value;
+  const badge = active ? "（与工作区「激活」一致）" : "（与「激活」不同，仅本次训练使用）";
+  activeDatasetHint.value = `已选：${name} ${badge}`;
+}
+
+function filterDatasetOption(input: string, option: { label?: string; value?: string }) {
+  const q = input.trim().toLowerCase();
+  if (!q) return true;
+  const label = String(option?.label ?? "").toLowerCase();
+  const value = String(option?.value ?? "").toLowerCase();
+  if (label.includes(q) || value.includes(q)) return true;
+  const parts = q.split(/\s+/).filter(Boolean);
+  if (parts.length > 1) {
+    return parts.every((p) => !p || label.includes(p) || value.includes(p));
+  }
+  return false;
+}
+
+function onDatasetVersionSelect(versionId: string | null | undefined) {
+  if (versionId == null || versionId === "") {
+    applyVersionToForm(null);
+    return;
+  }
+  const row = datasetVersionItems.value.find((x) => x.id === versionId) ?? null;
+  applyVersionToForm(row);
+}
+
+/** 拉取版本列表，并根据选项更新选中行与表单项路径 */
+async function loadDatasetVersions(opts?: { forceSelectActive?: boolean }) {
+  loadingDatasetPaths.value = true;
+  try {
+    const r = await http.get<{
+      active_version_id: string | null;
+      items: DatasetVersionRow[];
+    }>("/api/datasets/versions");
+    serverActiveVersionId.value = r.data.active_version_id;
+    const items = r.data.items ?? [];
+    datasetVersionItems.value = items;
+    const ids = new Set(items.map((x) => x.id));
+    const act = r.data.active_version_id;
+
+    let pick: string | null = null;
+    if (opts?.forceSelectActive) {
+      if (act && ids.has(act)) pick = act;
+      else if (items[0]) pick = items[0].id;
+    } else {
+      const cur = selectedDatasetVersionId.value;
+      if (cur && ids.has(cur)) pick = cur;
+      else if (act && ids.has(act)) pick = act;
+      else if (items[0]) pick = items[0].id;
+    }
+
+    selectedDatasetVersionId.value = pick;
+    const row = pick ? (items.find((x) => x.id === pick) ?? null) : null;
+    applyVersionToForm(row);
+  } catch {
+    datasetVersionItems.value = [];
+    serverActiveVersionId.value = null;
+    selectedDatasetVersionId.value = null;
+    form.train_dataset = "";
+    form.val_dataset = "";
+    activeDatasetHint.value = "无法加载数据集版本列表。";
+  } finally {
+    loadingDatasetPaths.value = false;
+  }
+}
+
 function goModelSettings() {
   void router.push({ path: "/", query: { tab: "models" } });
+}
+
+function goDatasets() {
+  void router.push({ name: "datasets" });
 }
 
 const progressStatus = computed(() => {
@@ -126,6 +242,7 @@ function formatJobEnd(finished: unknown, status: string | undefined): string {
 
 onMounted(() => {
   void loadHubModels();
+  void loadDatasetVersions();
   void refreshJobs();
   resPoll = setInterval(async () => {
     try {
@@ -173,6 +290,7 @@ async function applyYaml() {
   try {
     const r = await http.post("/api/training/config/yaml/parse", { yaml: raw });
     Object.assign(form, r.data.params);
+    await loadDatasetVersions({ forceSelectActive: true });
     await loadHubModels();
     const m = (form as { model?: string }).model;
     if (m && !hubModels.value.some((h) => h.model_id === m)) {
@@ -258,6 +376,10 @@ async function startTraining() {
     message.warning("请从列表中选择已下载的模型");
     return;
   }
+  if (!form.train_dataset.trim() || !form.val_dataset.trim()) {
+    message.warning("训练/验证集路径来自当前激活的数据集版本。请先在「数据集」中构建并激活一版。");
+    return;
+  }
   submitting.value = true;
   try {
     const r = await http.post<{
@@ -341,6 +463,35 @@ watch(logText, () => {
     <a-row :gutter="16">
       <a-col :span="8">
         <a-form layout="vertical">
+          <a-form-item label="数据集选择">
+            <a-select
+              v-model:value="selectedDatasetVersionId"
+              :options="datasetSelectOptions"
+              :loading="loadingDatasetPaths"
+              :disabled="!datasetVersionItems.length"
+              show-search
+              :filter-option="filterDatasetOption"
+              allow-clear
+              placeholder="可搜索名称或版本 ID 片段"
+              style="width: 100%"
+              :not-found-content="loadingDatasetPaths ? '加载中…' : '暂无版本，请先去「数据集」构建'"
+              @change="onDatasetVersionSelect"
+            />
+            <a-typography-text type="secondary" style="display: block; margin-top: 6px; font-size: 12px">
+              {{ activeDatasetHint }}
+            </a-typography-text>
+            <div style="margin-top: 6px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center">
+              <a-button type="link" size="small" style="padding: 0" @click="goDatasets">去「数据集」管理</a-button>
+              <a-button size="small" :loading="loadingDatasetPaths" @click="loadDatasetVersions()"> 刷新列表 </a-button>
+            </div>
+          </a-form-item>
+          <a-form-item label="训练集 (jsonl)">
+            <a-input v-model:value="form.train_dataset" readonly placeholder="由上方所选版本决定" />
+          </a-form-item>
+          <a-form-item label="验证集 (jsonl)">
+            <a-input v-model:value="form.val_dataset" readonly placeholder="由上方所选版本决定" />
+          </a-form-item>
+          <a-divider />
           <a-form-item label="基础模型/路径（仅本机已下载）">
             <a-select
               v-model:value="form.model"
@@ -360,12 +511,7 @@ watch(logText, () => {
               >当前没有检测到魔搭本机已缓存的模型。下载完成后点「刷新模型列表」。</a-typography-text
             >
           </a-form-item>
-          <a-form-item label="训练集 (jsonl)">
-            <a-input v-model:value="form.train_dataset" />
-          </a-form-item>
-          <a-form-item label="验证集 (jsonl)">
-            <a-input v-model:value="form.val_dataset" />
-          </a-form-item>
+
           <a-form-item label="输出目录">
             <a-input v-model:value="form.output_dir" />
           </a-form-item>

@@ -142,12 +142,11 @@ class DatasetBuildManager:
         add_image_token: bool,
         train_ratio: int,
         val_ratio: int,
-        test_ratio: int,
         seed: int | None,
         note: str | None,
     ) -> DatasetBuildJob:
-        if train_ratio + val_ratio + test_ratio != 100:
-            raise ValueError("训练/验证/测试比例之和须为 100")
+        if train_ratio + val_ratio != 100:
+            raise ValueError("训练/验证比例之和须为 100")
         job_id = uuid.uuid4().hex
         now = time.time()
         job = DatasetBuildJob(
@@ -170,17 +169,16 @@ class DatasetBuildManager:
         conn.commit()
 
         log.info(
-            "数据集构建任务已入队: job_id=%s import_batch_id=%s train/val/test=%d/%d/%d seed=%s",
+            "数据集构建任务已入队: job_id=%s import_batch_id=%s train/val=%d/%d seed=%s",
             job_id,
             import_batch_id,
             train_ratio,
             val_ratio,
-            test_ratio,
             seed,
         )
         t = threading.Thread(
             target=self._run,
-            args=(job_id, add_image_token, train_ratio, val_ratio, test_ratio, seed, note or ""),
+            args=(job_id, add_image_token, train_ratio, val_ratio, seed, note or ""),
             daemon=True,
         )
         t.start()
@@ -192,7 +190,6 @@ class DatasetBuildManager:
         add_image_token: bool,
         tr: int,
         vr: int,
-        te: int,
         seed: int | None,
         note: str,
     ) -> None:
@@ -262,27 +259,21 @@ class DatasetBuildManager:
             )
             return
 
-        n_train = n * tr // 100
         n_val = n * vr // 100
-        n_test = n - n_train - n_val
+        n_train = n - n_val
         log.info(
-            "数据集构建: 划分 train=%d val=%d test=%d (总 %d 条, 比例 %d/%d/%d)",
+            "数据集构建: 划分 train=%d val=%d (总 %d 条, 比例 %d/%d)",
             n_train,
             n_val,
-            n_test,
             n,
             tr,
             vr,
-            te,
         )
         if n > 0 and n_train == 0 and tr > 0:
             n_train = 1
-            n_test = max(0, n - n_train - n_val)
-        if n_test < 0:
-            n_test = 0
+            n_val = n - n_train
         a = lines[:n_train]
-        b = lines[n_train : n_train + n_val]
-        c = lines[n_train + n_val :]
+        b = lines[n_train:]
 
         version_id = uuid.uuid4().hex[:12]
         rel_dir = f"versions/{version_id}"
@@ -299,16 +290,14 @@ class DatasetBuildManager:
 
         train_p = vdir / "train.jsonl"
         val_p = vdir / "val.jsonl"
-        test_p = vdir / "test.jsonl"
         tr_rel = _write(train_p, a)
         va_rel = _write(val_p, b)
-        te_rel = _write(test_p, c)
         (vdir / "meta.json").write_text(
             json_dumps(
                 {
                     "import_batch_id": job.import_batch_id,
                     "note": note,
-                    "counts": {"train": len(a), "val": len(b), "test": len(c), "total": n},
+                    "counts": {"train": len(a), "val": len(b), "total": n},
                 }
             ),
             encoding="utf-8",
@@ -327,9 +316,9 @@ class DatasetBuildManager:
         conn.execute(
             """
             INSERT INTO dataset_versions (id, import_batch_id, note, name, rel_dir, train_relpath, val_relpath, test_relpath, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)
             """,
-            (version_id, job.import_batch_id, note or "", version_name, rel_dir, tr_rel, va_rel, te_rel, now),
+            (version_id, job.import_batch_id, note or "", version_name, rel_dir, tr_rel, va_rel, now),
         )
         from backend.app.db import app_kv_set
 

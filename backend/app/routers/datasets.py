@@ -18,28 +18,28 @@ router = APIRouter(tags=["datasets"])
 log = logging.getLogger(__name__)
 
 
-def _version_split_counts(workspace_root: Path, rel_dir: Any) -> tuple[int | None, int | None, int | None]:
-    """从版本目录下的 meta.json 读取 train/val/test 条数；缺失或异常时返回 (None, None, None)。"""
+def _version_split_counts(workspace_root: Path, rel_dir: Any) -> tuple[int | None, int | None]:
+    """从版本目录下的 meta.json 读取 train/val 条数；缺失或异常时返回 (None, None)。"""
     if rel_dir is None:
-        return None, None, None
+        return None, None
     s = str(rel_dir).strip()
     if not s:
-        return None, None, None
+        return None, None
     try:
         meta_path = resolve_under_workspace(workspace_root, f"{s.rstrip('/')}/meta.json")
     except ValueError:
-        return None, None, None
+        return None, None
     if not meta_path.is_file():
-        return None, None, None
+        return None, None
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return None, None, None
+        return None, None
     if not isinstance(meta, dict):
-        return None, None, None
+        return None, None
     c = meta.get("counts")
     if not isinstance(c, dict):
-        return None, None, None
+        return None, None
 
     def _n(key: str) -> int | None:
         v = c.get(key)
@@ -50,7 +50,7 @@ def _version_split_counts(workspace_root: Path, rel_dir: Any) -> tuple[int | Non
         except (TypeError, ValueError):
             return None
 
-    return _n("train"), _n("val"), _n("test")
+    return _n("train"), _n("val")
 
 
 def _read_jsonl_samples(workspace_root: Path, rel_path: Any, max_items: int) -> list[Any]:
@@ -92,16 +92,15 @@ class DatasetBuildBody(BaseModel):
     import_batch_id: str
     add_image_token: bool = True
     train_ratio: int = Field(80, ge=0, le=100)
-    val_ratio: int = Field(10, ge=0, le=100)
-    test_ratio: int = Field(10, ge=0, le=100)
+    val_ratio: int = Field(20, ge=0, le=100)
     random_seed: int | None = None
     note: str | None = None
 
 
 @router.post("/datasets/build")
 async def dataset_build(body: DatasetBuildBody) -> dict[str, Any]:
-    if body.train_ratio + body.val_ratio + body.test_ratio != 100:
-        raise HTTPException(status_code=400, detail="训练/验证/测试比例之和须为 100")
+    if body.train_ratio + body.val_ratio != 100:
+        raise HTTPException(status_code=400, detail="训练/验证比例之和须为 100")
     settings = get_settings()
     root = settings.workspace_root.resolve()
     conn = get_connection(root)
@@ -115,19 +114,17 @@ async def dataset_build(body: DatasetBuildBody) -> dict[str, Any]:
             add_image_token=body.add_image_token,
             train_ratio=body.train_ratio,
             val_ratio=body.val_ratio,
-            test_ratio=body.test_ratio,
             seed=body.random_seed,
             note=body.note,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     log.info(
-        "已提交数据集构建: job_id=%s import_batch_id=%s 比例 t/v/te=%d/%d/%d",
+        "已提交数据集构建: job_id=%s import_batch_id=%s 比例 train/val=%d/%d",
         job.id,
         body.import_batch_id,
         body.train_ratio,
         body.val_ratio,
-        body.test_ratio,
     )
     return {"job_id": job.id, "status": job.status}
 
@@ -180,7 +177,7 @@ async def list_dataset_versions() -> dict[str, Any]:
     root = settings.workspace_root.resolve()
     active = app_kv_get(get_connection(root), "active_dataset_version")
     rows = get_connection(root).execute(
-        "SELECT v.id, v.import_batch_id, v.note, v.name, v.rel_dir, v.train_relpath, v.val_relpath, v.test_relpath, "
+        "SELECT v.id, v.import_batch_id, v.note, v.name, v.rel_dir, v.train_relpath, v.val_relpath, "
         "v.created_at, b.project_title, b.batch_name "
         "FROM dataset_versions v "
         "LEFT JOIN import_batches b ON b.id = v.import_batch_id "
@@ -189,10 +186,9 @@ async def list_dataset_versions() -> dict[str, Any]:
     items = [row_to_dict(r) for r in rows]
     for it in items:
         it["is_active"] = it["id"] == active
-        tr_n, va_n, te_n = _version_split_counts(root, it.get("rel_dir"))
+        tr_n, va_n = _version_split_counts(root, it.get("rel_dir"))
         it["train_count"] = tr_n
         it["val_count"] = va_n
-        it["test_count"] = te_n
     return {"active_version_id": active, "items": items}
 
 
@@ -231,14 +227,14 @@ async def update_dataset_version(version_id: str, body: DatasetVersionNameBody) 
 @router.get("/datasets/versions/{version_id}/data")
 async def get_version_dataset_data(
     version_id: str,
-    per_split: int = Query(8, ge=1, le=50, description="训练/验证/测试每个划分最多返回的样本条数"),
+    per_split: int = Query(8, ge=1, le=50, description="训练/验证每个划分最多返回的样本条数"),
 ) -> dict[str, Any]:
-    """返回版本 meta.json 及各划分 JSONL 的前若干条样本，供界面查看。"""
+    """返回版本 meta.json 及 train/val JSONL 的前若干条样本，供界面查看。"""
     settings = get_settings()
     root = settings.workspace_root.resolve()
     conn = get_connection(root)
     row = conn.execute(
-        "SELECT id, rel_dir, train_relpath, val_relpath, test_relpath FROM dataset_versions WHERE id = ?",
+        "SELECT id, rel_dir, train_relpath, val_relpath FROM dataset_versions WHERE id = ?",
         (version_id,),
     ).fetchone()
     if not row:
@@ -259,7 +255,6 @@ async def get_version_dataset_data(
         "meta": meta,
         "train_samples": _read_jsonl_samples(root, d.get("train_relpath"), per_split),
         "val_samples": _read_jsonl_samples(root, d.get("val_relpath"), per_split),
-        "test_samples": _read_jsonl_samples(root, d.get("test_relpath"), per_split),
     }
 
 
