@@ -258,6 +258,44 @@ async def get_version_dataset_data(
     }
 
 
+@router.get("/datasets/file-text")
+async def dataset_file_text(
+    relpath: str = Query(..., min_length=1, description="工作区根目录下的相对路径"),
+    max_bytes: int = Query(1_048_576, ge=1, le=5_242_880, description="最多返回的字节数，超出则截断"),
+) -> dict[str, Any]:
+    """读取工作区内文本文件（如 jsonl）的原始内容，供训练页等界面预览。路径须落在 workspace 内。"""
+    settings = get_settings()
+    root = settings.workspace_root.resolve()
+    s = relpath.strip()
+    if not s:
+        raise HTTPException(status_code=400, detail="路径无效")
+    try:
+        path = resolve_under_workspace(root, s)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="路径非法或越界")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在或不是普通文件")
+    try:
+        size = path.stat().st_size
+    except OSError as e:
+        raise HTTPException(status_code=500, detail="无法访问文件") from e
+    try:
+        with path.open("rb") as f:
+            raw = f.read(max_bytes + 1)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail="无法读取文件") from e
+    truncated = len(raw) > max_bytes
+    chunk = raw[:max_bytes] if truncated else raw
+    text = chunk.decode("utf-8", errors="replace")
+    return {
+        "relpath": s,
+        "size_bytes": size,
+        "truncated": truncated,
+        "max_bytes": max_bytes,
+        "text": text,
+    }
+
+
 @router.delete("/datasets/versions/{version_id}")
 async def delete_dataset_version(version_id: str) -> dict[str, Any]:
     """删除数据集版本：清除数据库记录与 versions/ 目录；若为当前活跃版本则清除活跃标记。"""
