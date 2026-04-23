@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { message } from "ant-design-vue";
-import { InfoCircleOutlined, ReloadOutlined } from "@ant-design/icons-vue";
+import {
+  EditOutlined,
+  InfoCircleOutlined,
+  QuestionCircleOutlined,
+  ReloadOutlined,
+} from "@ant-design/icons-vue";
 import * as echarts from "echarts";
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
@@ -20,9 +25,10 @@ const loadingHub = ref(false);
 
 const form = reactive({
   model: "" as string,
+  job_name: "",
   train_dataset: "",
   val_dataset: "",
-  output_dir: "output/qwen3vl-2b-lora",
+  output_dir: "output/",
   lora_rank: 1,
   lora_alpha: 2,
   target_modules: "all-linear",
@@ -54,9 +60,15 @@ const jobStatus = ref("");
 const stick = ref(true);
 const jobs = ref<Record<string, unknown>[]>([]);
 const jobsTableActiveKeys = ref<string[]>(["jobs"]);
+const jobNameEditOpen = ref(false);
+const jobNameEditId = ref<string | null>(null);
+const jobNameEditValue = ref("");
+const jobNameSaving = ref(false);
 let logPoll: ReturnType<typeof setInterval> | null = null;
 let resPoll: ReturnType<typeof setInterval> | null = null;
 const resourceSnapshot = ref<SystemResourcesPayload | null>(null);
+/** 工作区根目录绝对路径（与后端 workspace_root 一致），用于展示 train/val 完整路径 */
+const workspaceRootAbs = ref("");
 const resCpuChartRef = ref<HTMLDivElement | null>(null);
 const resMemChartRef = ref<HTMLDivElement | null>(null);
 let resCpuChart: echarts.ECharts | null = null;
@@ -66,6 +78,48 @@ let chart: echarts.ECharts | null = null;
 const progressPercent = ref<number | null>(null);
 const progressLabel = ref("");
 const jobError = ref("");
+
+/** 留空提交时使用：数据集展示名 + # + 毫秒时间戳 */
+function defaultTrainJobName(datasetLabel: string) {
+  const base = (datasetLabel || "").trim() || "训练";
+  return `${base}#${Date.now()}`;
+}
+
+/** 是否按任务 ID 自动使用 output/<id>；新建任务时不误用「当前所选任务」的目录；无任务时 output/<数据集版本id> 也视为占位由后端展开。 */
+function isAutoOutputDir(path: string, selectedJobId: string | null): boolean {
+  const p = path.trim().replace(/\\/g, "/").replace(/\/+$/, "") || "";
+  if (p === "" || p === "output") return true;
+  if (selectedJobId && p === `output/${selectedJobId}`) return true;
+  const vid = selectedDatasetVersionId.value;
+  if (vid != null && vid !== "" && p === `output/${vid}`) return true;
+  return false;
+}
+
+/**
+ * 有当前训练任务用任务 ID；否则用传入或当前选中的数据集版本 ID；都无则为 output/。
+ * @param versionId 来自 Select 的 @update:value 时传入，避免 v-model 尚未提交导致读到旧选中项。
+ */
+function syncOutputDirWithTaskOrDataset(versionId?: string | null) {
+  if (currentJobId.value) {
+    form.output_dir = `output/${currentJobId.value}`;
+    return;
+  }
+  const vid = versionId !== undefined ? versionId : selectedDatasetVersionId.value;
+  if (vid != null && vid !== "") {
+    form.output_dir = `output/${vid}`;
+    return;
+  }
+  form.output_dir = "output/";
+}
+
+const currentJobNameDisplay = computed(() => {
+  const id = currentJobId.value;
+  if (!id) return "";
+  const row = jobs.value.find((j) => (j as { id?: string }).id === id) as { job_name?: string } | undefined;
+  const n = row?.job_name;
+  if (typeof n === "string" && n.length > 0 && n !== "—") return n;
+  return "";
+});
 
 const modelSelectOptions = computed(() =>
   hubModels.value.map((m) => ({
@@ -222,6 +276,34 @@ function updateResourceLineCharts() {
   );
 }
 
+/** 将工作区内相对路径显示为自工作区根起的绝对路径（与后端解析一致，仅用于展示） */
+function workspaceDatasetAbsDisplay(relRaw: string): string {
+  const rel = (relRaw ?? "").trim();
+  if (!rel) return "";
+  const root = workspaceRootAbs.value.trim().replace(/[\\/]+$/, "");
+  if (!root) return rel.replace(/\\/g, "/");
+  if (/^[a-zA-Z]:[\\/]/.test(rel)) return rel;
+  if (rel.startsWith("\\\\")) return rel;
+  const rootIsWin = /^[a-zA-Z]:/.test(root);
+  if (rel.startsWith("/") && !rootIsWin) return rel;
+  const sep = rootIsWin ? "\\" : "/";
+  const relNorm = rel
+    .replace(/^[\\/]+/, "")
+    .split(/[/\\]+/)
+    .filter(Boolean)
+    .join(sep);
+  return `${root}${sep}${relNorm}`;
+}
+
+async function loadWorkspacePaths() {
+  try {
+    const r = await http.get<{ workspace_root?: string }>("/api/system/paths");
+    workspaceRootAbs.value = (r.data.workspace_root ?? "").trim();
+  } catch {
+    workspaceRootAbs.value = "";
+  }
+}
+
 async function loadSystemResources() {
   try {
     const r = await http.get<SystemResourcesPayload>("/api/system/resources");
@@ -329,10 +411,11 @@ function filterDatasetOption(input: string, option: { label?: string; value?: st
 function onDatasetVersionSelect(versionId: string | null | undefined) {
   if (versionId == null || versionId === "") {
     applyVersionToForm(null);
-    return;
+  } else {
+    const row = datasetVersionItems.value.find((x) => x.id === versionId) ?? null;
+    applyVersionToForm(row);
   }
-  const row = datasetVersionItems.value.find((x) => x.id === versionId) ?? null;
-  applyVersionToForm(row);
+  syncOutputDirWithTaskOrDataset(versionId);
 }
 
 /** 拉取版本列表，并根据选项更新选中行与表单项路径 */
@@ -363,6 +446,7 @@ async function loadDatasetVersions(opts?: { forceSelectActive?: boolean }) {
     selectedDatasetVersionId.value = pick;
     const row = pick ? (items.find((x) => x.id === pick) ?? null) : null;
     applyVersionToForm(row);
+    syncOutputDirWithTaskOrDataset(pick);
   } catch {
     datasetVersionItems.value = [];
     serverActiveVersionId.value = null;
@@ -431,17 +515,17 @@ const progressStatus = computed(() => {
 });
 
 const jobColumns = [
-  { title: "ID", dataIndex: "id", key: "id", ellipsis: true, width: 200 },
-  { title: "项目名称", dataIndex: "project_title", key: "project_title", ellipsis: true, width: 120 },
-  { title: "批次名称", dataIndex: "batch_name", key: "batch_name", ellipsis: true, width: 120 },
-  { title: "数据名称", dataIndex: "dataset_name", key: "dataset_name", ellipsis: true, width: 140 },
-  { title: "开始时间", dataIndex: "created_at", key: "created_at", width: 170 },
-  { title: "结束时间", dataIndex: "finished_at", key: "finished_at", width: 170 },
-  { title: "状态", dataIndex: "status", key: "status", width: 100 },
+  { title: "任务名称", dataIndex: "job_name", key: "job_name", ellipsis: true, width: 200 },
+  { title: "项目", dataIndex: "project_title", key: "project_title", ellipsis: true, width: 120 },
+  { title: "批次", dataIndex: "batch_name", key: "batch_name", ellipsis: true, width: 120 },
+  { title: "数据集", dataIndex: "dataset_name", key: "dataset_name", ellipsis: true, width: 140 },
+  { title: "开始时间", dataIndex: "created_at", key: "created_at", width: 100 },
+  { title: "结束时间", dataIndex: "finished_at", key: "finished_at", width: 100 },
+  { title: "状态", dataIndex: "status", key: "status", width: 60 },
   {
     title: "操作",
     key: "act",
-    width: 150,
+    width: 60,
   },
 ];
 
@@ -471,6 +555,7 @@ function onChartsResize() {
 }
 
 onMounted(() => {
+  void loadWorkspacePaths();
   void loadHubModels();
   void loadDatasetVersions();
   void refreshJobs();
@@ -549,6 +634,48 @@ async function refreshJobs() {
   jobs.value = r.data.items;
 }
 
+function trainingJobNameText(record: { job_name?: string | null }): string {
+  const j = record.job_name;
+  if (j == null || j === "") return "—";
+  const s = String(j);
+  return s !== "" && s !== "—" ? s : "—";
+}
+
+function trainingJobNameTitle(record: { job_name?: string | null }): string | undefined {
+  const t = trainingJobNameText(record);
+  return t !== "—" ? t : undefined;
+}
+
+function openTrainingJobNameEditor(record: { id?: string; job_name?: string | null }) {
+  if (!record?.id) return;
+  jobNameEditId.value = String(record.id);
+  const j = record.job_name != null ? String(record.job_name) : "";
+  jobNameEditValue.value = j !== "" && j !== "—" ? j : "";
+  jobNameEditOpen.value = true;
+}
+
+async function saveTrainingJobName() {
+  const id = jobNameEditId.value;
+  if (!id) return;
+  const name = (jobNameEditValue.value ?? "").trim();
+  if (!name) {
+    message.warning("名称不能为空");
+    return;
+  }
+  jobNameSaving.value = true;
+  try {
+    await http.patch(`/api/training/jobs/${encodeURIComponent(id)}`, { job_name: name });
+    message.success("名称已保存");
+    jobNameEditOpen.value = false;
+    await refreshJobs();
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { detail?: string } } };
+    message.error(err.response?.data?.detail ?? "保存失败");
+  } finally {
+    jobNameSaving.value = false;
+  }
+}
+
 async function updateChart() {
   if (!currentJobId.value) return;
   const m = await http.get(`/api/training/jobs/${currentJobId.value}/metrics`);
@@ -622,21 +749,27 @@ async function startTraining() {
         ? datasetVersionItems.value.find((x) => x.id === selectedDatasetVersionId.value) ?? null
         : null;
     const dataLabel = (ver?.name ?? "").trim() || (ver ? String(ver.id) : "");
+    const resolvedJobName = (form.job_name || "").trim() || defaultTrainJobName(dataLabel);
+    const autoOut = isAutoOutputDir(form.output_dir, currentJobId.value);
     const r = await http.post<{
       id: string;
       status: string;
       error_message?: string | null;
     }>("/api/training/jobs", {
       ...form,
+      output_dir: autoOut ? "output/" : form.output_dir,
+      job_name: resolvedJobName,
       project_title: (ver?.project_title ?? "").trim(),
       batch_name: (ver?.batch_name ?? "").trim(),
       dataset_name: dataLabel,
     });
     currentJobId.value = r.data.id;
+    if (autoOut) form.output_dir = `output/${r.data.id}`;
     jobStatus.value = r.data.status;
     jobError.value =
       r.data.error_message != null && String(r.data.error_message).trim() ? String(r.data.error_message) : "";
-    message.success(`任务已创建：${r.data.id}`);
+    form.job_name = "";
+    message.success(`任务已创建：${resolvedJobName}`);
     stopLogPoll();
     logPoll = setInterval(() => {
       void refreshLogs();
@@ -665,6 +798,7 @@ async function deleteJobById(jobId: string) {
   message.success("已删除");
   if (currentJobId.value === jobId) {
     currentJobId.value = null;
+    syncOutputDirWithTaskOrDataset();
     logText.value = "";
     progressPercent.value = null;
     progressLabel.value = "";
@@ -674,17 +808,29 @@ async function deleteJobById(jobId: string) {
   await refreshJobs();
 }
 
-async function retryJob() {
+async function continueTraining() {
   if (!currentJobId.value) return;
-  const r = await http.post(`/api/training/jobs/${currentJobId.value}/retry`);
-  currentJobId.value = r.data.id;
-  logPoll = setInterval(() => void refreshLogs(), 1500);
-  void refreshLogs();
-  await refreshJobs();
+  try {
+    const r = await http.post(`/api/training/jobs/${currentJobId.value}/retry`);
+    currentJobId.value = r.data.id;
+    message.success("已从断点继续训练（新任务）");
+    logPoll = setInterval(() => void refreshLogs(), 1500);
+    void refreshLogs();
+    await refreshJobs();
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { detail?: string } } };
+    message.error(err.response?.data?.detail ?? String(e));
+  }
 }
 
 function selectJob(id: string) {
   currentJobId.value = id;
+  const row = jobs.value.find((j) => (j as { id?: string }).id === id) as
+    | { request?: { output_dir?: unknown } }
+    | undefined;
+  const raw = row?.request?.output_dir;
+  const od = typeof raw === "string" ? raw.trim() : "";
+  form.output_dir = od || `output/${id}`;
   stopLogPoll();
   logPoll = setInterval(() => void refreshLogs(), 1500);
   void refreshLogs();
@@ -731,11 +877,33 @@ watch(logText, () => {
             <span v-else-if="column.key === 'finished_at' && record && typeof record === 'object'">{{
               formatJobEnd((record as Record<string, unknown>).finished_at, (record as { status?: string }).status)
             }}</span>
+            <span v-else-if="column.key === 'job_name' && record && typeof record === 'object'" class="training-job-name-cell" @click.stop>
+              <span class="training-job-name-text" :title="trainingJobNameTitle(record as { job_name?: string | null })">
+                {{ trainingJobNameText(record as { job_name?: string | null }) }}
+              </span>
+              <EditOutlined class="training-job-name-edit" @click="openTrainingJobNameEditor(record as { id?: string; job_name?: string | null })" />
+            </span>
             <span v-else>{{ text }}</span>
           </template>
         </a-table>
       </a-collapse-panel>
     </a-collapse>
+    <a-modal
+      v-model:open="jobNameEditOpen"
+      title="编辑任务名称"
+      ok-text="保存"
+      cancel-text="取消"
+      :confirm-loading="jobNameSaving"
+      destroy-on-close
+      @ok="saveTrainingJobName"
+    >
+      <a-input
+        v-model:value="jobNameEditValue"
+        placeholder="训练任务显示名称"
+        allow-clear
+        @press-enter="saveTrainingJobName"
+      />
+    </a-modal>
     <a-divider />
     <a-alert
       type="info"
@@ -759,7 +927,7 @@ watch(logText, () => {
                 placeholder="可搜索名称或版本 ID 片段"
                 style="flex: 1; min-width: 0"
                 :not-found-content="loadingDatasetPaths ? '加载中…' : '暂无版本，请先去「数据集」构建'"
-                @change="onDatasetVersionSelect"
+                @update:value="onDatasetVersionSelect"
               />
               <a-tooltip title="刷新列表">
                 <a-button
@@ -778,29 +946,31 @@ watch(logText, () => {
           </a-form-item>
         </a-col>
         <a-col :span="6">
-          <a-form-item label="训练集 (jsonl)">
+          <a-form-item label="训练集">
             <div style="min-width: 0">
-              <a-typography-link
-                v-if="form.train_dataset"
-                style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap"
-                @click.prevent="openDatasetPathModal('train')"
-              >
-                {{ form.train_dataset }}
-              </a-typography-link>
+              <a-tooltip v-if="form.train_dataset" :title="workspaceDatasetAbsDisplay(form.train_dataset)">
+                <a-typography-link
+                  style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap"
+                  @click.prevent="openDatasetPathModal('train')"
+                >
+                  {{ form.train_dataset }}
+                </a-typography-link>
+              </a-tooltip>
               <a-typography-text v-else type="secondary">----</a-typography-text>
             </div>
           </a-form-item>
         </a-col>
         <a-col :span="6">
-          <a-form-item label="验证集 (jsonl)">
+          <a-form-item label="验证集">
             <div style="min-width: 0">
-              <a-typography-link
-                v-if="form.val_dataset"
-                style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap"
-                @click.prevent="openDatasetPathModal('val')"
-              >
-                {{ form.val_dataset }}
-              </a-typography-link>
+              <a-tooltip v-if="form.val_dataset" :title="workspaceDatasetAbsDisplay(form.val_dataset)">
+                <a-typography-link
+                  style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap"
+                  @click.prevent="openDatasetPathModal('val')"
+                >
+                  {{ form.val_dataset }}
+                </a-typography-link>
+              </a-tooltip>
               <a-typography-text v-else type="secondary">----</a-typography-text>
             </div>
           </a-form-item>
@@ -860,29 +1030,27 @@ watch(logText, () => {
         </a-col>
       </a-row>
       <a-row :gutter="16">
-        <a-col :span="8">
+        <a-col :span="3">
           <a-form-item label="LoRA rank">
             <a-input-number v-model:value="form.lora_rank" :min="1" :max="128" style="width: 100%" />
           </a-form-item>
         </a-col>
-        <a-col :span="8">
+        <a-col :span="3">
           <a-form-item label="LoRA alpha">
             <a-input-number v-model:value="form.lora_alpha" :min="1" :max="256" style="width: 100%" />
           </a-form-item>
         </a-col>
-        <a-col :span="8">
+        <a-col :span="3">
           <a-form-item label="目标模块">
             <a-input v-model:value="form.target_modules" />
           </a-form-item>
         </a-col>
-      </a-row>
-      <a-row :gutter="16">
-        <a-col :span="8">
+        <a-col :span="3">
           <a-form-item label="Epochs">
             <a-input-number v-model:value="form.num_train_epochs" :min="1" :max="200" style="width: 100%" />
           </a-form-item>
         </a-col>
-        <a-col :span="8">
+        <a-col :span="3">
           <a-form-item label="Batch size">
             <a-input-number
               v-model:value="form.per_device_train_batch_size"
@@ -892,7 +1060,7 @@ watch(logText, () => {
             />
           </a-form-item>
         </a-col>
-        <a-col :span="8">
+        <a-col :span="3">
           <a-form-item label="梯度累积">
             <a-input-number
               v-model:value="form.gradient_accumulation_steps"
@@ -902,9 +1070,7 @@ watch(logText, () => {
             />
           </a-form-item>
         </a-col>
-      </a-row>
-      <a-row :gutter="16">
-        <a-col :span="8">
+        <a-col :span="3">
           <a-form-item label="学习率">
             <a-input-number
               v-model:value="form.learning_rate"
@@ -915,36 +1081,58 @@ watch(logText, () => {
             />
           </a-form-item>
         </a-col>
-        <a-col :span="8">
-          <a-form-item label="max_length（序列越长越吃内存）">
+        <a-col :span="3">
+          <a-form-item>
+            <template #label>
+              <span style="display: inline-flex; align-items: center; gap: 4px">
+                max_length
+                <a-tooltip title="序列越长越吃内存">
+                  <QuestionCircleOutlined
+                    style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                    aria-label="序列越长越吃内存"
+                    role="img"
+                  />
+                </a-tooltip>
+              </span>
+            </template>
             <a-input-number v-model:value="form.max_length" :min="128" :max="8192" style="width: 100%" />
           </a-form-item>
-        </a-col>
-        <a-col :span="8">
-          <a-form-item label="image_max_token_num（视觉 token 上限）">
+        </a-col>                
+      </a-row>
+      <a-row :gutter="16">
+        <a-col :span="4">
+          <a-form-item>
+            <template #label>
+              <span style="display: inline-flex; align-items: center; gap: 4px">
+                image_max_token_num
+                <a-tooltip title="视觉 token 上限">
+                  <QuestionCircleOutlined
+                    style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                    aria-label="视觉 token 上限"
+                    role="img"
+                  />
+                </a-tooltip>
+              </span>
+            </template>
             <a-input-number v-model:value="form.image_max_token_num" :min="64" :max="2048" style="width: 100%" />
           </a-form-item>
         </a-col>
-      </a-row>
-      <a-row :gutter="16">
-        <a-col :span="8">
+        <a-col :span="4">
           <a-form-item label="video_max_token_num">
             <a-input-number v-model:value="form.video_max_token_num" :min="16" :max="512" style="width: 100%" />
           </a-form-item>
         </a-col>
-        <a-col :span="8">
+        <a-col :span="4">
           <a-form-item label="gradient_checkpointing">
             <a-switch v-model:checked="form.gradient_checkpointing" />
           </a-form-item>
         </a-col>
-        <a-col :span="8">
+        <a-col :span="4">
           <a-form-item label="save_total_limit">
             <a-input-number v-model:value="form.save_total_limit" :min="1" :max="10" style="width: 100%" />
           </a-form-item>
         </a-col>
-      </a-row>
-      <a-row :gutter="16">
-        <a-col :span="24">
+        <a-col :span="4">
           <a-form-item label="save_steps / eval_steps">
             <a-space>
               <a-input-number v-model:value="form.save_steps" :min="10" :max="10000000" style="width: 120px" />
@@ -965,7 +1153,7 @@ watch(logText, () => {
               >提交训练</a-button
             >
             <a-button :disabled="!currentJobId" @click="cancelJob">取消</a-button>
-            <a-button :disabled="!currentJobId" @click="retryJob">重试</a-button>
+            <a-button :disabled="!currentJobId" @click="continueTraining">继续训练</a-button>
             <a-button @click="applyYaml">从 YAML 导入</a-button>
             <a-button @click="downloadYaml">导出 YAML</a-button>
           </a-space>
@@ -1007,10 +1195,11 @@ watch(logText, () => {
     <a-row :gutter="16">
       <a-col :span="24">
         <a-typography-title :level="5">训练任务</a-typography-title>
-
-        <a-typography-paragraph
-          >当前：{{ currentJobId || "—" }} <a-tag v-if="jobStatus">{{ jobStatus }}</a-tag></a-typography-paragraph
-        >
+        <a-typography-paragraph>
+          <span style="margin-right: 10px;"><B>当前训练任务：</B><template v-if="currentJobNameDisplay">{{ currentJobNameDisplay }}</template></span>
+          <span><B>任务ID</B>：{{ currentJobId || "—" }}</span>
+          <a-tag v-if="jobStatus">{{ jobStatus }}</a-tag>
+        </a-typography-paragraph>
         <a-typography-title :level="5">资源（约 2s）</a-typography-title>
         <a-row :gutter="[16, 16]">
           <a-col :xs="24" :lg="12">
@@ -1111,3 +1300,28 @@ watch(logText, () => {
     </a-row>
   </div>
 </template>
+
+<style scoped>
+.training-job-name-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+.training-job-name-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.training-job-name-edit {
+  flex-shrink: 0;
+  color: rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  font-size: 14px;
+}
+.training-job-name-edit:hover {
+  color: var(--ant-primary-color, #1677ff);
+}
+</style>

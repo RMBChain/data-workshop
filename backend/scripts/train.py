@@ -206,6 +206,10 @@ def train_with_swift(
         argv.extend(["--gradient_checkpointing", str(kwargs["gradient_checkpointing"]).lower()])
     argv.extend(["--packing", str(bool(kwargs.get("packing", False))).lower()])
 
+    resume = kwargs.pop("resume_from_checkpoint", None)
+    if resume:
+        argv.extend(["--resume_from_checkpoint", str(resume)])
+
     print("=" * 80)
     print("训练配置 (CPU)")
     print(f"  模型: {model_name}")
@@ -213,6 +217,8 @@ def train_with_swift(
     print(f"  max_length: {kwargs.get('max_length', 128)}")
     print(f"  packing: {kwargs.get('packing', False)} (关闭时勿依赖 flash_attn)")
     print(f"  dataloader_num_workers: {kwargs.get('dataloader_num_workers', 0)}")
+    if resume:
+        print(f"  断点续训: {resume}")
     print("=" * 80)
     print("环境变量:")
     print(f"  IMAGE_MAX_TOKEN_NUM={env['IMAGE_MAX_TOKEN_NUM']}")
@@ -299,6 +305,12 @@ def main():
         "--no_swift_phase_hooks",
         action="store_true",
         help="关闭 phase_log；保留 train_api_events",
+    )
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        type=str,
+        default=None,
+        help="从该目录恢复（与 ms-swift 一致，相对当前工作目录的路径）",
     )
 
     args = parser.parse_args()

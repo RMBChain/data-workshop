@@ -13,7 +13,11 @@ from pydantic import BaseModel, Field
 from backend.app.config import get_settings
 from backend.app.db import get_connection
 from backend.app.services import modelscope_manager as mscm
-from backend.app.services.job_manager import TrainJobCreate, TrainingJobManager
+from backend.app.services.job_manager import (
+    TrainJobCreate,
+    TrainingJobManager,
+    _latest_checkpoint_relpath,
+)
 from backend.app.services.training_metrics import parse_training_log_metrics, parse_training_progress
 
 router = APIRouter(tags=["training"])
@@ -62,6 +66,11 @@ def _display_names_for_job_request(workspace: Path, req: dict[str, Any]) -> tupl
     return _pick(s_pt, d_pt), _pick(s_bn, d_bn), _pick(s_dn, d_dn)
 
 
+def _job_name_from_request(req: dict[str, Any]) -> str:
+    n = str(req.get("job_name") or "").strip()
+    return n if n else "—"
+
+
 def _require_model_downloaded_in_hub(model: str) -> None:
     """基础模型仅允许在魔搭本机 hub 中已存在的缓存（与「模型管理」列表一致）。"""
     mid = (model or "").strip()
@@ -91,6 +100,7 @@ async def list_training_jobs() -> dict:
                 "finished_at": j.finished_at,
                 "return_code": j.return_code,
                 "error_message": j.error_message,
+                "job_name": _job_name_from_request(req),
                 "project_title": pt,
                 "batch_name": bn,
                 "dataset_name": dn,
@@ -112,6 +122,15 @@ async def create_training_job(body: TrainJobCreate) -> dict:
     }
 
 
+@router.patch("/training/jobs/{job_id}")
+async def patch_training_job(job_id: str, body: TrainJobRenameBody) -> dict:
+    j = _manager_singleton().update_job_name(job_id, body.job_name)
+    if not j:
+        raise HTTPException(status_code=404, detail="任务不存在或名称为空")
+    req = j.request or {}
+    return {"ok": True, "job_name": _job_name_from_request(req)}
+
+
 @router.get("/training/jobs/{job_id}")
 async def get_training_job(job_id: str) -> dict:
     job = _manager_singleton().get_job(job_id)
@@ -127,6 +146,7 @@ async def get_training_job(job_id: str) -> dict:
         "finished_at": job.finished_at,
         "return_code": job.return_code,
         "error_message": job.error_message,
+        "job_name": _job_name_from_request(req),
         "project_title": pt,
         "batch_name": bn,
         "dataset_name": dn,
@@ -161,15 +181,26 @@ async def delete_training_job(job_id: str) -> dict:
 
 @router.post("/training/jobs/{job_id}/retry")
 async def retry_training_job(job_id: str) -> dict:
-    old = _manager_singleton().get_job(job_id)
+    """与 UI「继续训练」一致：在相同 output_dir 上从最新 checkpoint 恢复，而非清空目录重训。"""
+    root = get_settings().workspace_root.resolve()
+    m = _manager_singleton()
+    old = m.get_job(job_id)
     if not old or not old.request:
         raise HTTPException(status_code=404, detail="原任务不存在或参数缺失")
-    m = old.request.get("model")
-    if isinstance(m, str):
-        _require_model_downloaded_in_hub(m)
-    j = _manager_singleton().retry_job(job_id)
+    if old.status not in ("failed", "cancelled"):
+        raise HTTPException(status_code=400, detail="仅失败或已取消的任务可继续训练")
+    mod = old.request.get("model")
+    if isinstance(mod, str):
+        _require_model_downloaded_in_hub(mod)
+    body = TrainJobCreate.model_validate(old.request)
+    if not _latest_checkpoint_relpath(root, body.output_dir):
+        raise HTTPException(
+            status_code=400,
+            detail="输出目录中未找到可恢复的 checkpoint（如 checkpoint-8）。若尚未产生断点，请重新发起训练。",
+        )
+    j = m.retry_job(job_id)
     if not j:
-        raise HTTPException(status_code=404, detail="原任务不存在或参数缺失")
+        raise HTTPException(status_code=400, detail="无法继续训练（请重试或检查输出目录与 checkpoint）")
     return {
         "id": j.id,
         "status": j.status,
@@ -234,6 +265,10 @@ async def stream_training_logs(
             await asyncio.sleep(interval)
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+class TrainJobRenameBody(BaseModel):
+    job_name: str = Field(..., min_length=1, description="训练任务显示名称")
 
 
 class YamlBody(BaseModel):
