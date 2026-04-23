@@ -84,6 +84,10 @@ def _read_jsonl_samples(workspace_root: Path, rel_path: Any, max_items: int) -> 
     return out
 
 
+class DatasetVersionNameBody(BaseModel):
+    name: str = Field(..., min_length=1, max_length=500)
+
+
 class DatasetBuildBody(BaseModel):
     import_batch_id: str
     add_image_token: bool = True
@@ -176,7 +180,7 @@ async def list_dataset_versions() -> dict[str, Any]:
     root = settings.workspace_root.resolve()
     active = app_kv_get(get_connection(root), "active_dataset_version")
     rows = get_connection(root).execute(
-        "SELECT v.id, v.import_batch_id, v.note, v.rel_dir, v.train_relpath, v.val_relpath, v.test_relpath, "
+        "SELECT v.id, v.import_batch_id, v.note, v.name, v.rel_dir, v.train_relpath, v.val_relpath, v.test_relpath, "
         "v.created_at, b.project_title, b.batch_name "
         "FROM dataset_versions v "
         "LEFT JOIN import_batches b ON b.id = v.import_batch_id "
@@ -207,6 +211,23 @@ async def rollback_version(version_id: str) -> dict[str, Any]:
     return {"ok": True, "active_version_id": version_id}
 
 
+@router.patch("/datasets/versions/{version_id}")
+async def update_dataset_version(version_id: str, body: DatasetVersionNameBody) -> dict[str, Any]:
+    """更新数据集版本展示名称。"""
+    settings = get_settings()
+    root = settings.workspace_root.resolve()
+    conn = get_connection(root)
+    row = conn.execute("SELECT id FROM dataset_versions WHERE id = ?", (version_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="版本不存在")
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="名称不能为空")
+    conn.execute("UPDATE dataset_versions SET name = ? WHERE id = ?", (name, version_id))
+    conn.commit()
+    return {"ok": True, "id": version_id, "name": name}
+
+
 @router.get("/datasets/versions/{version_id}/data")
 async def get_version_dataset_data(
     version_id: str,
@@ -227,7 +248,7 @@ async def get_version_dataset_data(
     meta: Any = None
     if rel_dir and str(rel_dir).strip():
         try:
-            meta_path = resolve_under_workspace(workspace_root, f"{str(rel_dir).strip().rstrip('/')}/meta.json")
+            meta_path = resolve_under_workspace(root, f"{str(rel_dir).strip().rstrip('/')}/meta.json")
             if meta_path.is_file():
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (ValueError, json.JSONDecodeError, OSError):

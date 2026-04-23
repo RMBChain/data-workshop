@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { message, Modal } from "ant-design-vue";
+import { EditOutlined } from "@ant-design/icons-vue";
 import { onMounted, onUnmounted, ref, computed } from "vue";
 import { useRouter } from "vue-router";
 import { http } from "../api/http";
@@ -19,6 +20,10 @@ const buildJob = ref<Record<string, unknown> | null>(null);
 const pollT = ref<ReturnType<typeof setInterval> | null>(null);
 const versions = ref<Record<string, unknown>[]>([]);
 const activeVersion = ref<string | null>(null);
+const versionNameEditOpen = ref(false);
+const versionNameEditId = ref<string | null>(null);
+const versionNameEditValue = ref("");
+const versionNameSaving = ref(false);
 const preview = ref<unknown>(null);
 const autoImageLabel = computed(() => "自动补全 <image> 提示");
 
@@ -119,6 +124,47 @@ async function refreshVersions() {
   const r = await http.get("/api/datasets/versions");
   versions.value = r.data.items;
   activeVersion.value = r.data.active_version_id;
+}
+
+function datasetVersionNameText(record: { name?: string | null }): string {
+  if (record.name == null) return "-";
+  const s = String(record.name);
+  return s !== "" ? s : "-";
+}
+
+function datasetVersionNameTitle(record: { name?: string | null }): string | undefined {
+  if (record.name == null) return undefined;
+  const s = String(record.name);
+  return s !== "" ? s : undefined;
+}
+
+function openVersionNameEditor(record: { id?: string; name?: string | null }) {
+  if (!record?.id) return;
+  versionNameEditId.value = String(record.id);
+  versionNameEditValue.value = record.name != null ? String(record.name) : "";
+  versionNameEditOpen.value = true;
+}
+
+async function saveVersionName() {
+  const id = versionNameEditId.value;
+  if (!id) return;
+  const name = (versionNameEditValue.value ?? "").trim();
+  if (!name) {
+    message.warning("名称不能为空");
+    return;
+  }
+  versionNameSaving.value = true;
+  try {
+    await http.patch(`/api/datasets/versions/${encodeURIComponent(id)}`, { name });
+    message.success("名称已保存");
+    versionNameEditOpen.value = false;
+    await refreshVersions();
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { detail?: string } } };
+    message.error(err.response?.data?.detail ?? "保存失败");
+  } finally {
+    versionNameSaving.value = false;
+  }
 }
 
 async function activateVersion(versionId: string) {
@@ -300,7 +346,7 @@ function goTrain() {
     <a-typography-title :level="5">版本</a-typography-title>
     <a-table
       :columns="[
-        { title: 'ID', dataIndex: 'id', key: 'id', ellipsis: true },
+        { title: '名称', dataIndex: 'name', key: 'name', ellipsis: true, width: 280 },
         { title: '时间', dataIndex: 'created_at', key: 'created_at' },
         { title: '项目名称', dataIndex: 'project_title', key: 'project_title', ellipsis: true },
         { title: '批次名称', dataIndex: 'batch_name', key: 'batch_name', ellipsis: true },
@@ -325,6 +371,17 @@ function goTrain() {
           <a-tag v-if="record && typeof record === 'object' && (record as any).is_active" color="success">活跃</a-tag>
           <a v-else-if="record && typeof record === 'object'" @click="activateVersion((record as any).id)">设为活跃</a>
         </template>
+        <template v-else-if="column.key === 'name' && record && typeof record === 'object'">
+          <span class="dataset-version-name-cell" @click.stop>
+            <span class="dataset-version-name-text" :title="datasetVersionNameTitle(record as { name?: string | null })">
+              {{ datasetVersionNameText(record as { name?: string | null }) }}
+            </span>
+            <EditOutlined
+              class="dataset-version-name-edit"
+              @click="openVersionNameEditor(record as { id?: string; name?: string | null })"
+            />
+          </span>
+        </template>
         <template v-else-if="column.key === 'action' && record && typeof record === 'object'">
           <a-space>
             <a @click="openVersionDataView(String((record as any).id))">查看</a>
@@ -340,6 +397,22 @@ function goTrain() {
     }}</pre>
     <a-typography-paragraph v-else type="secondary">未加载</a-typography-paragraph>
 
+    <a-modal
+      v-model:open="versionNameEditOpen"
+      title="编辑数据集名称"
+      ok-text="保存"
+      cancel-text="取消"
+      :confirm-loading="versionNameSaving"
+      destroy-on-close
+      @ok="saveVersionName"
+    >
+      <a-input
+        v-model:value="versionNameEditValue"
+        placeholder="版本显示名称"
+        allow-clear
+        @press-enter="saveVersionName"
+      />
+    </a-modal>
     <a-modal
       v-model:open="versionViewOpen"
       :title="versionViewTitle"
@@ -382,6 +455,29 @@ function goTrain() {
 </template>
 
 <style scoped>
+.dataset-version-name-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+.dataset-version-name-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dataset-version-name-edit {
+  flex-shrink: 0;
+  color: rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  font-size: 14px;
+}
+.dataset-version-name-edit:hover {
+  color: var(--ant-primary-color, #1677ff);
+}
+
 .dataset-version-view-pre {
   margin: 0;
   max-height: 70vh;
