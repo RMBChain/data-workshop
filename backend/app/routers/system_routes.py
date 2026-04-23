@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import os
 import platform
 import sys
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter
+
+from backend.app.config import get_settings
 
 router = APIRouter(tags=["system"])
 
@@ -59,9 +60,10 @@ async def system_info() -> dict[str, Any]:
 @router.get("/system/paths")
 async def system_paths() -> dict[str, Any]:
     home = Path.home()
-    root = os.environ.get("WORKSHOP_WORKSPACE_ROOT", ".")
+    ws = get_settings().workspace_root.resolve()
     return {
+        "workspace_root": str(ws),
         "modelscope_cache": str((home / ".cache" / "modelscope").resolve()),
-        "data_dir": f"{root}/data",
-        "output_dir": f"{root}/output",
+        "data_dir": str((ws / "data").resolve()),
+        "output_dir": str((ws / "output").resolve()),
     }
