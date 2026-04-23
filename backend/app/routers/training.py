@@ -18,7 +18,11 @@ from backend.app.services.job_manager import (
     TrainingJobManager,
     _latest_checkpoint_relpath,
 )
-from backend.app.services.training_metrics import parse_training_log_metrics, parse_training_progress
+from backend.app.services.training_metrics import (
+    build_training_stages,
+    parse_training_log_metrics,
+    parse_training_progress,
+)
 
 router = APIRouter(tags=["training"])
 
@@ -221,9 +225,14 @@ async def get_training_metrics(job_id: str) -> dict:
         if isinstance(raw, (int, float)) and not isinstance(raw, bool):
             ne = int(raw)
     prog = parse_training_progress(text, num_train_epochs=ne)
+    prog["stages"] = build_training_stages(text, ne, prog)
     st = j.status
     if st == "succeeded" and isinstance(prog.get("percent"), (int, float)) and float(prog["percent"]) < 100:
         prog = {**prog, "percent": 100.0, "label": "任务成功"}
+        for stg in prog.get("stages") or []:
+            if isinstance(stg, dict) and stg.get("id") == "train":
+                stg["percent"] = 100.0
+                stg["label"] = "任务成功"
     elif st in ("failed", "cancelled"):
         pl = prog.get("label")
         if isinstance(pl, str) and pl and prog.get("percent") is not None:
@@ -238,6 +247,9 @@ async def get_training_metrics(job_id: str) -> dict:
         elif j.return_code is not None and j.return_code != 0:
             base = f"{base}（子进程退出码 {j.return_code}）"
         prog = {**prog, "label": base}
+        for stg in prog.get("stages") or []:
+            if isinstance(stg, dict) and stg.get("id") == "train":
+                stg["label"] = base
     return {"job_id": job_id, "series": parse_training_log_metrics(text), "progress": prog}
 
 

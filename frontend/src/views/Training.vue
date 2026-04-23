@@ -77,6 +77,8 @@ const chartRef = ref<HTMLDivElement | null>(null);
 let chart: echarts.ECharts | null = null;
 const progressPercent = ref<number | null>(null);
 const progressLabel = ref("");
+type ProgressStage = { id: string; name: string; percent: number | null; label: string };
+const progressStages = ref<ProgressStage[]>([]);
 const jobError = ref("");
 
 /** 留空提交时使用：数据集展示名 + # + 毫秒时间戳 */
@@ -514,6 +516,33 @@ const progressStatus = computed(() => {
   return "normal" as const;
 });
 
+function stageRowStatus(percent: number | null) {
+  if (jobStatus.value === "succeeded") return "success" as const;
+  if (jobStatus.value === "failed" || jobStatus.value === "cancelled") return "exception" as const;
+  if (["running", "pending"].includes(jobStatus.value) && percent == null) return "active" as const;
+  return "normal" as const;
+}
+
+/** 训练进度区标题旁：整体任务状态 */
+const overallJobStatusLabel = computed(() => {
+  if (!currentJobId.value) return "";
+  const s = jobStatus.value;
+  if (s === "succeeded") return "成功";
+  if (s === "failed") return "失败";
+  if (s === "cancelled") return "已取消";
+  if (s === "running" || s === "pending") return "进行中";
+  return s ? String(s) : "";
+});
+
+const overallJobStatusTagColor = computed(() => {
+  const s = jobStatus.value;
+  if (s === "succeeded") return "success" as const;
+  if (s === "failed") return "error" as const;
+  if (s === "cancelled") return "default" as const;
+  if (s === "running" || s === "pending") return "processing" as const;
+  return "default" as const;
+});
+
 const jobColumns = [
   { title: "任务名称", dataIndex: "job_name", key: "job_name", ellipsis: true, width: 200 },
   { title: "项目", dataIndex: "project_title", key: "project_title", ellipsis: true, width: 120 },
@@ -679,10 +708,22 @@ async function saveTrainingJobName() {
 async function updateChart() {
   if (!currentJobId.value) return;
   const m = await http.get(`/api/training/jobs/${currentJobId.value}/metrics`);
-  const pr = m.data.progress as { percent: number | null; label?: string } | undefined;
+  const pr = m.data.progress as
+    | { percent: number | null; label?: string; stages?: ProgressStage[] }
+    | undefined;
   if (pr) {
     progressPercent.value = typeof pr.percent === "number" ? pr.percent : null;
     progressLabel.value = typeof pr.label === "string" ? pr.label : "";
+    if (Array.isArray(pr.stages) && pr.stages.length) {
+      progressStages.value = pr.stages.map((s) => ({
+        id: String(s.id ?? ""),
+        name: String(s.name ?? ""),
+        percent: typeof s.percent === "number" ? s.percent : null,
+        label: typeof s.label === "string" ? s.label : "",
+      }));
+    } else {
+      progressStages.value = [];
+    }
   }
   if (!chartRef.value) return;
   const s = m.data.series as {
@@ -802,6 +843,7 @@ async function deleteJobById(jobId: string) {
     logText.value = "";
     progressPercent.value = null;
     progressLabel.value = "";
+    progressStages.value = [];
     jobError.value = "";
     stopLogPoll();
   }
@@ -1258,14 +1300,35 @@ watch(logText, () => {
         <a-typography-text v-else-if="!resourceSnapshot" type="secondary" style="display: block; margin-top: 4px; font-size: 12px">
           暂无资源数据
         </a-typography-text>
-        <a-typography-title :level="5">训练进度</a-typography-title>
+        <div
+          style="display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; row-gap: 4px"
+        >
+          <a-typography-title :level="5" style="margin: 0">训练进度</a-typography-title>
+          <a-tag
+            v-if="currentJobId && overallJobStatusLabel"
+            :color="overallJobStatusTagColor"
+            style="margin: 0; line-height: 1.5"
+            >整体：{{ overallJobStatusLabel }}</a-tag
+          >
+        </div>
         <div v-if="currentJobId" style="margin-bottom: 10px">
-          <a-progress
-            :percent="progressPercent === null ? 0 : progressPercent"
-            :status="progressStatus"
-            :show-info="progressPercent !== null"
-          />
-          <div style="font-size: 12px; color: #666; margin-top: 4px">{{ progressLabel || "—" }}</div>
+          <div v-for="s in progressStages" :key="s.id" style="margin-bottom: 12px">
+            <div style="font-size: 12px; color: rgba(0, 0, 0, 0.65); margin-bottom: 4px">{{ s.name }}</div>
+            <a-progress
+              :percent="s.percent == null ? 0 : s.percent"
+              :status="stageRowStatus(s.percent)"
+              :show-info="s.percent != null"
+            />
+            <div style="font-size: 12px; color: #666; margin-top: 2px">{{ s.label || "—" }}</div>
+          </div>
+          <template v-if="!progressStages.length">
+            <a-progress
+              :percent="progressPercent === null ? 0 : progressPercent"
+              :status="progressStatus"
+              :show-info="progressPercent !== null"
+            />
+            <div style="font-size: 12px; color: #666; margin-top: 4px">{{ progressLabel || "—" }}</div>
+          </template>
           <a-typography-text
             v-if="jobError && (jobStatus === 'failed' || jobStatus === 'cancelled')"
             type="danger"
