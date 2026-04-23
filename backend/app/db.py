@@ -71,6 +71,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             id TEXT PRIMARY KEY,
             import_batch_id TEXT,
             note TEXT,
+            name TEXT,
             rel_dir TEXT NOT NULL,
             train_relpath TEXT,
             val_relpath TEXT,
@@ -120,6 +121,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         """
     )
     _migrate_import_batches_batch_name(conn)
+    _migrate_dataset_versions_name(conn)
     conn.commit()
 
 
@@ -127,6 +129,12 @@ def _migrate_import_batches_batch_name(conn: sqlite3.Connection) -> None:
     cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(import_batches)").fetchall()}
     if "batch_name" not in cols:
         conn.execute("ALTER TABLE import_batches ADD COLUMN batch_name TEXT")
+
+
+def _migrate_dataset_versions_name(conn: sqlite3.Connection) -> None:
+    cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(dataset_versions)").fetchall()}
+    if "name" not in cols:
+        conn.execute("ALTER TABLE dataset_versions ADD COLUMN name TEXT")
 
 
 _db_singleton: tuple[Path, sqlite3.Connection] | None = None

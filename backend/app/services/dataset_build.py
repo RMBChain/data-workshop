@@ -33,6 +33,14 @@ def _default_question() -> str:
     return "请描述图片中的内容。"
 
 
+def _default_dataset_version_name(project_title: str | None, batch_name: str | None) -> str:
+    """新建数据集版本时的展示名：项目名 + 批次名 + 本地时间戳 YYYYMMdd-HHmmss。"""
+    pt = (project_title or "").strip() or "未命名项目"
+    bn = (batch_name or "").strip() or "未命名批次"
+    ts = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+    return f"{pt}{bn}{ts}"
+
+
 def _extract_answer_from_ls_task(task_row_json: str | None) -> str:
     if not task_row_json:
         return "（暂无标注，占位回答）"
@@ -308,12 +316,20 @@ class DatasetBuildManager:
 
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         conn = get_connection(self._workspace)
+        brow = conn.execute(
+            "SELECT project_title, batch_name FROM import_batches WHERE id = ?",
+            (job.import_batch_id,),
+        ).fetchone()
+        version_name = _default_dataset_version_name(
+            brow["project_title"] if brow else None,
+            brow["batch_name"] if brow else None,
+        )
         conn.execute(
             """
-            INSERT INTO dataset_versions (id, import_batch_id, note, rel_dir, train_relpath, val_relpath, test_relpath, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO dataset_versions (id, import_batch_id, note, name, rel_dir, train_relpath, val_relpath, test_relpath, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (version_id, job.import_batch_id, note or "", rel_dir, tr_rel, va_rel, te_rel, now),
+            (version_id, job.import_batch_id, note or "", version_name, rel_dir, tr_rel, va_rel, te_rel, now),
         )
         from backend.app.db import app_kv_set
 
