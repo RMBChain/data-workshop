@@ -6,16 +6,19 @@ import {
   DatabaseOutlined,
   ExportOutlined,
   FileSearchOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
   MessageOutlined,
   RocketOutlined,
   SettingOutlined,
 } from "@ant-design/icons-vue";
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 const isDev = computed(() => import.meta.env.DEV);
 const route = useRoute();
 const router = useRouter();
+const menuCollapsed = ref(false);
 
 function onMenuClick(info: { key: string | number }) {
   router.push(String(info.key));
@@ -36,14 +39,34 @@ function onMenuClick(info: { key: string | number }) {
         background: #001529;
       "
     >
-      <span>数据工坊</span>
+      <div style="display: flex; align-items: center; gap: 4px; min-width: 0; flex: 1">
+        <a-tooltip :title="menuCollapsed ? '展开侧栏' : '收起侧栏'">
+          <a-button
+            type="text"
+            :aria-label="menuCollapsed ? '展开侧栏' : '收起侧栏'"
+            style="color: #fff; width: 40px; height: 40px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center"
+            @click="menuCollapsed = !menuCollapsed"
+          >
+            <MenuUnfoldOutlined v-if="menuCollapsed" :style="{ fontSize: '18px' }" />
+            <MenuFoldOutlined v-else :style="{ fontSize: '18px' }" />
+          </a-button>
+        </a-tooltip>
+        <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">数据工坊</span>
+      </div>
       <span style="font-size: 14px; opacity: 0.9">
         <a-tag v-if="isDev" color="blue">环境：开发</a-tag>
         <a-tag v-else color="green">环境：生产</a-tag>
       </span>
     </a-layout-header>
     <a-layout>
-      <a-layout-sider width="200" theme="light">
+      <a-layout-sider
+        v-model:collapsed="menuCollapsed"
+        :width="200"
+        :collapsed-width="0"
+        theme="light"
+        collapsible
+        :trigger="null"
+      >
         <a-menu :selected-keys="[route.path === '/' ? '/' : route.path]" mode="inline" @click="onMenuClick">
           <a-menu-item key="/import">
             <template #icon><CloudUploadOutlined /></template>
