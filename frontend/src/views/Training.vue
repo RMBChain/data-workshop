@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { message } from "ant-design-vue";
+import { ReloadOutlined } from "@ant-design/icons-vue";
 import * as echarts from "echarts";
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
@@ -33,6 +34,11 @@ const form = reactive({
 });
 
 const activeDatasetHint = ref("");
+const datasetPathModalOpen = ref(false);
+const datasetPathModalTitle = ref("");
+const datasetPathModalText = ref("");
+const datasetPathModalLoading = ref(false);
+const datasetPathModalError = ref("");
 const loadingDatasetPaths = ref(false);
 const submitting = ref(false);
 const currentJobId = ref<string | null>(null);
@@ -112,7 +118,7 @@ function versionRowLabel(v: DatasetVersionRow) {
   const va = v.val_count;
   const cnt =
     typeof tr === "number" || typeof va === "number" ? ` · train ${tr ?? "—"}/val ${va ?? "—"}` : "";
-  return `${name}${cnt} · ${v.id}`;
+  return `${name}${cnt}`;
 }
 
 function applyVersionToForm(row: DatasetVersionRow | null) {
@@ -191,6 +197,46 @@ async function loadDatasetVersions(opts?: { forceSelectActive?: boolean }) {
     activeDatasetHint.value = "无法加载数据集版本列表。";
   } finally {
     loadingDatasetPaths.value = false;
+  }
+}
+
+async function openDatasetPathModal(kind: "train" | "val") {
+  const relpath = (kind === "train" ? form.train_dataset : form.val_dataset).trim();
+  datasetPathModalTitle.value = kind === "train" ? "训练集 (jsonl)" : "验证集 (jsonl)";
+  datasetPathModalText.value = "";
+  datasetPathModalError.value = "";
+  datasetPathModalOpen.value = true;
+  datasetPathModalLoading.value = true;
+  if (!relpath) {
+    datasetPathModalError.value = "无文件路径";
+    datasetPathModalLoading.value = false;
+    return;
+  }
+  const maxBytes = 1_048_576;
+  try {
+    const r = await http.get<{
+      text: string;
+      truncated: boolean;
+      size_bytes: number;
+      max_bytes: number;
+    }>("/api/datasets/file-text", {
+      params: { relpath, max_bytes: maxBytes },
+    });
+    const body = r.data;
+    let t = body.text ?? "";
+    if (body.truncated) {
+      t += `\n\n… 已截断：文件共 ${body.size_bytes} 字节，仅显示前 ${body.max_bytes} 字节。`;
+    } else if (!t && body.size_bytes === 0) {
+      t = "（文件为空）";
+    }
+    datasetPathModalText.value = t;
+  } catch (e: unknown) {
+    const ax = e as { response?: { data?: { detail?: unknown } } };
+    const detail = ax.response?.data?.detail;
+    datasetPathModalError.value =
+      typeof detail === "string" ? detail : "无法读取文件内容，请确认路径可访问或稍后重试";
+  } finally {
+    datasetPathModalLoading.value = false;
   }
 }
 
@@ -460,38 +506,108 @@ watch(logText, () => {
       message="默认已压到更省内存、尽快结束：1 epoch、LoRA r=1、max_length/视觉 token/视频 token 取可用下限、存盘与验证步频极大、日志很稀。再省内存可关 gradient_checkpointing（会更快但峰值内存升）。长图/长文任务请自行调大，否则易截断或效果差。"
       style="margin-bottom: 12px"
     />
+    <a-form layout="horizontal">
+      <a-row :gutter="[16, 16]">
+        <a-col :span="10">
+          <a-form-item label="数据集选择">
+            <div style="display: flex; align-items: center; gap: 8px; width: 100%">
+              <a-select
+                v-model:value="selectedDatasetVersionId"
+                :options="datasetSelectOptions"
+                :loading="loadingDatasetPaths"
+                :disabled="!datasetVersionItems.length"
+                show-search
+                :filter-option="filterDatasetOption"
+                allow-clear
+                placeholder="可搜索名称或版本 ID 片段"
+                style="flex: 1; min-width: 0"
+                :not-found-content="loadingDatasetPaths ? '加载中…' : '暂无版本，请先去「数据集」构建'"
+                @change="onDatasetVersionSelect"
+              />
+              <a-tooltip title="刷新列表">
+                <a-button
+                  type="text"
+                  size="small"
+                  :loading="loadingDatasetPaths"
+                  aria-label="刷新列表"
+                  @click="loadDatasetVersions()"
+                >
+                  <template #icon>
+                    <ReloadOutlined />
+                  </template>
+                </a-button>
+              </a-tooltip>
+            </div>
+          </a-form-item>
+        </a-col>
+        <a-col :span="6">
+          <a-form-item label="训练集 (jsonl)">
+            <div style="min-width: 0">
+              <a-typography-link
+                v-if="form.train_dataset"
+                style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap"
+                @click.prevent="openDatasetPathModal('train')"
+              >
+                {{ form.train_dataset }}
+              </a-typography-link>
+              <a-typography-text v-else type="secondary">----</a-typography-text>
+            </div>
+          </a-form-item>
+        </a-col>
+        <a-col :span="6">
+          <a-form-item label="验证集 (jsonl)">
+            <div style="min-width: 0">
+              <a-typography-link
+                v-if="form.val_dataset"
+                style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap"
+                @click.prevent="openDatasetPathModal('val')"
+              >
+                {{ form.val_dataset }}
+              </a-typography-link>
+              <a-typography-text v-else type="secondary">----</a-typography-text>
+            </div>
+          </a-form-item>
+        </a-col>
+        <a-col :span="2">
+          <a-button type="link" size="small" style="padding: 0" @click="goDatasets">去「数据集」管理</a-button>
+        </a-col>
+      </a-row>
+    </a-form>
+    <a-modal
+      v-model:open="datasetPathModalOpen"
+      :title="datasetPathModalTitle"
+      width="min(896px, 90vw)"
+      :footer="null"
+      destroy-on-close
+    >
+      <a-spin :spinning="datasetPathModalLoading">
+        <a-alert
+          v-if="datasetPathModalError && !datasetPathModalLoading"
+          type="error"
+          :message="datasetPathModalError"
+          show-icon
+          style="margin-bottom: 0"
+        />
+        <pre
+          v-else-if="!datasetPathModalLoading"
+          style="
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 60vh;
+            overflow: auto;
+            font-size: 13px;
+            line-height: 1.5;
+            font-family: ui-monospace, monospace;
+          "
+          >{{ datasetPathModalText || "（无内容）" }}</pre
+        >
+      </a-spin>
+    </a-modal>
+    <a-divider />
     <a-row :gutter="16">
       <a-col :span="8">
         <a-form layout="vertical">
-          <a-form-item label="数据集选择">
-            <a-select
-              v-model:value="selectedDatasetVersionId"
-              :options="datasetSelectOptions"
-              :loading="loadingDatasetPaths"
-              :disabled="!datasetVersionItems.length"
-              show-search
-              :filter-option="filterDatasetOption"
-              allow-clear
-              placeholder="可搜索名称或版本 ID 片段"
-              style="width: 100%"
-              :not-found-content="loadingDatasetPaths ? '加载中…' : '暂无版本，请先去「数据集」构建'"
-              @change="onDatasetVersionSelect"
-            />
-            <a-typography-text type="secondary" style="display: block; margin-top: 6px; font-size: 12px">
-              {{ activeDatasetHint }}
-            </a-typography-text>
-            <div style="margin-top: 6px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center">
-              <a-button type="link" size="small" style="padding: 0" @click="goDatasets">去「数据集」管理</a-button>
-              <a-button size="small" :loading="loadingDatasetPaths" @click="loadDatasetVersions()"> 刷新列表 </a-button>
-            </div>
-          </a-form-item>
-          <a-form-item label="训练集 (jsonl)">
-            <a-input v-model:value="form.train_dataset" readonly placeholder="由上方所选版本决定" />
-          </a-form-item>
-          <a-form-item label="验证集 (jsonl)">
-            <a-input v-model:value="form.val_dataset" readonly placeholder="由上方所选版本决定" />
-          </a-form-item>
-          <a-divider />
           <a-form-item label="基础模型/路径（仅本机已下载）">
             <a-select
               v-model:value="form.model"
