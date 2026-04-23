@@ -239,7 +239,13 @@ async def iter_project_tasks(
                 token,
                 "GET",
                 f"{base}/api/tasks",
-                params={"project": project_id, "page": page, "page_size": page_size},
+                params={
+                    "project": project_id,
+                    "page": page,
+                    "page_size": page_size,
+                    # 默认 task_only 不含 annotations/predictions；训练集构建依赖 raw_json 中的标注
+                    "fields": "all",
+                },
             )
             r.raise_for_status()
             data = r.json()

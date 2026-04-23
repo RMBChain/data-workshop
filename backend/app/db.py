@@ -40,7 +40,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
             label_studio_base TEXT,
             task_count INTEGER DEFAULT 0,
             workspace_dir TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            batch_name TEXT
         );
 
         CREATE TABLE IF NOT EXISTS import_tasks (
@@ -118,7 +119,14 @@ def init_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    _migrate_import_batches_batch_name(conn)
     conn.commit()
+
+
+def _migrate_import_batches_batch_name(conn: sqlite3.Connection) -> None:
+    cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(import_batches)").fetchall()}
+    if "batch_name" not in cols:
+        conn.execute("ALTER TABLE import_batches ADD COLUMN batch_name TEXT")
 
 
 _db_singleton: tuple[Path, sqlite3.Connection] | None = None

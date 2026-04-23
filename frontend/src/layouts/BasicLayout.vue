@@ -5,6 +5,7 @@ import {
   CloudUploadOutlined,
   DatabaseOutlined,
   ExportOutlined,
+  FileSearchOutlined,
   MessageOutlined,
   RocketOutlined,
   SettingOutlined,
@@ -47,6 +48,10 @@ function onMenuClick(info: { key: string | number }) {
           <a-menu-item key="/import">
             <template #icon><CloudUploadOutlined /></template>
             数据导入
+          </a-menu-item>
+          <a-menu-item key="/import-data">
+            <template #icon><FileSearchOutlined /></template>
+            数据查看
           </a-menu-item>
           <a-menu-item key="/datasets">
             <template #icon><DatabaseOutlined /></template>

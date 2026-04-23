@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -147,12 +148,13 @@ async def label_studio_import(body: LabelStudioImportBody) -> dict[str, Any]:
 
     conn = get_connection(root)
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    batch_name = datetime.now().strftime("%Y%m%d-%H%M%S")
     conn.execute(
         """
-        INSERT INTO import_batches (id, project_id, project_title, label_studio_base, task_count, workspace_dir, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO import_batches (id, project_id, project_title, label_studio_base, task_count, workspace_dir, created_at, batch_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (batch_id, int(body.project_id), str(proj.get("title") or ""), base, len(tasks), rel_dir, now),
+        (batch_id, int(body.project_id), str(proj.get("title") or ""), base, len(tasks), rel_dir, now, batch_name),
     )
 
     (imp_dir / "files").mkdir(parents=True, exist_ok=True)

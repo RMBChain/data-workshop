@@ -2,26 +2,33 @@
 import { message } from "ant-design-vue";
 import * as echarts from "echarts";
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import { http } from "../api/http";
 
+type HubModelRow = { model_id: string; path: string; size_bytes: number };
+
+const router = useRouter();
+const hubModels = ref<HubModelRow[]>([]);
+const loadingHub = ref(false);
+
 const form = reactive({
-  model: "Qwen/Qwen3-VL-2B-Instruct",
+  model: "" as string,
   train_dataset: "data/train.jsonl",
   val_dataset: "data/val.jsonl",
   output_dir: "output/qwen3vl-2b-lora",
-  lora_rank: 4,
-  lora_alpha: 8,
+  lora_rank: 1,
+  lora_alpha: 2,
   target_modules: "all-linear",
-  num_train_epochs: 3,
+  num_train_epochs: 1,
   per_device_train_batch_size: 1,
-  gradient_accumulation_steps: 8,
+  gradient_accumulation_steps: 1,
   learning_rate: 0.0001,
-  max_length: 512,
-  image_max_token_num: 256,
-  video_max_token_num: 64,
+  max_length: 128,
+  image_max_token_num: 64,
+  video_max_token_num: 16,
   gradient_checkpointing: true,
-  save_steps: 500,
-  eval_steps: 500,
+  save_steps: 1000000,
+  eval_steps: 1000000,
   save_total_limit: 1,
 });
 
@@ -40,6 +47,44 @@ let chart: echarts.ECharts | null = null;
 const progressPercent = ref<number | null>(null);
 const progressLabel = ref("");
 const jobError = ref("");
+
+const modelSelectOptions = computed(() =>
+  hubModels.value.map((m) => ({
+    value: m.model_id,
+    label: `${m.model_id} · ${formatBytes(m.size_bytes)}`,
+  })),
+);
+
+function formatBytes(n: number) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function syncModelFromHub() {
+  const ids = new Set(hubModels.value.map((m) => m.model_id));
+  if (form.model && ids.has(form.model)) return;
+  form.model = hubModels.value[0]?.model_id ?? "";
+}
+
+async function loadHubModels() {
+  loadingHub.value = true;
+  try {
+    const r = await http.get<{ items: HubModelRow[] }>("/api/models/hub");
+    hubModels.value = r.data.items ?? [];
+    syncModelFromHub();
+  } catch {
+    hubModels.value = [];
+    message.error("无法加载已下载模型列表，请检查网络或稍后重试");
+  } finally {
+    loadingHub.value = false;
+  }
+}
+
+function goModelSettings() {
+  void router.push({ path: "/", query: { tab: "models" } });
+}
 
 const progressStatus = computed(() => {
   if (jobStatus.value === "succeeded") return "success" as const;
@@ -80,6 +125,7 @@ function formatJobEnd(finished: unknown, status: string | undefined): string {
 }
 
 onMounted(() => {
+  void loadHubModels();
   void refreshJobs();
   resPoll = setInterval(async () => {
     try {
@@ -127,6 +173,12 @@ async function applyYaml() {
   try {
     const r = await http.post("/api/training/config/yaml/parse", { yaml: raw });
     Object.assign(form, r.data.params);
+    await loadHubModels();
+    const m = (form as { model?: string }).model;
+    if (m && !hubModels.value.some((h) => h.model_id === m)) {
+      message.warning("YAML 中的模型未在本机列表中，已改为列表中第一项。请先下载对应该模型或重新选择。");
+      syncModelFromHub();
+    }
     message.success("已应用 YAML 到表单");
   } catch (e: unknown) {
     const err = e as { response?: { data?: { detail?: string } } };
@@ -198,6 +250,14 @@ async function refreshLogs() {
 }
 
 async function startTraining() {
+  if (hubModels.value.length === 0) {
+    message.warning("请先在「设置 → 模型管理」中成功下载至少一个模型");
+    return;
+  }
+  if (!form.model || !hubModels.value.some((m) => m.model_id === form.model)) {
+    message.warning("请从列表中选择已下载的模型");
+    return;
+  }
   submitting.value = true;
   try {
     const r = await http.post<{
@@ -275,14 +335,30 @@ watch(logText, () => {
     <a-alert
       type="info"
       show-icon
-      message="训练与日志解析均在纯 CPU 上执行。默认已按省内存设置：较短 max_length、较小图像/视频 token、较小 LoRA、较少 checkpoint；仍 OOM 时可再降 max_length / image_max_token_num。"
+      message="默认已压到更省内存、尽快结束：1 epoch、LoRA r=1、max_length/视觉 token/视频 token 取可用下限、存盘与验证步频极大、日志很稀。再省内存可关 gradient_checkpointing（会更快但峰值内存升）。长图/长文任务请自行调大，否则易截断或效果差。"
       style="margin-bottom: 12px"
     />
     <a-row :gutter="16">
       <a-col :span="8">
         <a-form layout="vertical">
-          <a-form-item label="基础模型/路径">
-            <a-input v-model:value="form.model" />
+          <a-form-item label="基础模型/路径（仅本机已下载）">
+            <a-select
+              v-model:value="form.model"
+              :options="modelSelectOptions"
+              :loading="loadingHub"
+              :disabled="loadingHub"
+              show-search
+              option-filter-prop="label"
+              placeholder="无可用模型时请先到设置中下载"
+              style="width: 100%"
+            />
+            <div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center">
+              <a-button type="link" size="small" style="padding: 0" @click="goModelSettings">去「设置 → 模型管理」下载</a-button>
+              <a-button size="small" :loading="loadingHub" @click="loadHubModels">刷新模型列表</a-button>
+            </div>
+            <a-typography-text v-if="!loadingHub && hubModels.length === 0" type="secondary" style="display: block; margin-top: 6px"
+              >当前没有检测到魔搭本机已缓存的模型。下载完成后点「刷新模型列表」。</a-typography-text
+            >
           </a-form-item>
           <a-form-item label="训练集 (jsonl)">
             <a-input v-model:value="form.train_dataset" />
@@ -344,16 +420,22 @@ watch(logText, () => {
           </a-form-item>
           <a-form-item label="save_steps / eval_steps">
             <a-space>
-              <a-input-number v-model:value="form.save_steps" :min="10" :max="100000" style="width: 120px" />
+              <a-input-number v-model:value="form.save_steps" :min="10" :max="10000000" style="width: 120px" />
               <span>/</span>
-              <a-input-number v-model:value="form.eval_steps" :min="10" :max="100000" style="width: 120px" />
+              <a-input-number v-model:value="form.eval_steps" :min="10" :max="10000000" style="width: 120px" />
             </a-space>
           </a-form-item>
           <a-form-item label="save_total_limit">
             <a-input-number v-model:value="form.save_total_limit" :min="1" :max="10" style="width: 100%" />
           </a-form-item>
           <a-space wrap>
-            <a-button type="primary" :loading="submitting" @click="startTraining">提交训练</a-button>
+            <a-button
+              type="primary"
+              :loading="submitting"
+              :disabled="loadingHub || !hubModels.length || !form.model"
+              @click="startTraining"
+              >提交训练</a-button
+            >
             <a-button :disabled="!currentJobId" @click="cancelJob">取消</a-button>
             <a-button :disabled="!currentJobId" @click="delJob">删除记录</a-button>
             <a-button :disabled="!currentJobId" @click="retryJob">重试</a-button>

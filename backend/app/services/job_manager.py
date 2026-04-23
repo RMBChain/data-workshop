@@ -16,31 +16,34 @@ from pydantic import BaseModel, Field
 class TrainJobCreate(BaseModel):
     """与 backend/scripts/train.py CLI 对齐的训练任务参数（均为相对仓库根的路径，除非为 ModelScope 模型 id）。"""
 
-    model: str = Field(default="Qwen/Qwen3-VL-2B-Instruct", description="ModelScope 模型 id 或本地路径")
+    model: str = Field(
+        default="",
+        description="须与「模型管理」中本机已下载的 ModelScope 模型 id 一致，例如 Qwen/Qwen3-VL-2B-Instruct",
+    )
     train_dataset: str = "data/train.jsonl"
     val_dataset: str = "data/val.jsonl"
     output_dir: str = "output/qwen3vl-2b-lora"
-    lora_rank: int = 4
-    lora_alpha: int = 8
+    lora_rank: int = 1
+    lora_alpha: int = 2
     target_modules: str = "all-linear"
     freeze_vit: bool = True
-    num_train_epochs: int = 3
+    num_train_epochs: int = 1
     per_device_train_batch_size: int = 1
     per_device_eval_batch_size: int = 1
-    gradient_accumulation_steps: int = 8
+    gradient_accumulation_steps: int = 1
     learning_rate: float = 1e-4
     dataloader_num_workers: int = 0
-    max_length: int = 512
-    logging_steps: int = 20
-    save_steps: int = 500
-    eval_steps: int = 500
+    max_length: int = 128
+    logging_steps: int = 1000
+    save_steps: int = 1_000_000
+    eval_steps: int = 1_000_000
     save_total_limit: int = 1
-    warmup_ratio: float = 0.03
+    warmup_ratio: float = 0.005
     lr_scheduler_type: str = "cosine"
     gradient_checkpointing: bool = True
     packing: bool = False
-    image_max_token_num: int = 256
-    video_max_token_num: int = 64
+    image_max_token_num: int = 64
+    video_max_token_num: int = 16
 
 
 def _format_train_exit_message(code: int) -> str:

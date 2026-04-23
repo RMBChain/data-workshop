@@ -18,6 +18,72 @@ router = APIRouter(tags=["datasets"])
 log = logging.getLogger(__name__)
 
 
+def _version_split_counts(workspace_root: Path, rel_dir: Any) -> tuple[int | None, int | None, int | None]:
+    """从版本目录下的 meta.json 读取 train/val/test 条数；缺失或异常时返回 (None, None, None)。"""
+    if rel_dir is None:
+        return None, None, None
+    s = str(rel_dir).strip()
+    if not s:
+        return None, None, None
+    try:
+        meta_path = resolve_under_workspace(workspace_root, f"{s.rstrip('/')}/meta.json")
+    except ValueError:
+        return None, None, None
+    if not meta_path.is_file():
+        return None, None, None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None, None, None
+    if not isinstance(meta, dict):
+        return None, None, None
+    c = meta.get("counts")
+    if not isinstance(c, dict):
+        return None, None, None
+
+    def _n(key: str) -> int | None:
+        v = c.get(key)
+        if v is None or isinstance(v, bool):
+            return None
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
+
+    return _n("train"), _n("val"), _n("test")
+
+
+def _read_jsonl_samples(workspace_root: Path, rel_path: Any, max_items: int) -> list[Any]:
+    """读取 JSONL 文件前若干条解析后的对象。"""
+    if rel_path is None or max_items <= 0:
+        return []
+    s = str(rel_path).strip()
+    if not s:
+        return []
+    try:
+        path = resolve_under_workspace(workspace_root, s)
+    except ValueError:
+        return []
+    if not path.is_file():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    out: list[Any] = []
+    for line in text.splitlines():
+        line_stripped = line.strip()
+        if not line_stripped:
+            continue
+        if len(out) >= max_items:
+            break
+        try:
+            out.append(json.loads(line_stripped))
+        except json.JSONDecodeError:
+            out.append({"_parse_error": True, "raw_preview": line_stripped[:2000]})
+    return out
+
+
 class DatasetBuildBody(BaseModel):
     import_batch_id: str
     add_image_token: bool = True
@@ -110,12 +176,19 @@ async def list_dataset_versions() -> dict[str, Any]:
     root = settings.workspace_root.resolve()
     active = app_kv_get(get_connection(root), "active_dataset_version")
     rows = get_connection(root).execute(
-        "SELECT id, import_batch_id, note, rel_dir, train_relpath, val_relpath, test_relpath, created_at "
-        "FROM dataset_versions ORDER BY created_at DESC"
+        "SELECT v.id, v.import_batch_id, v.note, v.rel_dir, v.train_relpath, v.val_relpath, v.test_relpath, "
+        "v.created_at, b.project_title, b.batch_name "
+        "FROM dataset_versions v "
+        "LEFT JOIN import_batches b ON b.id = v.import_batch_id "
+        "ORDER BY v.created_at DESC"
     ).fetchall()
     items = [row_to_dict(r) for r in rows]
     for it in items:
         it["is_active"] = it["id"] == active
+        tr_n, va_n, te_n = _version_split_counts(root, it.get("rel_dir"))
+        it["train_count"] = tr_n
+        it["val_count"] = va_n
+        it["test_count"] = te_n
     return {"active_version_id": active, "items": items}
 
 
@@ -132,6 +205,80 @@ async def rollback_version(version_id: str) -> dict[str, Any]:
     app_kv_set(conn, "active_dataset_version", version_id)
     conn.commit()
     return {"ok": True, "active_version_id": version_id}
+
+
+@router.get("/datasets/versions/{version_id}/data")
+async def get_version_dataset_data(
+    version_id: str,
+    per_split: int = Query(8, ge=1, le=50, description="训练/验证/测试每个划分最多返回的样本条数"),
+) -> dict[str, Any]:
+    """返回版本 meta.json 及各划分 JSONL 的前若干条样本，供界面查看。"""
+    settings = get_settings()
+    root = settings.workspace_root.resolve()
+    conn = get_connection(root)
+    row = conn.execute(
+        "SELECT id, rel_dir, train_relpath, val_relpath, test_relpath FROM dataset_versions WHERE id = ?",
+        (version_id,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="版本不存在")
+    d = row_to_dict(row)
+    rel_dir = d.get("rel_dir")
+    meta: Any = None
+    if rel_dir and str(rel_dir).strip():
+        try:
+            meta_path = resolve_under_workspace(workspace_root, f"{str(rel_dir).strip().rstrip('/')}/meta.json")
+            if meta_path.is_file():
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (ValueError, json.JSONDecodeError, OSError):
+            meta = None
+
+    return {
+        "version_id": version_id,
+        "meta": meta,
+        "train_samples": _read_jsonl_samples(root, d.get("train_relpath"), per_split),
+        "val_samples": _read_jsonl_samples(root, d.get("val_relpath"), per_split),
+        "test_samples": _read_jsonl_samples(root, d.get("test_relpath"), per_split),
+    }
+
+
+@router.delete("/datasets/versions/{version_id}")
+async def delete_dataset_version(version_id: str) -> dict[str, Any]:
+    """删除数据集版本：清除数据库记录与 versions/ 目录；若为当前活跃版本则清除活跃标记。"""
+    settings = get_settings()
+    root = settings.workspace_root.resolve()
+    conn = get_connection(root)
+    row = conn.execute(
+        "SELECT id, rel_dir FROM dataset_versions WHERE id = ?",
+        (version_id,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="版本不存在")
+    rel_dir = row["rel_dir"] or ""
+
+    # 若为活跃版本，清除标记
+    active = app_kv_get(conn, "active_dataset_version")
+    if active == version_id:
+        conn.execute("DELETE FROM app_kv WHERE k = ?", ("active_dataset_version",))
+
+    conn.execute("DELETE FROM dataset_versions WHERE id = ?", (version_id,))
+    conn.commit()
+
+    if rel_dir and str(rel_dir).strip():
+        try:
+            p = resolve_under_workspace(root, str(rel_dir).strip())
+            if p.exists() and p.is_dir():
+                shutil.rmtree(p)
+        except (ValueError, OSError) as e:
+            log.warning("已删除数据库记录，但清理版本目录失败: %s", e, exc_info=True)
+            return {
+                "ok": True,
+                "id": version_id,
+                "warning": f"版本记录已删除，但目录清理失败: {e}",
+            }
+
+    log.info("数据集版本已删除: version_id=%s dir=%s", version_id, rel_dir)
+    return {"ok": True, "id": version_id}
 
 
 @router.get("/datasets/versions/{version_id}/export")

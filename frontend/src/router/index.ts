@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from "vue-router";
 import Datasets from "../views/Datasets.vue";
 import DataImport from "../views/DataImport.vue";
+import ImportDataView from "../views/ImportDataView.vue";
 import Eval from "../views/Eval.vue";
 import Export from "../views/Export.vue";
 import Home from "../views/Home.vue";
@@ -13,6 +14,7 @@ const router = createRouter({
   routes: [
     { path: "/", name: "home", component: Home, meta: { title: "设置" } },
     { path: "/import", name: "import", component: DataImport, meta: { title: "数据导入" } },
+    { path: "/import-data", name: "importData", component: ImportDataView, meta: { title: "数据查看" } },
     { path: "/datasets", name: "datasets", component: Datasets, meta: { title: "数据集" } },
     { path: "/train", name: "train", component: Training, meta: { title: "训练" } },
     { path: "/playground", name: "playground", component: Playground, meta: { title: "推理沙盒" } },

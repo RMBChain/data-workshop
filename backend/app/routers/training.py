@@ -10,6 +10,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.app.config import get_settings
+from backend.app.services import modelscope_manager as mscm
 from backend.app.services.job_manager import TrainJobCreate, TrainingJobManager
 from backend.app.services.training_metrics import parse_training_log_metrics, parse_training_progress
 
@@ -23,6 +24,19 @@ def _manager_singleton() -> TrainingJobManager:
     if _manager is None:
         _manager = TrainingJobManager(get_settings().workspace_root.resolve())
     return _manager
+
+
+def _require_model_downloaded_in_hub(model: str) -> None:
+    """基础模型仅允许在魔搭本机 hub 中已存在的缓存（与「模型管理」列表一致）。"""
+    mid = (model or "").strip()
+    if not mid:
+        raise HTTPException(status_code=400, detail="未指定基础模型")
+    known = {str(m.get("model_id", "")) for m in mscm.list_hub_models()}
+    if mid not in known:
+        raise HTTPException(
+            status_code=400,
+            detail="请先在「模型管理」中成功下载该模型；基础模型仅可选择本机已缓存的 model_id。",
+        )
 
 
 @router.get("/training/jobs")
@@ -46,6 +60,7 @@ async def list_training_jobs() -> dict:
 
 @router.post("/training/jobs")
 async def create_training_job(body: TrainJobCreate) -> dict:
+    _require_model_downloaded_in_hub(body.model)
     job = _manager_singleton().create_job(body)
     return {
         "id": job.id,
@@ -98,6 +113,12 @@ async def delete_training_job(job_id: str) -> dict:
 
 @router.post("/training/jobs/{job_id}/retry")
 async def retry_training_job(job_id: str) -> dict:
+    old = _manager_singleton().get_job(job_id)
+    if not old or not old.request:
+        raise HTTPException(status_code=404, detail="原任务不存在或参数缺失")
+    m = old.request.get("model")
+    if isinstance(m, str):
+        _require_model_downloaded_in_hub(m)
     j = _manager_singleton().retry_job(job_id)
     if not j:
         raise HTTPException(status_code=404, detail="原任务不存在或参数缺失")

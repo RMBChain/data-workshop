@@ -9,7 +9,7 @@
 
 **范围限定：**
 - 专注于图片+文本的多模态任务（VQA、图像描述、OCR 等）
-- **微调（SFT/LoRA）与推理、合并后试跑、评测**均在 **纯 CPU** 上执行（`torch` 使用 CPU 后端，不依赖 GPU/CUDA 跑主路径）
+- **SFT 微调（LoRA））与推理、合并后试跑、评测**均在 **纯 CPU** 上执行（`torch` 使用 CPU 后端，不依赖 GPU/CUDA 跑主路径）
 - ms-swift 版本为4.0.3；开发与生产镜像以 `devops/swift4.03-cpu.dockerfile` 为基
 - 训练与推理相关任务在容器内运行
 - 仅支持本机运行
@@ -109,7 +109,7 @@ docker run -it -d --name label-studio -p 127.0.0.1:8080:8080 `
   heartexlabs/label-studio:20260421.012345-main-a5c6f37
 
 # xwhoyeah@sohu.com/xwhoyeah/RUI_887Ytewr
-# eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6ODA4NDAzMjY2NiwiaWF0IjoxNzc2ODMyNjY2LCJqdGkiOiI5MzMzZDU2YzFjNWU0Yjg4YjYwMzA5YmQ0MWFiYzIyZCIsInVzZXJfaWQiOiIxIn0
+# eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6ODA4NDA2NjMwNiwiaWF0IjoxNzc2ODY2MzA2LCJqdGkiOiI1ZDNiOGZiYTA3ZTI0MTBmODAwZTI2YzI1ZGFlZjU0OSIsInVzZXJfaWQiOiIxIn0.tLVtBtn9-8O7H0XvUh8M2DWDaPRPDSFWCRydI7VRb90
 
 ```
 **Bash：**
@@ -138,19 +138,17 @@ docker compose up -d --build
 docker build -f devops/swift4.03-cpu.dockerfile -t swift4.03-cpu:latest .
 docker build -f devops/Dockerfile.workshop -t data-workshop-api:latest .
 docker rm -f workshop-api-dev
-docker run -d --name workshop-api-dev  `
-  --shm-size=4g  `
-  -p 127.0.0.1:8702:8000  `
-  -v "${PWD}:/workspace/project"  `
-  -w /workspace/project  `
-  -e WORKSHOP_WORKSPACE_ROOT=/workspace/project  `
+docker run -d --name workshop-api-dev --shm-size=4g -p 127.0.0.1:8702:8000  `
+  -v "${PWD}:/workspace/project"  -v "C:/_llm_model/modelscope:/root/.cache/modelscope"  `
+  -w /workspace/project -e WORKSHOP_WORKSPACE_ROOT=/workspace/project  `
   --add-host=host.docker.internal:host-gateway  `
   data-workshop-api:latest  `
   uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
-  PowerShell 下将卷挂载中的 `${PWD}` 换为当前目录的绝对路径（或将仓库根路径写死为 `-v "D:/path/to/data-workshop:/workspace/project"`）。停止/删除：`docker stop workshop-api-dev && docker rm workshop-api-dev`。
+  - **魔搭模型目录（宿主机）**：`C:\_llm_model\modelscope` 挂载为容器内 `/root/.cache/modelscope`，与 ModelScope 默认缓存根一致；其下应有 `hub\models\作者\模型名`（与未自定义路径时本机 `~/.cache/modelscope` 结构相同）。首次使用可提前创建空目录，下载的模型将落盘到该盘符。
+  - PowerShell 下将卷挂载中的 `${PWD}` 换为当前目录的绝对路径（或将仓库根路径写死为 `-v "D:/path/to/data-workshop:/workspace/project"`）。停止/删除：`docker stop workshop-api-dev && docker rm workshop-api-dev`。
 
-**本机前端：** `cd frontend` → `nvm use` → `npm run dev`（**8701**，代理到宿主机 **8702** 上的 API，与上表开发 API 端口一致）。
+**本机前端：** `cd frontend` → `nvm use 22.22.2` → `npm run dev`（**8701**，代理到宿主机 **8702** 上的 API，与上表开发 API 端口一致）。
 
 **端口**（`127.0.0.1`）
 
