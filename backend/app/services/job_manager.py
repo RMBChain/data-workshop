@@ -44,6 +44,10 @@ class TrainJobCreate(BaseModel):
     packing: bool = False
     image_max_token_num: int = 64
     video_max_token_num: int = 16
+    # 仅用于列表/展示，不参与 train.py 命令行
+    project_title: str = Field(default="", description="展示用：导入项目名")
+    batch_name: str = Field(default="", description="展示用：导入批次名")
+    dataset_name: str = Field(default="", description="展示用：数据集版本展示名")
 
 
 def _format_train_exit_message(code: int) -> str:
