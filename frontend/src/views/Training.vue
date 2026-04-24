@@ -11,12 +11,6 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { http } from "../api/http";
 
-type SystemResourcesPayload = {
-  cpu_percent: number;
-  memory: { used_bytes: number; total_bytes: number; percent: number };
-  note?: string;
-};
-
 type HubModelRow = { model_id: string; path: string; size_bytes: number };
 
 const router = useRouter();
@@ -67,14 +61,8 @@ const jobNameEditId = ref<string | null>(null);
 const jobNameEditValue = ref("");
 const jobNameSaving = ref(false);
 let logPoll: ReturnType<typeof setInterval> | null = null;
-let resPoll: ReturnType<typeof setInterval> | null = null;
-const resourceSnapshot = ref<SystemResourcesPayload | null>(null);
 /** 工作区根目录绝对路径（与后端 workspace_root 一致），用于展示 train/val 完整路径 */
 const workspaceRootAbs = ref("");
-const resCpuChartRef = ref<HTMLDivElement | null>(null);
-const resMemChartRef = ref<HTMLDivElement | null>(null);
-let resCpuChart: echarts.ECharts | null = null;
-let resMemChart: echarts.ECharts | null = null;
 const chartRef = ref<HTMLDivElement | null>(null);
 let chart: echarts.ECharts | null = null;
 const progressPercent = ref<number | null>(null);
@@ -141,147 +129,6 @@ function formatBytes(n: number) {
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
-/** 纵轴刻度用，避免过长 */
-function formatBytesAxis(n: number) {
-  const v = Number(n);
-  if (!Number.isFinite(v) || v < 0) return "0";
-  if (v < 1024) return `${Math.round(v)}`;
-  if (v < 1024 * 1024) return `${(v / 1024).toFixed(0)}K`;
-  if (v < 1024 * 1024 * 1024) return `${(v / 1024 / 1024).toFixed(1)}M`;
-  return `${(v / 1024 / 1024 / 1024).toFixed(1)}G`;
-}
-
-function clamp01to100(n: number) {
-  if (!Number.isFinite(n)) return 0;
-  return Math.min(100, Math.max(0, n));
-}
-
-/** 资源折线图历史点（每约 2s 追加），最多保留约 5 分钟 @ 2s 间隔；内存为已用字节数 */
-const MAX_RESOURCE_LINE_POINTS = 150;
-const resourceTimeSeries: { t: number; cpu: number; memBytes: number }[] = [];
-
-function emptyCpuLineOption() {
-  return {
-    xAxis: { type: "time" as const },
-    yAxis: { type: "value" as const, name: "占用率 (%)", min: 0, max: 100 },
-    series: [],
-  };
-}
-
-function emptyMemLineOption() {
-  return {
-    xAxis: { type: "time" as const },
-    yAxis: { type: "value" as const, name: "已用内存", min: 0 },
-    series: [],
-  };
-}
-
-function buildSingleLineOption(
-  color: string,
-  name: string,
-  points: [number, number][],
-) {
-  const n = points.length;
-  const showSymbol = n <= 3;
-  return {
-    color: [color],
-    animationDurationUpdate: 300,
-    tooltip: {
-      trigger: "axis" as const,
-      axisPointer: { type: "cross" as const },
-      valueFormatter: (v: string | number) => `${Number(v).toFixed(1)}%`,
-    },
-    grid: { left: 50, right: 20, top: 16, bottom: 24, containLabel: true },
-    xAxis: { type: "time" as const },
-    yAxis: {
-      type: "value" as const,
-      name: "占用率 (%)",
-      min: 0,
-      max: 100,
-      splitLine: { show: true, lineStyle: { type: "dashed" } },
-    },
-    series: [
-      {
-        name,
-        type: "line" as const,
-        smooth: 0.2,
-        showSymbol,
-        symbolSize: 6,
-        lineStyle: { width: 2 },
-        data: points,
-      },
-    ],
-  };
-}
-
-function buildMemBytesLineOption(
-  color: string,
-  name: string,
-  points: [number, number][],
-  totalBytes?: number,
-) {
-  const n = points.length;
-  const showSymbol = n <= 3;
-  const dataMax = n ? Math.max(...points.map((p) => p[1]), 0) : 0;
-  const cap =
-    typeof totalBytes === "number" && totalBytes > 0 && totalBytes >= dataMax ? totalBytes : undefined;
-  return {
-    color: [color],
-    animationDurationUpdate: 300,
-    tooltip: {
-      trigger: "axis" as const,
-      axisPointer: { type: "cross" as const },
-      valueFormatter: (v: string | number) => formatBytes(Number(v)),
-    },
-    grid: { left: 56, right: 20, top: 16, bottom: 24, containLabel: true },
-    xAxis: { type: "time" as const },
-    yAxis: {
-      type: "value" as const,
-      name: "已用内存",
-      min: 0,
-      max: cap ?? (dataMax > 0 ? Math.ceil(dataMax * 1.08) : undefined),
-      splitLine: { show: true, lineStyle: { type: "dashed" } },
-      axisLabel: {
-        formatter: (val: string | number) => formatBytesAxis(Number(val)),
-      },
-    },
-    series: [
-      {
-        name,
-        type: "line" as const,
-        smooth: 0.2,
-        showSymbol,
-        symbolSize: 6,
-        lineStyle: { width: 2 },
-        data: points,
-      },
-    ],
-  };
-}
-
-function updateResourceLineCharts() {
-  const elCpu = resCpuChartRef.value;
-  const elMem = resMemChartRef.value;
-  if (!elCpu || !elMem) return;
-  if (!resCpuChart) resCpuChart = echarts.init(elCpu);
-  if (!resMemChart) resMemChart = echarts.init(elMem);
-
-  if (resourceTimeSeries.length === 0) {
-    resCpuChart.setOption({ ...emptyCpuLineOption(), color: ["#5470c6"] }, true);
-    resMemChart.setOption({ ...emptyMemLineOption(), color: ["#91cc75"] }, true);
-    return;
-  }
-
-  const cpuPts = resourceTimeSeries.map((p) => [p.t, p.cpu] as [number, number]);
-  const memPts = resourceTimeSeries.map((p) => [p.t, p.memBytes] as [number, number]);
-  const totalB = resourceSnapshot.value?.memory?.total_bytes;
-  resCpuChart.setOption(buildSingleLineOption("#5470c6", "CPU (%)", cpuPts), true);
-  resMemChart.setOption(
-    buildMemBytesLineOption("#91cc75", "已用内存", memPts, typeof totalB === "number" ? totalB : undefined),
-    true,
-  );
-}
-
 /** 将工作区内相对路径显示为自工作区根起的绝对路径（与后端解析一致，仅用于展示） */
 function workspaceDatasetAbsDisplay(relRaw: string): string {
   const rel = (relRaw ?? "").trim();
@@ -307,26 +154,6 @@ async function loadWorkspacePaths() {
     workspaceRootAbs.value = (r.data.workspace_root ?? "").trim();
   } catch {
     workspaceRootAbs.value = "";
-  }
-}
-
-async function loadSystemResources() {
-  try {
-    const r = await http.get<SystemResourcesPayload>("/api/system/resources");
-    resourceSnapshot.value = r.data;
-    const t = Date.now();
-    const cpu = clamp01to100(r.data.cpu_percent);
-    const memBytes = Math.max(0, Math.floor(Number(r.data.memory?.used_bytes ?? 0)));
-    resourceTimeSeries.push({ t, cpu, memBytes });
-    while (resourceTimeSeries.length > MAX_RESOURCE_LINE_POINTS) {
-      resourceTimeSeries.shift();
-    }
-    updateResourceLineCharts();
-  } catch {
-    resourceSnapshot.value = null;
-    resourceTimeSeries.length = 0;
-    resCpuChart?.clear();
-    resMemChart?.clear();
   }
 }
 
@@ -584,8 +411,6 @@ function formatJobEnd(finished: unknown, status: string | undefined): string {
 
 function onChartsResize() {
   requestAnimationFrame(() => {
-    resCpuChart?.resize();
-    resMemChart?.resize();
     chart?.resize();
   });
 }
@@ -595,23 +420,11 @@ onMounted(() => {
   void loadHubModels();
   void loadDatasetVersions();
   void refreshJobs();
-  void loadSystemResources();
-  resPoll = setInterval(() => void loadSystemResources(), 2000);
   window.addEventListener("resize", onChartsResize);
 });
 onUnmounted(() => {
   window.removeEventListener("resize", onChartsResize);
   stopLogPoll();
-  if (resPoll) clearInterval(resPoll);
-  resourceTimeSeries.length = 0;
-  if (resCpuChart) {
-    resCpuChart.dispose();
-    resCpuChart = null;
-  }
-  if (resMemChart) {
-    resMemChart.dispose();
-    resMemChart = null;
-  }
   if (chart) {
     chart.dispose();
     chart = null;
@@ -1352,69 +1165,6 @@ watch(logText, () => {
           <span><B>任务ID</B>：{{ currentJobId || "—" }}</span>
           <a-tag v-if="jobStatus">{{ jobStatus }}</a-tag>
         </a-typography-paragraph>
-        <a-typography-title :level="5">资源（约 2s）</a-typography-title>
-        <a-row :gutter="[16, 16]">
-          <a-col :span="24">
-            <div class="res-charts-pair">
-              <div class="res-charts-pair__panel">
-                <div
-                  style="
-                    display: flex;
-                    align-items: baseline;
-                    justify-content: space-between;
-                    gap: 8px;
-                    flex-wrap: wrap;
-                    margin-bottom: 4px;
-                  "
-                >
-                  <span style="font-size: 12px; color: rgba(0, 0, 0, 0.45)">CPU 使用率</span>
-                  <span
-                    v-if="resourceSnapshot"
-                    style="font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; color: rgba(0, 0, 0, 0.88)"
-                    >{{ resourceSnapshot.cpu_percent.toFixed(1) }}%</span
-                  >
-                  <span v-else style="font-size: 12px; color: rgba(0, 0, 0, 0.25)">—</span>
-                </div>
-                <div ref="resCpuChartRef" class="res-charts-pair__chart" />
-              </div>
-              <div class="res-charts-pair__vbar" aria-hidden="true" />
-              <div class="res-charts-pair__panel">
-                <div
-                  style="
-                    display: flex;
-                    align-items: baseline;
-                    justify-content: space-between;
-                    gap: 8px;
-                    flex-wrap: wrap;
-                    margin-bottom: 4px;
-                  "
-                >
-                  <span style="font-size: 12px; color: rgba(0, 0, 0, 0.45)"
-                    >内存（已用字节，若在 docker 或 wsl 中，可能会和宿主机不同）</span
-                  >
-                  <span
-                    v-if="resourceSnapshot"
-                    style="font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; color: rgba(0, 0, 0, 0.88); text-align: right"
-                  >
-                    {{ formatBytes(resourceSnapshot.memory.used_bytes) }}
-                    <template v-if="resourceSnapshot.memory.total_bytes > 0">
-                      &nbsp;/ {{ formatBytes(resourceSnapshot.memory.total_bytes) }}
-                    </template>
-                    &nbsp;（{{ resourceSnapshot.memory.percent.toFixed(1) }}%）
-                  </span>
-                  <span v-else style="font-size: 12px; color: rgba(0, 0, 0, 0.25)">—</span>
-                </div>
-                <div ref="resMemChartRef" class="res-charts-pair__chart" />
-              </div>
-            </div>
-          </a-col>
-        </a-row>
-        <a-typography-text v-if="resourceSnapshot?.note" type="warning" style="display: block; margin-top: 4px; font-size: 12px">
-          {{ resourceSnapshot.note }}
-        </a-typography-text>
-        <a-typography-text v-else-if="!resourceSnapshot" type="secondary" style="display: block; margin-top: 4px; font-size: 12px">
-          暂无资源数据
-        </a-typography-text>
         <div
           style="display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; row-gap: 4px"
         >
@@ -1501,44 +1251,5 @@ watch(logText, () => {
 }
 .training-job-name-edit:hover {
   color: var(--ant-primary-color, #1677ff);
-}
-/* 资源图：用独立竖条置于两 flex 子项之间，避免栅格 gutter 与 border 在缩放时错位；min-width:0 便于 ECharts 重算 */
-.res-charts-pair {
-  display: flex;
-  flex-direction: row;
-  align-items: stretch;
-  width: 100%;
-  box-sizing: border-box;
-}
-.res-charts-pair__panel {
-  flex: 1 1 0;
-  min-width: 0;
-}
-.res-charts-pair__chart {
-  height: 200px;
-  width: 100%;
-  min-width: 0;
-}
-.res-charts-pair__vbar {
-  flex: 0 0 1px;
-  width: 1px;
-  align-self: stretch;
-  min-height: 0;
-  background: rgba(0, 0, 0, 0.08);
-  margin: 0 8px;
-  box-sizing: content-box;
-}
-@media (max-width: 991px) {
-  .res-charts-pair {
-    flex-direction: column;
-  }
-  .res-charts-pair__vbar {
-    display: none;
-  }
-  .res-charts-pair__panel:last-of-type {
-    margin-top: 8px;
-    padding-top: 8px;
-    border-top: 1px solid rgba(0, 0, 0, 0.08);
-  }
 }
 </style>
