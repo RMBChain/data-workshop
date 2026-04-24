@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,18 @@ def _adapter_relpath_for_registered_training(workspace: Path, req: dict[str, Any
     return fallback.replace("\\", "/")
 
 
+def _ms_swift_train_version_segment(req: dict[str, Any], adapter_rel: str) -> str | None:
+    """ms-swift --add_version 下子目录名（如 v0-…），作「训练版本」；无则 None。"""
+    for src in (str(req.get("swift_run_relpath") or ""), adapter_rel):
+        s = src.strip().replace("\\", "/")
+        if not s:
+            continue
+        for part in s.split("/"):
+            if re.match(r"^v\d+-", part):
+                return part
+    return None
+
+
 def list_registered_training_models(workspace: Path) -> list[dict[str, Any]]:
     """仅 `training_jobs_persist` 中状态为 succeeded 的训练任务；路径由 request 与（若存在）磁盘上的 checkpoint/adapter 推断。"""
     root = workspace.resolve()
@@ -83,6 +96,8 @@ def list_registered_training_models(workspace: Path) -> list[dict[str, Any]]:
         project_title = str(req.get("project_title") or "").strip() or None
         batch_name = str(req.get("batch_name") or "").strip() or None
         dataset_name = str(req.get("dataset_name") or "").strip() or None
+        dvid = str(req.get("dataset_version_id") or "").strip() or None
+        swift_tv = _ms_swift_train_version_segment(req, adapter_rel)
         out.append(
             {
                 "id": f"lora:{adapter_rel}",
@@ -95,6 +110,8 @@ def list_registered_training_models(workspace: Path) -> list[dict[str, Any]]:
                 "project_title": project_title,
                 "batch_name": batch_name,
                 "dataset_name": dataset_name,
+                "dataset_version_id": dvid,
+                "swift_train_version": swift_tv,
             }
         )
     return out[:200]

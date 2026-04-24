@@ -12,9 +12,88 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from backend.app.config import get_settings
+from backend.app.db import get_connection
+from backend.app.services.inference_models import (
+    _adapter_relpath_for_registered_training,
+    list_workspace_models,
+)
 from backend.app.services.paths import resolve_under_workspace
 
 router = APIRouter(tags=["eval"])
+
+_DEFAULT_VAL_JSONL = "data/val.jsonl"
+
+
+def _suggest_val_jsonl_from_lora_used(workspace: Path, lora_used: str) -> str:
+    """根据合并元数据中的 LoRA 路径，在已成功训练任务中匹配并返回当时使用的 val 集相对路径。"""
+    try:
+        lora_p = Path(lora_used).resolve()
+        lora_rel = lora_p.relative_to(workspace.resolve()).as_posix()
+    except (ValueError, OSError):
+        return _DEFAULT_VAL_JSONL
+    conn = get_connection(workspace)
+    rows = conn.execute(
+        "SELECT request_json FROM training_jobs_persist WHERE status = 'succeeded' "
+        "ORDER BY CAST(created_at AS REAL) DESC"
+    ).fetchall()
+    for row in rows or []:
+        raw = row["request_json"] or "{}"
+        try:
+            req = json.loads(raw) if isinstance(raw, str) else {}
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(req, dict):
+            continue
+        adapter = _adapter_relpath_for_registered_training(workspace, req)
+        if not adapter:
+            continue
+        if adapter.replace("\\", "/") == lora_rel.replace("\\", "/"):
+            vd = str(req.get("val_dataset") or "").strip().replace("\\", "/")
+            return vd if vd else _DEFAULT_VAL_JSONL
+    return _DEFAULT_VAL_JSONL
+
+
+@router.get("/eval/merged-models")
+async def list_merged_models_for_eval() -> dict[str, Any]:
+    """工作区内通过 LoRA 合并产出的模型目录，及建议的验证集 jsonl 相对路径（与对应训练任务一致，否则为 data/val.jsonl）。"""
+    root = get_settings().workspace_root.resolve()
+    by_path: dict[str, dict[str, Any]] = {}
+    out_dir = root / "output"
+    if out_dir.is_dir():
+        for meta_path in out_dir.rglob("workshop_merge_meta.json"):
+            if "merge-jobs" in meta_path.parts:
+                continue
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(meta, dict):
+                continue
+            rel = meta_path.parent.relative_to(root).as_posix()
+            lora_raw = str(meta.get("lora_used") or "").strip()
+            val_jsonl = (
+                _suggest_val_jsonl_from_lora_used(root, lora_raw) if lora_raw else _DEFAULT_VAL_JSONL
+            )
+            by_path[rel] = {
+                "id": f"merged:{rel}",
+                "path": rel,
+                "label": f"合并模型 · {meta_path.parent.name}",
+                "val_jsonl": val_jsonl,
+            }
+    for m in list_workspace_models(root):
+        if m.get("kind") != "merge":
+            continue
+        p = str(m.get("path") or "").strip().replace("\\", "/")
+        if not p or p in by_path:
+            continue
+        by_path[p] = {
+            "id": m.get("id") or f"merged:{p}",
+            "path": p,
+            "label": str(m.get("label") or f"合并/权重 · {p}"),
+            "val_jsonl": _DEFAULT_VAL_JSONL,
+        }
+    items = sorted(by_path.values(), key=lambda x: str(x.get("path") or ""))
+    return {"items": items, "default_val_jsonl": _DEFAULT_VAL_JSONL}
 
 
 class EvalJobCreate(BaseModel):
