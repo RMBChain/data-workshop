@@ -29,14 +29,15 @@ class TrainJobCreate(BaseModel):
     train_dataset: str = "data/train.jsonl"
     val_dataset: str = "data/val.jsonl"
     output_dir: str = "output/"
-    lora_rank: int = 1
-    lora_alpha: int = 2
+    lora_rank: int = 8
+    lora_alpha: int = 32
+    lora_dropout: float = Field(default=0.05, ge=0.0, le=1.0)
     target_modules: str = "all-linear"
     freeze_vit: bool = True
-    num_train_epochs: int = 1
+    num_train_epochs: int = 3
     per_device_train_batch_size: int = 1
     per_device_eval_batch_size: int = 1
-    gradient_accumulation_steps: int = 1
+    gradient_accumulation_steps: int = 4
     learning_rate: float = 1e-4
     dataloader_num_workers: int = Field(
         default=0,
@@ -44,17 +45,37 @@ class TrainJobCreate(BaseModel):
         le=128,
         description="ms-swift DataLoader worker 数，0 为主进程加载；可设为不超过 CPU 核心数",
     )
-    max_length: int = 128
-    logging_steps: int = 1000
-    save_steps: int = 1_000_000
-    eval_steps: int = 1_000_000
-    save_total_limit: int = 1
-    warmup_ratio: float = 0.005
+    max_length: int = 2048
+    logging_steps: int = 10
+    save_steps: int = 500
+    eval_steps: int = 100
+    save_total_limit: int = 3
+    warmup_ratio: float = 0.1
     lr_scheduler_type: str = "cosine"
     gradient_checkpointing: bool = True
     packing: bool = False
     image_max_token_num: int = 64
     video_max_token_num: int = 16
+    # 与 ms-swift 对齐的可选参数（见 swift 命令行文档）
+    model_type: str = Field(default="", description="留空则 swift 按模型自动推断")
+    template: str = Field(default="", description="对话模板类型，留空为自动")
+    system: str = Field(default="", description="系统提示词，或 .txt 路径")
+    torch_dtype: str = "float32"
+    bf16: bool = False
+    fp16: bool = False
+    attn_impl: str = "eager"
+    quant_method: str = Field(default="", description="QLoRA 时常用 bnb；可与 quant_bits 联用")
+    quant_bits: int | None = Field(default=None, description="如 4 表示 4bit QLoRA；None 关闭")
+    bnb_4bit_compute_dtype: str = ""
+    bnb_4bit_quant_type: str = "nf4"
+    bnb_4bit_use_double_quant: bool = True
+    use_dora: bool = False
+    lorap_lr_ratio: float | None = Field(default=None, description="LoRA+ B 矩阵 LR 倍率，常用 10～16")
+    deepspeed: str = ""
+    train_type: str = "lora"
+    tuner_backend: str = ""
+    merge_lora: bool = False
+    adapters: str = Field(default="", description="逗号分隔的 adapter 路径，传给 swift --adapters")
     # 与 ms-swift 一致；仅「继续训练」时写入，为相对仓库根目录的 checkpoint 路径
     resume_from_checkpoint: str | None = Field(default=None, description="从该 checkpoint 目录继续，如 output/.../checkpoint-8")
     # 仅用于列表/展示，不参与 train.py 命令行
@@ -573,8 +594,12 @@ class TrainingJobManager:
             str(p["lora_rank"]),
             "--lora_alpha",
             str(p["lora_alpha"]),
+            "--lora_dropout",
+            str(p["lora_dropout"]),
             "--target_modules",
             p["target_modules"],
+            "--train_type",
+            p["train_type"],
             "--freeze_vit",
             str(p["freeze_vit"]).lower(),
             "--num_train_epochs",
@@ -587,6 +612,14 @@ class TrainingJobManager:
             str(p["gradient_accumulation_steps"]),
             "--learning_rate",
             str(p["learning_rate"]),
+            "--torch_dtype",
+            p["torch_dtype"],
+            "--bf16",
+            str(p["bf16"]).lower(),
+            "--fp16",
+            str(p["fp16"]).lower(),
+            "--attn_impl",
+            p["attn_impl"],
             "--dataloader_num_workers",
             str(p["dataloader_num_workers"]),
             "--max_length",
@@ -615,4 +648,47 @@ class TrainingJobManager:
         rfc = p.get("resume_from_checkpoint")
         if rfc:
             cmd.extend(["--resume_from_checkpoint", str(rfc)])
+
+        mt = (p.get("model_type") or "").strip()
+        if mt:
+            cmd.extend(["--model_type", mt])
+        tpl = (p.get("template") or "").strip()
+        if tpl:
+            cmd.extend(["--template", tpl])
+        sys_prompt = (p.get("system") or "").strip()
+        if sys_prompt:
+            cmd.extend(["--system", sys_prompt])
+
+        qb = p.get("quant_bits")
+        if qb is not None and int(qb) > 0:
+            qm = (p.get("quant_method") or "").strip() or "bnb"
+            cmd.extend(["--quant_method", qm, "--quant_bits", str(int(qb))])
+            bnb_dt = (p.get("bnb_4bit_compute_dtype") or "").strip()
+            if bnb_dt:
+                cmd.extend(["--bnb_4bit_compute_dtype", bnb_dt])
+            cmd.extend(["--bnb_4bit_quant_type", p.get("bnb_4bit_quant_type") or "nf4"])
+            cmd.extend(
+                ["--bnb_4bit_use_double_quant", str(bool(p.get("bnb_4bit_use_double_quant", True))).lower()]
+            )
+
+        if p.get("use_dora"):
+            cmd.extend(["--use_dora", "true"])
+        lr_ratio = p.get("lorap_lr_ratio")
+        if lr_ratio is not None:
+            cmd.extend(["--lorap_lr_ratio", str(lr_ratio)])
+        ds = (p.get("deepspeed") or "").strip()
+        if ds:
+            cmd.extend(["--deepspeed", ds])
+        tb = (p.get("tuner_backend") or "").strip()
+        if tb:
+            cmd.extend(["--tuner_backend", tb])
+        if p.get("merge_lora"):
+            cmd.extend(["--merge_lora", "true"])
+        ad = (p.get("adapters") or "").strip()
+        if ad:
+            parts = [x.strip() for x in ad.split(",") if x.strip()]
+            if parts:
+                cmd.append("--adapters")
+                cmd.extend(parts)
+
         return cmd
