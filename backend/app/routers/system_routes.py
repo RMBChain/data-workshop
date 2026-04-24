@@ -33,6 +33,114 @@ def _get_torch() -> object | None:
     return _torch_mod
 
 
+def _gpu_devices_via_nvml() -> list[dict[str, Any]]:
+    try:
+        import pynvml
+    except ImportError:
+        return []
+    try:
+        pynvml.nvmlInit()
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    try:
+        n = int(pynvml.nvmlDeviceGetCount())
+        for i in range(n):
+            h = pynvml.nvmlDeviceGetHandleByIndex(i)
+            raw = pynvml.nvmlDeviceGetName(h)
+            name = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+            mem = pynvml.nvmlDeviceGetMemoryInfo(h)
+            out.append({"index": i, "name": name.strip(), "memory_total_bytes": int(mem.total)})
+    except Exception:
+        return []
+    finally:
+        try:
+            pynvml.nvmlShutdown()
+        except Exception:
+            pass
+    return out
+
+
+def _gpu_devices_via_torch() -> list[dict[str, Any]]:
+    t = _get_torch()
+    if t is None:
+        return []
+    try:
+        if not bool(t.cuda.is_available()):  # type: ignore[union-attr]
+            return []
+        n = int(t.cuda.device_count())  # type: ignore[union-attr]
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for i in range(n):
+        try:
+            p = t.cuda.get_device_properties(i)  # type: ignore[union-attr]
+            out.append(
+                {
+                    "index": i,
+                    "name": str(getattr(p, "name", f"cuda:{i}")).strip(),
+                    "memory_total_bytes": int(getattr(p, "total_memory", 0)),
+                }
+            )
+        except Exception:
+            continue
+    return out
+
+
+def _collect_gpu_devices() -> tuple[list[dict[str, Any]], str | None]:
+    gpus = _gpu_devices_via_nvml()
+    if gpus:
+        return gpus, None
+    gpus = _gpu_devices_via_torch()
+    if gpus:
+        return gpus, None
+    return [], "未检测到 NVIDIA GPU，或驱动 / NVML 不可用（非 NVIDIA 显卡本接口暂不枚举）。"
+
+
+def _collect_static_hardware() -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    try:
+        import psutil
+    except ImportError:
+        out["hardware_note"] = "psutil 未安装，无法读取 CPU / 内存硬件信息。"
+        gpus, note = _collect_gpu_devices()
+        out["gpus"] = gpus
+        if note:
+            out["gpu_list_note"] = note
+        return out
+
+    phys = psutil.cpu_count(logical=False)
+    logical = psutil.cpu_count(logical=True)
+    out["cpu_physical_cores"] = phys
+    out["cpu_logical_threads"] = logical
+    try:
+        cf = psutil.cpu_freq()
+    except Exception:
+        cf = None
+    if cf is not None:
+        cur = getattr(cf, "current", None)
+        mn = getattr(cf, "min", None)
+        mx = getattr(cf, "max", None)
+        out["cpu_freq_mhz"] = {
+            "current": float(cur) if cur is not None else None,
+            "min": float(mn) if mn is not None else None,
+            "max": float(mx) if mx is not None else None,
+        }
+    else:
+        out["cpu_freq_mhz"] = None
+
+    try:
+        out["memory_total_bytes"] = int(psutil.virtual_memory().total)
+    except Exception:
+        out["memory_total_bytes"] = None
+
+    gpus, note = _collect_gpu_devices()
+    out["gpus"] = gpus
+    if note:
+        out["gpu_list_note"] = note
+    return out
+
+
 @router.get("/system/resources")
 async def system_resources() -> dict[str, Any]:
     try:
@@ -65,13 +173,15 @@ async def system_info() -> dict[str, Any]:
             cuda = bool(t.cuda.is_available())  # type: ignore[union-attr]
         except Exception:
             cuda = False
-    return {
+    base: dict[str, Any] = {
         "python": sys.version.split()[0],
         "platform": platform.platform(),
         "torch": torch_ver,
         "torch_cuda_available": bool(cuda),
         "gpu_note": "若检测到 CUDA 设备，仅作环境探测；本工具内训练/推理主路径在纯 CPU 上执行（与需求一致）。",
     }
+    base.update(_collect_static_hardware())
+    return base
 
 
 @router.get("/system/paths")
