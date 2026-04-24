@@ -17,12 +17,35 @@ type SuccessTrainingRow = {
   dataset_name?: string | null;
 };
 
+type MergeLogProgress = {
+  percent: number | null;
+  phase: string;
+  fraction: string | null;
+  phase_hint: string | null;
+};
+
 const router = useRouter();
 const base = ref("Qwen/Qwen3-VL-2B-Instruct");
 const output = ref("output/merged-workshop");
 const log = ref("");
 const jobId = ref<string | null>(null);
+const mergeJobStatus = ref<string | null>(null);
+/** 来自 GET /api/merge/jobs/:id/logs 的 progress，由后端解析日志 */
+const mergeProgress = ref<MergeLogProgress | null>(null);
+const runSubmitting = ref(false);
 let poller: ReturnType<typeof setInterval> | null = null;
+
+function normalizeMergeProgress(raw: unknown): MergeLogProgress | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const percent = o.percent;
+  return {
+    percent: typeof percent === "number" && Number.isFinite(percent) ? percent : null,
+    phase: typeof o.phase === "string" ? o.phase : "合并进行中",
+    fraction: typeof o.fraction === "string" ? o.fraction : null,
+    phase_hint: typeof o.phase_hint === "string" ? o.phase_hint : null,
+  };
+}
 
 const successRows = ref<SuccessTrainingRow[]>([]);
 const successLoading = ref(false);
@@ -89,26 +112,56 @@ async function run() {
     message.error("该训练条目缺少有效 LoRA 路径");
     return;
   }
-  const r = await http.post("/api/merge/jobs", {
-    base_model_path: base.value,
-    lora_paths: paths,
-    output_path: output.value,
-  });
-  jobId.value = r.data.id;
+  runSubmitting.value = true;
+  log.value = "";
+  mergeProgress.value = null;
+  mergeJobStatus.value = null;
   if (poller) clearInterval(poller);
-  poller = setInterval(async () => {
-    if (!jobId.value) return;
-    const s = await http.get(`/api/merge/jobs/${jobId.value}`);
-    const t = await http.get(`/api/merge/jobs/${jobId.value}/logs`);
-    log.value = t.data.text;
-    if (["succeeded", "failed", "cancelled"].includes(String(s.data.status))) {
-      if (poller) clearInterval(poller);
-      if (s.data.status === "succeeded") {
-        message.success("合并完成");
-        await http.post(`/api/merge/jobs/${jobId.value}/validate`);
+  poller = null;
+  try {
+    const r = await http.post("/api/merge/jobs", {
+      base_model_path: base.value,
+      lora_paths: paths,
+      output_path: output.value,
+    });
+    jobId.value = r.data.id;
+    mergeJobStatus.value = String(r.data.status ?? "running");
+
+    async function pollMergeOnce() {
+      if (!jobId.value) return;
+      try {
+        const s = await http.get(`/api/merge/jobs/${jobId.value}`);
+        mergeJobStatus.value = String(s.data.status ?? "");
+        const t = await http.get(`/api/merge/jobs/${jobId.value}/logs`);
+        log.value = t.data.text;
+        mergeProgress.value = normalizeMergeProgress(t.data.progress);
+        if (["succeeded", "failed", "cancelled"].includes(String(s.data.status))) {
+          if (poller) clearInterval(poller);
+          poller = null;
+          if (s.data.status === "succeeded") {
+            message.success("合并完成");
+            await http.post(`/api/merge/jobs/${jobId.value}/validate`);
+          } else if (s.data.status === "failed") {
+            message.error(String(s.data.error_message ?? "合并失败"));
+          } else if (s.data.status === "cancelled") {
+            message.warning("合并已取消");
+          }
+        }
+      } catch (e: unknown) {
+        message.error(String((e as { message?: string })?.message ?? e));
       }
     }
-  }, 1500);
+
+    void pollMergeOnce();
+    poller = setInterval(() => void pollMergeOnce(), 1500);
+  } catch (e: unknown) {
+    message.error(String((e as { message?: string })?.message ?? e));
+    jobId.value = null;
+    mergeJobStatus.value = null;
+    mergeProgress.value = null;
+  } finally {
+    runSubmitting.value = false;
+  }
 }
 
 function goPlay() {
@@ -166,13 +219,75 @@ onUnmounted(() => {
       <a-form-item label="输出目录（工作区相对）">
         <a-input v-model:value="output" />
       </a-form-item>
-      <a-button type="primary" :disabled="!selectedRow" @click="run">执行合并</a-button>
-      <a-button type="link" @click="goPlay">去推理试跑</a-button>
+      <a-space>
+        <a-button type="primary" :disabled="!selectedRow" :loading="runSubmitting" @click="run">执行合并</a-button>
+        <a-button type="link" @click="goPlay">去推理试跑</a-button>
+      </a-space>
     </a-form>
+
+    <div
+      v-if="
+        jobId &&
+        mergeJobStatus &&
+        ['pending', 'running', 'succeeded', 'failed', 'cancelled'].includes(mergeJobStatus)
+      "
+      style="max-width: 600px; margin-top: 16px"
+    >
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px">
+        <a-typography-title :level="5" style="margin: 0">合并进度</a-typography-title>
+        <a-tag v-if="mergeJobStatus === 'pending'" color="default">排队</a-tag>
+        <a-tag v-else-if="mergeJobStatus === 'running'" color="processing">运行中</a-tag>
+        <a-tag v-else-if="mergeJobStatus === 'succeeded'" color="success">已完成</a-tag>
+        <a-tag v-else-if="mergeJobStatus === 'failed'" color="error">失败</a-tag>
+        <a-tag v-else-if="mergeJobStatus === 'cancelled'" color="warning">已取消</a-tag>
+      </div>
+      <template v-if="mergeJobStatus === 'succeeded'">
+        <a-progress :percent="100" status="success" />
+        <div style="font-size: 12px; color: rgba(0, 0, 0, 0.65); margin-top: 4px">合并已完成，详见下方日志。</div>
+      </template>
+      <template v-else-if="mergeJobStatus === 'failed'">
+        <a-progress :percent="mergeProgress?.percent ?? 0" status="exception" />
+        <div style="font-size: 12px; color: rgba(0, 0, 0, 0.65); margin-top: 4px">
+          {{ mergeProgress?.phase ? `${mergeProgress.phase} · ` : "" }}合并失败
+        </div>
+        <div
+          v-if="mergeProgress?.phase_hint"
+          style="font-size: 12px; color: rgba(0, 0, 0, 0.45); margin-top: 6px; line-height: 1.5"
+        >
+          {{ mergeProgress.phase_hint }}
+        </div>
+      </template>
+      <template v-else-if="mergeJobStatus === 'cancelled'">
+        <a-progress :percent="mergeProgress?.percent ?? 0" status="normal" />
+        <div style="font-size: 12px; color: rgba(0, 0, 0, 0.65); margin-top: 4px">任务已取消。</div>
+      </template>
+      <template v-else>
+        <a-progress
+          :percent="mergeProgress?.percent ?? 0"
+          :status="mergeProgress?.percent == null ? 'active' : 'normal'"
+          :show-info="mergeProgress?.percent != null"
+        />
+        <div style="font-size: 12px; color: rgba(0, 0, 0, 0.65); margin-top: 4px">
+          <template v-if="mergeProgress">
+            {{ mergeProgress.phase }}
+            <template v-if="mergeProgress.fraction"> · {{ mergeProgress.fraction }}</template>
+            <template v-if="mergeProgress.percent == null">（等待详细百分比…）</template>
+          </template>
+          <template v-else>准备中…</template>
+        </div>
+        <div
+          v-if="mergeProgress?.phase_hint"
+          style="font-size: 12px; color: rgba(0, 0, 0, 0.45); margin-top: 6px; line-height: 1.5"
+        >
+          {{ mergeProgress.phase_hint }}
+        </div>
+      </template>
+    </div>
+
     <a-typography-title :level="5" style="margin-top: 16px">日志</a-typography-title>
     <pre
       style="
-        max-height: 360px;
+        max-height: 600px;
         overflow: auto;
         font-size: 12px;
         background: #0d1117;
