@@ -367,7 +367,7 @@ function onProjectRow(record: { id: number }) {
     <!-- 24 栅格 4 列（每列 span=6）；基址/Token 各占两列，操作区通栏 -->
     <a-form layout="vertical">
       <a-row :gutter="[16, 16]">
-        <a-col :span="6">
+        <a-col :span="8">
           <a-form-item>
             <template #label>
               <span>

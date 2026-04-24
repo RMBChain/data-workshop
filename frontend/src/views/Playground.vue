@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import { DeleteOutlined } from "@ant-design/icons-vue";
 import { message } from "ant-design-vue";
-import { onMounted, ref, watch } from "vue";
+import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { http } from "../api/http";
 
 const DEFAULT_BASE = "Qwen/Qwen3-VL-2B-Instruct";
@@ -19,7 +20,11 @@ const models = ref<
 const modelId = ref<string | null>(null);
 const base = ref(DEFAULT_BASE);
 const adapter = ref("");
+const IMAGE_ACCEPT =
+  "image/png,image/jpeg,image/webp,image/gif,image/bmp,.png,.jpg,.jpeg,.webp,.gif,.bmp";
+const fileInputRef = ref<HTMLInputElement | null>(null);
 const imageFile = ref<File | null>(null);
+const imageObjectUrl = ref<string | null>(null);
 const prompt = ref("你好");
 const maxNew = ref(256);
 const loading = ref(false);
@@ -36,8 +41,73 @@ function filterTrainingOption(input: string, option: { value?: string | null }) 
   return blob.includes(q);
 }
 
+function revokeImageObjectUrl() {
+  if (imageObjectUrl.value) {
+    URL.revokeObjectURL(imageObjectUrl.value);
+    imageObjectUrl.value = null;
+  }
+}
+
+function isValidImageFile(f: File): boolean {
+  const allowed = new Set([
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+    "image/bmp",
+  ]);
+  if (f.type && allowed.has(f.type)) return true;
+  const ext = f.name.toLowerCase().match(/\.([^.]+)$/)?.[1];
+  return ext != null && ["png", "jpg", "jpeg", "webp", "gif", "bmp"].includes(ext);
+}
+
+function setImageFile(f: File | null) {
+  revokeImageObjectUrl();
+  imageFile.value = f;
+  if (f) imageObjectUrl.value = URL.createObjectURL(f);
+}
+
+function applyImageFromFileList(files: FileList | null) {
+  if (!files?.length) return;
+  const f = files[0];
+  if (!isValidImageFile(f)) {
+    message.error("请使用 png、jpg、webp、gif 或 bmp 图片");
+    return;
+  }
+  setImageFile(f);
+}
+
+function triggerFileInput() {
+  fileInputRef.value?.click();
+}
+
+function onImageChange(e: Event) {
+  const inp = e.target as HTMLInputElement;
+  applyImageFromFileList(inp.files);
+  inp.value = "";
+}
+
+function onDropImage(e: DragEvent) {
+  e.preventDefault();
+  applyImageFromFileList(e.dataTransfer?.files ?? null);
+}
+
+function onDragOverImage(e: DragEvent) {
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+}
+
+function clearImage() {
+  setImageFile(null);
+  if (fileInputRef.value) fileInputRef.value.value = "";
+}
+
 onMounted(() => {
   void loadModels();
+});
+
+onBeforeUnmount(() => {
+  revokeImageObjectUrl();
 });
 
 watch(modelId, () => {
@@ -79,11 +149,6 @@ async function loadModels() {
     base.value = DEFAULT_BASE;
     adapter.value = "";
   }
-}
-
-function onImageChange(e: Event) {
-  const inp = e.target as HTMLInputElement;
-  imageFile.value = inp.files?.[0] ?? null;
 }
 
 async function loadSelectedModel() {
@@ -145,7 +210,7 @@ async function send() {
 
 <template>
   <div>
-    <a-typography-title :level="4">推理沙盒</a-typography-title>
+    <a-typography-title :level="4">LoRA 验证</a-typography-title>
     <a-alert
       type="info"
       show-icon
@@ -176,15 +241,57 @@ async function send() {
             <a-button :loading="unloadModelLoading" @click="unloadSelectedModel">卸载模型</a-button>
           </a-space>
           <a-divider />
-          <a-form-item label="图片">
+          <a-form-item label="图片（单张，可拖拽或点击选择）">
             <input
+              ref="fileInputRef"
               type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif,image/bmp,.png,.jpg,.jpeg,.webp,.gif,.bmp"
-              style="width: 100%"
+              class="playground-image-input"
+              :accept="IMAGE_ACCEPT"
               @change="onImageChange"
             />
-            <div v-if="imageFile" style="margin-top: 6px; color: rgba(0, 0, 0, 0.45); font-size: 12px">
-              已选：{{ imageFile.name }}
+            <div
+              class="playground-image-drop"
+              :class="{ 'playground-image-drop--filled': imageFile }"
+              @dragover="onDragOverImage"
+              @drop="onDropImage"
+            >
+              <template v-if="!imageFile">
+                <div class="playground-image-empty" @click="triggerFileInput">
+                  <span class="playground-image-empty__hint">将图片拖到这里，或点击选择</span>
+                  <span class="playground-image-empty__sub">仅 1 张，png / jpg / webp / gif / bmp，约 25MB 内</span>
+                </div>
+              </template>
+              <div v-else class="playground-image-filled">
+                <a-image
+                  v-if="imageObjectUrl"
+                  class="playground-image-thumb"
+                  :src="imageObjectUrl"
+                  :width="96"
+                  :height="96"
+                  alt=""
+                  :preview="true"
+                />
+                <div class="playground-image-filled__meta">
+                  <div class="playground-image-filled__name" :title="imageFile.name">
+                    {{ imageFile.name }}
+                  </div>
+                  <a-space :size="4" wrap>
+                    <a-button type="link" size="small" class="playground-image-filled__change" @click="triggerFileInput">
+                      更换
+                    </a-button>
+                    <a-button
+                      type="link"
+                      danger
+                      size="small"
+                      class="playground-image-filled__remove"
+                      @click="clearImage"
+                    >
+                      <template #icon><DeleteOutlined /></template>
+                      删除
+                    </a-button>
+                  </a-space>
+                </div>
+              </div>
             </div>
           </a-form-item>
           <a-form-item label="提示词">
@@ -203,3 +310,87 @@ async function send() {
     </a-row>
   </div>
 </template>
+
+<style scoped>
+.playground-image-input {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.playground-image-drop {
+  box-sizing: border-box;
+  min-height: 120px;
+  border: 1px dashed #d9d9d9;
+  border-radius: 6px;
+  background: #fafafa;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.playground-image-drop:not(.playground-image-drop--filled) {
+  cursor: pointer;
+}
+
+.playground-image-drop:not(.playground-image-drop--filled):hover {
+  border-color: #1677ff;
+  background: #f0f5ff;
+}
+
+.playground-image-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 120px;
+  padding: 16px;
+  user-select: none;
+}
+
+.playground-image-empty__hint {
+  color: rgba(0, 0, 0, 0.88);
+  font-size: 14px;
+}
+
+.playground-image-empty__sub {
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  text-align: center;
+}
+
+.playground-image-filled {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+}
+
+.playground-image-thumb :deep(.ant-image-img) {
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+.playground-image-filled__meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.playground-image-filled__name {
+  color: rgba(0, 0, 0, 0.65);
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.playground-image-filled__remove {
+  padding: 0;
+  height: auto;
+  align-self: flex-start;
+}
+</style>
