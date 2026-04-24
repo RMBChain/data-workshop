@@ -118,15 +118,19 @@ def train_with_swift(
     no_swift_phase_hooks: bool = False,
     **kwargs,
 ):
-    """纯 CPU：固定 float32、eager attention，并隐藏 GPU。"""
-    kwargs["torch_dtype"] = "float32"
-    kwargs["attn_impl"] = "eager"
+    """默认偏 CPU 安全（float32、eager）；可通过参数改为 GPU / flash_attn / bf16 等。"""
+    kwargs.setdefault("torch_dtype", "float32")
+    kwargs.setdefault("attn_impl", "eager")
+    kwargs.setdefault("bf16", False)
+    kwargs.setdefault("fp16", False)
+    kwargs.setdefault("train_type", "lora")
     kwargs.setdefault("image_max_token_num", 64)
-    kwargs.setdefault("max_length", 128)
+    kwargs.setdefault("max_length", 2048)
     kwargs.setdefault("per_device_train_batch_size", 1)
-    kwargs.setdefault("gradient_accumulation_steps", 1)
-    kwargs.setdefault("lora_rank", 1)
-    kwargs.setdefault("lora_alpha", 2)
+    kwargs.setdefault("gradient_accumulation_steps", 4)
+    kwargs.setdefault("lora_rank", 8)
+    kwargs.setdefault("lora_alpha", 32)
+    kwargs.setdefault("lora_dropout", 0.05)
     # ms-swift 在 Linux 上默认 dataloader_num_workers=1；Docker 默认 /dev/shm 很小，易触发 bus error
     kwargs.setdefault("dataloader_num_workers", 0)
     # 必须显式传入；若省略，swift 可能对部分模板默认开启 packing，而 packing 依赖 flash_attn（与 CPU/eager 冲突）
@@ -147,7 +151,7 @@ def train_with_swift(
         "--model",
         model_name,
         "--train_type",
-        "lora",
+        str(kwargs.get("train_type", "lora")),
         "--dataset",
         train_dataset,
         "--val_dataset",
@@ -157,44 +161,88 @@ def train_with_swift(
         "--add_version",
         str(add_version).lower(),
         "--lora_rank",
-        str(kwargs.get("lora_rank", 1)),
+        str(kwargs.get("lora_rank", 8)),
         "--lora_alpha",
-        str(kwargs.get("lora_alpha", 2)),
+        str(kwargs.get("lora_alpha", 32)),
+        "--lora_dropout",
+        str(kwargs.get("lora_dropout", 0.05)),
         "--target_modules",
         kwargs.get("target_modules", "all-linear"),
         "--freeze_vit",
         str(kwargs.get("freeze_vit", "true")).lower(),
         "--num_train_epochs",
-        str(kwargs.get("num_train_epochs", 1)),
+        str(kwargs.get("num_train_epochs", 3)),
         "--per_device_train_batch_size",
         str(kwargs.get("per_device_train_batch_size", 1)),
         "--per_device_eval_batch_size",
         str(kwargs.get("per_device_eval_batch_size", 1)),
         "--gradient_accumulation_steps",
-        str(kwargs.get("gradient_accumulation_steps", 1)),
+        str(kwargs.get("gradient_accumulation_steps", 4)),
         "--learning_rate",
         str(kwargs.get("learning_rate", 1e-4)),
         "--torch_dtype",
-        kwargs.get("torch_dtype", "float32"),
+        str(kwargs.get("torch_dtype", "float32")),
         "--attn_impl",
-        kwargs.get("attn_impl", "eager"),
+        str(kwargs.get("attn_impl", "eager")),
         "--fp16",
-        "false",
+        str(_parse_cli_bool(kwargs.get("fp16", False))).lower(),
         "--bf16",
-        "false",
+        str(_parse_cli_bool(kwargs.get("bf16", False))).lower(),
         "--max_length",
-        str(kwargs.get("max_length", 128)),
+        str(kwargs.get("max_length", 2048)),
         "--logging_steps",
-        str(kwargs.get("logging_steps", 1000)),
+        str(kwargs.get("logging_steps", 10)),
         "--save_steps",
-        str(kwargs.get("save_steps", 1_000_000)),
+        str(kwargs.get("save_steps", 500)),
         "--eval_steps",
-        str(kwargs.get("eval_steps", 1_000_000)),
+        str(kwargs.get("eval_steps", 100)),
         "--save_total_limit",
-        str(kwargs.get("save_total_limit", 1)),
+        str(kwargs.get("save_total_limit", 3)),
         "--dataloader_num_workers",
         str(kwargs.get("dataloader_num_workers", 0)),
     ]
+
+    mt = (kwargs.get("model_type") or "").strip()
+    if mt:
+        argv.extend(["--model_type", mt])
+    tpl = (kwargs.get("template") or "").strip()
+    if tpl:
+        argv.extend(["--template", tpl])
+    sys_prompt = (kwargs.get("system") or "").strip()
+    if sys_prompt:
+        argv.extend(["--system", sys_prompt])
+
+    qb = kwargs.get("quant_bits")
+    if qb is not None and int(qb) > 0:
+        qm = (kwargs.get("quant_method") or "").strip() or "bnb"
+        argv.extend(["--quant_method", qm, "--quant_bits", str(int(qb))])
+        bnb_dt = (kwargs.get("bnb_4bit_compute_dtype") or "").strip()
+        if bnb_dt:
+            argv.extend(["--bnb_4bit_compute_dtype", bnb_dt])
+        argv.extend(["--bnb_4bit_quant_type", str(kwargs.get("bnb_4bit_quant_type") or "nf4")])
+        argv.extend(
+            ["--bnb_4bit_use_double_quant", str(_parse_cli_bool(kwargs.get("bnb_4bit_use_double_quant", True))).lower()]
+        )
+
+    if _parse_cli_bool(kwargs.get("use_dora", False)):
+        argv.extend(["--use_dora", "true"])
+    lr_ratio = kwargs.get("lorap_lr_ratio")
+    if lr_ratio is not None and str(lr_ratio).strip() != "":
+        argv.extend(["--lorap_lr_ratio", str(lr_ratio)])
+    ds = (kwargs.get("deepspeed") or "").strip()
+    if ds:
+        argv.extend(["--deepspeed", ds])
+    tb = (kwargs.get("tuner_backend") or "").strip()
+    if tb:
+        argv.extend(["--tuner_backend", tb])
+    if _parse_cli_bool(kwargs.get("merge_lora", False)):
+        argv.extend(["--merge_lora", "true"])
+    ad = (kwargs.get("adapters") or "").strip()
+    if ad:
+        parts = [x.strip() for x in ad.split(",") if x.strip()]
+        if parts:
+            argv.append("--adapters")
+            argv.extend(parts)
 
     cb_names, plugin_path = _swift_callback_names(
         enable_phase_log=not no_swift_phase_hooks,
@@ -203,13 +251,18 @@ def train_with_swift(
     if cb_names:
         argv.extend(["--callbacks"] + cb_names)
 
-    if kwargs.get("warmup_ratio"):
-        argv.extend(["--warmup_ratio", str(kwargs["warmup_ratio"])])
+    wr = kwargs.get("warmup_ratio")
+    if wr is not None and str(wr).strip() != "":
+        argv.extend(["--warmup_ratio", str(wr)])
     if kwargs.get("lr_scheduler_type"):
         argv.extend(["--lr_scheduler_type", kwargs["lr_scheduler_type"]])
-    if kwargs.get("gradient_checkpointing"):
-        argv.extend(["--gradient_checkpointing", str(kwargs["gradient_checkpointing"]).lower()])
-    argv.extend(["--packing", str(bool(kwargs.get("packing", False))).lower()])
+    argv.extend(
+        [
+            "--gradient_checkpointing",
+            str(_parse_cli_bool(kwargs.get("gradient_checkpointing", True))).lower(),
+        ]
+    )
+    argv.extend(["--packing", str(_parse_cli_bool(kwargs.get("packing", False))).lower()])
 
     resume = kwargs.pop("resume_from_checkpoint", None)
     if resume:
@@ -219,7 +272,7 @@ def train_with_swift(
     print("训练配置 (CPU)")
     print(f"  模型: {model_name}")
     print(f"  dtype / attn: {kwargs.get('torch_dtype')} / {kwargs.get('attn_impl')}")
-    print(f"  max_length: {kwargs.get('max_length', 128)}")
+    print(f"  max_length: {kwargs.get('max_length', 2048)}")
     print(f"  packing: {kwargs.get('packing', False)} (关闭时勿依赖 flash_attn)")
     print(f"  dataloader_num_workers: {kwargs.get('dataloader_num_workers', 0)}")
     if resume:
@@ -262,9 +315,11 @@ def main():
         help="ms-swift: 为 True 时会在 output_dir 下再建 v0- 时间戳子目录；默认 true（与 Web 一致）",
     )
 
-    parser.add_argument("--lora_rank", type=int, default=1, help="LoRA rank（默认可选最小以省内存）")
-    parser.add_argument("--lora_alpha", type=int, default=2, help="LoRA alpha")
+    parser.add_argument("--lora_rank", type=int, default=8, help="LoRA rank")
+    parser.add_argument("--lora_alpha", type=int, default=32, help="LoRA alpha")
+    parser.add_argument("--lora_dropout", type=float, default=0.05, help="LoRA dropout")
     parser.add_argument("--target_modules", type=str, default="all-linear", help="LoRA 目标模块")
+    parser.add_argument("--train_type", type=str, default="lora", help="lora / full 等，见 ms-swift")
     parser.add_argument(
         "--freeze_vit",
         type=_parse_cli_bool,
@@ -272,10 +327,10 @@ def main():
         help="是否冻结 ViT（可传 true/false）",
     )
 
-    parser.add_argument("--num_train_epochs", type=int, default=1, help="训练轮数（默认 1 以尽快完成）")
+    parser.add_argument("--num_train_epochs", type=int, default=3, help="训练轮数")
     parser.add_argument("--per_device_train_batch_size", type=int, default=1, help="训练 batch size")
     parser.add_argument("--per_device_eval_batch_size", type=int, default=1, help="验证 batch size")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="梯度累积（默认 1 减少重复前向、加快结束）")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=4, help="梯度累积步数")
     parser.add_argument("--learning_rate", type=float, default=1e-4, help="学习率")
     parser.add_argument(
         "--dataloader_num_workers",
@@ -284,12 +339,35 @@ def main():
         help="DataLoader 子进程数；Docker 默认 shm 很小，建议 0（主进程加载）",
     )
 
-    parser.add_argument("--max_length", type=int, default=128, help="最大序列长度（过大易 OOM）")
-    parser.add_argument("--logging_steps", type=int, default=1000, help="日志步频")
-    parser.add_argument("--save_steps", type=int, default=1_000_000, help="保存步频（大可减少中途存盘、加快小任务）")
-    parser.add_argument("--eval_steps", type=int, default=1_000_000, help="评估步频（大可减少验证开销）")
-    parser.add_argument("--save_total_limit", type=int, default=1, help="最多保留 checkpoint 数")
-    parser.add_argument("--warmup_ratio", type=float, default=0.005, help="预热比例")
+    parser.add_argument("--max_length", type=int, default=2048, help="最大序列长度（过大易 OOM）")
+    parser.add_argument("--logging_steps", type=int, default=10, help="日志步频")
+    parser.add_argument("--save_steps", type=int, default=500, help="保存步频")
+    parser.add_argument("--eval_steps", type=int, default=100, help="评估步频")
+    parser.add_argument("--save_total_limit", type=int, default=3, help="最多保留 checkpoint 数")
+    parser.add_argument("--warmup_ratio", type=float, default=0.1, help="预热比例（总步数占比）")
+    parser.add_argument("--torch_dtype", type=str, default="float32", help="如 float32 / bfloat16 / float16")
+    parser.add_argument("--bf16", type=_parse_cli_bool, default=False, help="是否 bf16 训练")
+    parser.add_argument("--fp16", type=_parse_cli_bool, default=False, help="是否 fp16 训练")
+    parser.add_argument("--attn_impl", type=str, default="eager", help="eager / sdpa / flash_attn")
+    parser.add_argument("--model_type", type=str, default="", help="模型架构类型，留空自动")
+    parser.add_argument("--template", type=str, default="", help="对话模板，留空自动")
+    parser.add_argument("--system", type=str, default="", help="系统提示词或 .txt 路径")
+    parser.add_argument("--quant_method", type=str, default="", help="QLoRA 时常用 bnb")
+    parser.add_argument("--quant_bits", type=int, default=None, help="量化位数，如 4；不设则关闭")
+    parser.add_argument("--bnb_4bit_compute_dtype", type=str, default="", help="如 bfloat16")
+    parser.add_argument("--bnb_4bit_quant_type", type=str, default="nf4", help="nf4 / fp4")
+    parser.add_argument(
+        "--bnb_4bit_use_double_quant",
+        type=_parse_cli_bool,
+        default=True,
+        help="双重量化",
+    )
+    parser.add_argument("--use_dora", type=_parse_cli_bool, default=False, help="DoRA")
+    parser.add_argument("--lorap_lr_ratio", type=float, default=None, help="LoRA+ 学习率倍率")
+    parser.add_argument("--deepspeed", type=str, default="", help="zero2 / zero3 或配置文件路径")
+    parser.add_argument("--tuner_backend", type=str, default="", help="peft / unsloth")
+    parser.add_argument("--merge_lora", type=_parse_cli_bool, default=False, help="合并 LoRA（多用于 export 场景）")
+    parser.add_argument("--adapters", type=str, default="", help="逗号分隔 adapter 路径")
     parser.add_argument("--lr_scheduler_type", type=str, default="cosine", help="学习率调度")
     parser.add_argument(
         "--gradient_checkpointing",
