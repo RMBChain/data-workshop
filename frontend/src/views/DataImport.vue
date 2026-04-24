@@ -315,12 +315,6 @@ const batchColumns = [
   { title: "操作", key: "action", width: 120 },
 ];
 
-const projectColumns = [
-  { title: "标题", dataIndex: "title", key: "title", ellipsis: true },
-  { title: "任务数", dataIndex: "task_number", key: "task_number", width: 100 },
-  { title: "操作", key: "action", width: 140 },
-];
-
 const sftJsonExample = `{
   "images": ["/path/to/image.jpg"],
   "conversations": [
@@ -330,25 +324,15 @@ const sftJsonExample = `{
 }`;
 const messageJsonExample = `{"messages": [{"role": "user", "content": [{"type": "image", "image": "data/cable-010.png"}, {"type": "text", "text": "请描述。"}]}]}`;
 
+function selectProject(projectId: number) {
+  selectedProjectId.value = projectId;
+}
+
 /** 必须在脚本中读 .value：模板里内联箭头函数不会稳定解包 ref，会导致高亮 class 永远不生效 */
 function batchRowClassName(record: { id?: string }) {
   const sid = selectedBatchId.value;
   if (sid == null || record?.id == null) return "";
   return String(record.id) === String(sid) ? "import-batch-table__row--selected" : "";
-}
-
-function projectRowClassName(record: { id?: number }) {
-  const sid = selectedProjectId.value;
-  if (sid == null || record.id == null) return "";
-  return Number(record.id) === Number(sid) ? "import-project-table__row--selected" : "";
-}
-
-function onProjectRow(record: { id: number }) {
-  return {
-    onClick: () => {
-      selectedProjectId.value = record.id;
-    },
-  };
 }
 </script>
 
@@ -415,45 +399,57 @@ function onProjectRow(record: { id: number }) {
         </a-col>
       </a-row>
     </a-form>
+    <a-divider style="border-top: 2px solid rgba(0, 0, 0, 0.35)" />
 
-    <a-row :gutter="16">
-      <a-col :span="10">
         <a-typography-title :level="5" style="margin: 24px 0 12px">项目列表</a-typography-title>
-        <a-table
-          v-if="projects.length"
-          class="import-project-table"
-          :columns="projectColumns"
-          :data-source="projects"
-          :pagination="false"
-          size="small"
-          row-key="id"
-          :row-class-name="projectRowClassName"
-          :custom-row="onProjectRow"
-        >
-          <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'task_number'">
-              约 {{ (record as any).task_number }} 任务
-            </template>
-            <template v-else-if="column.key === 'action' && record">
-              <a-space size="small" @click.stop>
-                <a-button
-                  type="primary"
-                  size="small"
-                  :loading="importingIds.has((record as any).id)"
-                  @click="importProject((record as any).id)"
-                >
-                  导入
-                </a-button>
-              </a-space>
-            </template>
-            <span v-else>{{ (record as any)?.[column.dataIndex as string] ?? "-" }}</span>
-          </template>
-        </a-table>
-        <a-typography-paragraph v-else type="secondary">
+        <a-spin :spinning="loadingProjects">
+          <a-row v-if="projects.length" class="import-project-card-grid" :gutter="[16, 16]">
+            <a-col
+              v-for="record in projects"
+              :key="record.id"
+              :xs="24"
+              :sm="12"
+              :md="12"
+              :lg="8"
+              :xl="6"
+            >
+              <a-card
+                class="import-project-card"
+                :class="{
+                  'import-project-card--selected':
+                    selectedProjectId != null && Number(record.id) === Number(selectedProjectId),
+                }"
+                hoverable
+                @click="selectProject(record.id)"
+              >
+                <template #title>
+                  <span
+                    class="import-project-card-title"
+                    :title="record.title != null && String(record.title).trim() !== '' ? String(record.title) : undefined"
+                  >
+                    {{ record.title != null && String(record.title).trim() !== "" ? record.title : "-" }}
+                  </span>
+                </template>
+                <template #extra>
+                  <a-button
+                    type="primary"
+                    :loading="importingIds.has(record.id)"
+                    @click.stop="importProject(record.id)"
+                  >
+                    导入
+                  </a-button>
+                </template>
+                <div class="import-project-card-meta">
+                  约 <span class="import-project-card-meta-number">{{ record.task_number }}</span> 任务
+                </div>
+              </a-card>
+            </a-col>
+          </a-row>
+        </a-spin>
+        <a-typography-paragraph v-if="!loadingProjects && !projects.length" type="secondary">
           请点击「刷新项目列表」加载 Label Studio 中的项目（需有效 Token）
         </a-typography-paragraph>
-      </a-col>
-      <a-col :span="14">
+        <a-divider style="border-top: 2px solid rgba(0, 0, 0, 0.35)" />
         <a-typography-title :level="5" style="margin: 24px 0 12px">导入的批次列表</a-typography-title>
         <a-table
           class="import-batch-table"
@@ -465,34 +461,39 @@ function onProjectRow(record: { id: number }) {
           row-key="id"
           :row-class-name="batchRowClassName"
           :custom-row="(record: any) => ({
-            onClick: () => selectBatch(record?.id)
+            onClick: () => record?.id != null && selectBatch(String(record.id)),
           })"
         >
           <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'batch_name'">
-                <span class="import-batch-name-cell" @click.stop>
-                  <span
-                    class="import-batch-name-text"
-                    :title="record?.batch_name != null && String(record.batch_name) !== '' ? String(record.batch_name) : undefined"
-                  >
-                    {{ record?.batch_name != null && String(record.batch_name) !== '' ? record.batch_name : "-" }}
-                  </span>
-                  <EditOutlined class="import-batch-name-edit" @click="openBatchNameEditor(record as any)" />
+            <template v-if="column.key === 'batch_name'">
+              <span class="import-batch-name-cell" @click.stop>
+                <span
+                  class="import-batch-name-text"
+                  :title="
+                    record?.batch_name != null && String(record.batch_name) !== ''
+                      ? String(record.batch_name)
+                      : undefined
+                  "
+                >
+                  {{
+                    record?.batch_name != null && String(record.batch_name) !== "" ? record.batch_name : "-"
+                  }}
                 </span>
-              </template>
-              <template v-else-if="column.key === 'action'">
-                <a-space size="small" @click.stop>
-                  <a style="color: #ff4d4f" @click="confirmDeleteBatch(record.id as string)">删除</a>
-                </a-space>
-              </template>
-              <span v-else>{{ record?.[column.dataIndex as string] ?? "-" }}</span>
+                <EditOutlined class="import-batch-name-edit" @click="openBatchNameEditor(record as any)" />
+              </span>
             </template>
+            <template v-else-if="column.key === 'action'">
+              <a-space size="small" @click.stop>
+                <a style="color: #ff4d4f" @click="confirmDeleteBatch(record.id as string)">删除</a>
+              </a-space>
+            </template>
+            <span v-else>{{ record?.[column.dataIndex as string] ?? "-" }}</span>
+          </template>
         </a-table>
         <a-typography-paragraph v-if="!batches.length" type="secondary" style="margin-top: 8px">
-            暂无批次。请先导入数据。
+          暂无批次。请先导入数据。
         </a-typography-paragraph>
-      </a-col>
-    </a-row>
+       
     <a-modal
       v-model:open="rawModalOpen"
       :title="rawModalTitle"
@@ -522,25 +523,79 @@ function onProjectRow(record: { id: number }) {
 </template>
 
 <style scoped>
-/* 可点击行：手型光标（customRow 绑定在 tr 上） */
-.import-project-table :deep(.ant-table-tbody > tr),
+.import-project-card-grid {
+  margin-top: 8px;
+}
+.import-project-card {
+  cursor: pointer;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.1);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  background: color-mix(
+    in srgb,
+    var(--ant-color-fill-tertiary, #f0f0f0) 72%,
+    var(--ant-color-fill-secondary, #e6e6e6) 28%
+  );
+}
+.import-project-card :deep(.ant-card-head) {
+  min-height: 56px;
+  padding: 0 20px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--ant-color-fill-secondary, #e6e6e6) 55%, transparent) 0%,
+    color-mix(in srgb, var(--ant-color-fill-tertiary, #f0f0f0) 35%, transparent) 100%
+  );
+}
+.import-project-card :deep(.ant-card-head-title) {
+  padding: 14px 0;
+  min-width: 0;
+}
+.import-project-card :deep(.ant-card-extra) {
+  padding: 14px 0;
+}
+.import-project-card :deep(.ant-card-body) {
+  padding: 16px 20px 18px;
+  background: color-mix(in srgb, var(--ant-color-fill-tertiary, #f0f0f0) 88%, var(--ant-color-bg-container, #fff) 12%);
+}
+.import-project-card-title {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  font-size: 16px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.88);
+  letter-spacing: 0.01em;
+}
+.import-project-card--selected {
+  border-color: var(--ant-primary-color, #1677ff);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--ant-primary-color, #1677ff) 45%, transparent),
+    0 8px 22px rgba(22, 119, 255, 0.2);
+}
+.import-project-card-meta {
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.55);
+  line-height: 1.5;
+}
+.import-project-card-meta-number {
+  font-weight: 700;
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(0, 0, 0, 0.88);
+}
+
 .import-batch-table :deep(.ant-table-tbody > tr) {
   cursor: pointer;
 }
-
-/* 批次列表：当前选中行高亮（不依赖 rowSelection 内置样式） */
 .import-batch-table :deep(.import-batch-table__row--selected > td) {
   background: color-mix(in srgb, var(--ant-primary-color, #1677ff) 12%, var(--ant-color-bg-container, #fff));
 }
 .import-batch-table :deep(.import-batch-table__row--selected:hover > td) {
-  background: color-mix(in srgb, var(--ant-primary-color, #1677ff) 20%, var(--ant-color-bg-container, #fff));
-}
-
-/* 项目列表：当前选中行高亮 */
-.import-project-table :deep(.import-project-table__row--selected > td) {
-  background: color-mix(in srgb, var(--ant-primary-color, #1677ff) 12%, var(--ant-color-bg-container, #fff));
-}
-.import-project-table :deep(.import-project-table__row--selected:hover > td) {
   background: color-mix(in srgb, var(--ant-primary-color, #1677ff) 20%, var(--ant-color-bg-container, #fff));
 }
 
