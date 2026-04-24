@@ -5,7 +5,7 @@ import { http } from "../api/http";
 
 type HubDownloadRecord = {
   /** 旧数据可能无此字段，有 completed_at 则按成功记录展示 */
-  status?: "downloading" | "completed" | "failed";
+  status?: "downloading" | "completed" | "failed" | "interrupted";
   size_bytes?: number;
   files_total?: number;
   total_bytes_expected?: number;
@@ -13,6 +13,7 @@ type HubDownloadRecord = {
   started_at?: string;
   failed_at?: string;
   error?: string;
+  interrupted_at?: string;
 };
 
 type Row = {
@@ -136,7 +137,13 @@ function formatRecordTime(iso: string) {
 
 function isDownloadRecordSuccess(rec: HubDownloadRecord | undefined): boolean {
   if (!rec) return false;
-  if (rec.status === "failed" || rec.status === "downloading") return false;
+  if (
+    rec.status === "failed" ||
+    rec.status === "downloading" ||
+    rec.status === "interrupted"
+  ) {
+    return false;
+  }
   if (rec.status === "completed") return true;
   // 旧版持久化无 status，有 completed_at 即视为成功记录
   return Boolean(rec.completed_at);
@@ -174,9 +181,16 @@ async function tickPoll() {
         } else if (u.status === "failed") {
           message.error(u.error ?? "下载失败");
           activeJobs.value = activeJobs.value.filter((x) => x.job_id !== j.job_id);
+          await refresh();
         }
-      } catch {
-        /* 轮询短暂失败时忽略 */
+      } catch (e: unknown) {
+        const status = (e as { response?: { status?: number } })?.response?.status;
+        if (status === 404) {
+          message.warning("下载任务已不存在，可能已结束或已过期。已同步列表。");
+          activeJobs.value = activeJobs.value.filter((x) => x.job_id !== j.job_id);
+          await refresh();
+        }
+        /* 其他短暂网络错误可忽略，下次轮询重试 */
       }
     }
   } finally {
@@ -383,6 +397,23 @@ onUnmounted(() => {
                   style="margin-top: 2px; font-size: 12px; color: rgba(0, 0, 0, 0.35)"
                 >
                   {{ formatRecordTime(String((record as CachedRow).download_record?.failed_at)) }}
+                </div>
+              </template>
+              <template
+                v-else-if="(record as CachedRow).download_record?.status === 'interrupted'"
+              >
+                <a-typography-text type="warning">下载已中断</a-typography-text>
+                <div
+                  style="margin-top: 4px; font-size: 12px; color: rgba(0, 0, 0, 0.45); line-height: 1.4"
+                >
+                  本机目录可能不完整（例如进程退出、未收到完成或失败信息）。可删除本机记录后重下，或再次尝试从
+                  ModelScope 下载（是否续传由魔搭客户端决定）。
+                </div>
+                <div
+                  v-if="(record as CachedRow).download_record?.interrupted_at"
+                  style="margin-top: 2px; font-size: 12px; color: rgba(0, 0, 0, 0.35)"
+                >
+                  {{ formatRecordTime(String((record as CachedRow).download_record?.interrupted_at)) }}
                 </div>
               </template>
               <template
