@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -35,7 +38,12 @@ class TrainJobCreate(BaseModel):
     per_device_eval_batch_size: int = 1
     gradient_accumulation_steps: int = 1
     learning_rate: float = 1e-4
-    dataloader_num_workers: int = 0
+    dataloader_num_workers: int = Field(
+        default=0,
+        ge=0,
+        le=128,
+        description="ms-swift DataLoader worker 数，0 为主进程加载；可设为不超过 CPU 核心数",
+    )
     max_length: int = 128
     logging_steps: int = 1000
     save_steps: int = 1_000_000
@@ -54,27 +62,50 @@ class TrainJobCreate(BaseModel):
     project_title: str = Field(default="", description="展示用：导入项目名")
     batch_name: str = Field(default="", description="展示用：导入批次名")
     dataset_name: str = Field(default="", description="展示用：数据集版本展示名")
+    dataset_version_id: str = Field(
+        default="",
+        description="仅用于展开默认 output 目录（output/<version_id>）；不参与 train 命令行。",
+    )
+
+
+def _norm_output_dir_key(s: str) -> str:
+    return (s or "").strip().replace("\\", "/")
 
 
 def _resolve_output_dir_for_new_job(body: TrainJobCreate, job_id: str) -> TrainJobCreate:
-    """占位路径 output / output/ 在创建任务后展开为 output/<job_id>，与 UI 默认一致。"""
+    """
+    占位路径 output / output/ 在创建任务后展开为：
+    - 有 dataset_version_id：output/<version_id>（同一数据集版本共用一个目录；多次训练由 ms-swift add_version 生成 v0-/v1-… 区分）
+    - 否则：output/<job_id>（无版本信息时仍按任务分目录）
+    有 resume_from_checkpoint 时沿用 request 中的 output_dir，不会进入占位分支。
+    新任务仅允许占位 output/（由 create_job 在解析前写入）。
+    """
     od = str(body.output_dir or "").strip().replace("\\", "/")
     core = od.rstrip("/")
     if core == "" or core == "output":
+        vid = str(body.dataset_version_id or "").strip()
+        if ".." in vid or "/" in vid or "\\" in vid:
+            vid = ""
+        if vid:
+            return body.model_copy(update={"output_dir": f"output/{vid}"})
         return body.model_copy(update={"output_dir": f"output/{job_id}"})
     return body
 
 
 def _latest_checkpoint_relpath(workspace: Path, output_dir: str) -> str | None:
-    """在 output_dir 下查找最新的 checkpoint-*，返回相对 workspace 的 posix 路径。"""
+    """在 output_dir 下查找最新的 checkpoint-*（含 ms-swift add_version 下的 v0-*/checkpoint-*）。"""
     out = (workspace / (output_dir or "").strip()).resolve()
     if not out.is_dir():
         return None
     best_step = -1
     best_path: Path | None = None
     non_numeric: list[Path] = []
-    for p in out.iterdir():
-        if not p.is_dir() or not p.name.startswith("checkpoint-"):
+    try:
+        candidates = [p for p in out.rglob("checkpoint-*") if p.is_dir()]
+    except OSError:
+        return None
+    for p in candidates:
+        if not p.name.startswith("checkpoint-"):
             continue
         rest = p.name[len("checkpoint-") :]
         if not rest:
@@ -87,8 +118,13 @@ def _latest_checkpoint_relpath(workspace: Path, output_dir: str) -> str | None:
         if step > best_step:
             best_step = step
             best_path = p
+        elif step == best_step and best_path is not None:
+            try:
+                if p.stat().st_mtime > best_path.stat().st_mtime:
+                    best_path = p
+            except OSError:
+                pass
     if best_path is None and non_numeric:
-        # 仅有 checkpoint-last 等名称时，按修改时间选最新
         best_path = max(non_numeric, key=lambda q: q.stat().st_mtime)
     if best_path is None:
         return None
@@ -97,6 +133,41 @@ def _latest_checkpoint_relpath(workspace: Path, output_dir: str) -> str | None:
     except ValueError:
         return str(best_path).replace("\\", "/")
     return rel.as_posix()
+
+
+def _extract_swift_effective_output_dir_from_log(log_path: Path, *, max_bytes: int = 1_000_000) -> str | None:
+    """从训练日志中解析 ms-swift 在 on_train_begin 时使用的 output_dir（add_version 下含 v0-/v1-…）。"""
+    try:
+        raw = log_path.read_bytes()[:max_bytes]
+    except OSError:
+        return None
+    text = raw.decode("utf-8", errors="replace")
+    for pat in (
+        r"\[train_api\] on_train_begin \| output_dir=(.+?) \| max_steps=",
+        r"\[train_api\] on_train_begin \| output_dir=(.+?)\s*\|",
+    ):
+        m = re.search(pat, text)
+        if not m:
+            continue
+        fragment = m.group(1).strip()
+        try:
+            return str(ast.literal_eval(fragment))
+        except (ValueError, SyntaxError):
+            return fragment.strip("'\"")
+
+
+def _output_path_as_workspace_rel(workspace: Path, p: str) -> str:
+    p = (p or "").strip()
+    if not p:
+        return p
+    path = Path(p)
+    ws = workspace.resolve()
+    if not path.is_absolute():
+        return p.replace("\\", "/")
+    try:
+        return path.resolve().relative_to(ws).as_posix()
+    except ValueError:
+        return p.replace("\\", "/")
 
 
 def _format_train_exit_message(code: int) -> str:
@@ -119,6 +190,18 @@ class TrainJob:
     return_code: int | None = None
     error_message: str | None = None
     request: dict[str, Any] = field(default_factory=dict)
+
+
+def _attach_swift_run_relpath(workspace: Path, job: TrainJob) -> None:
+    if not isinstance(job.request, dict) or job.request.get("swift_run_relpath"):
+        return
+    if not job.log_path or not job.log_path.is_file():
+        return
+    raw = _extract_swift_effective_output_dir_from_log(job.log_path)
+    if not raw:
+        return
+    job.request = dict(job.request)
+    job.request["swift_run_relpath"] = _output_path_as_workspace_rel(workspace, raw)
 
 
 class TrainingJobManager:
@@ -177,6 +260,37 @@ class TrainingJobManager:
         conn.execute("DELETE FROM training_jobs_persist WHERE id = ?", (job_id,))
         conn.commit()
 
+    def _remove_directory_for_output_dir(self, rel: str | None) -> None:
+        """
+        删除该任务在 request 中记录的 output_dir 对应工作区子目录（checkpoint、LoRA 等一并清除）。
+        不删除工作区根或单独的 output/ 根目录，避免误伤其它任务。
+        """
+        if not isinstance(rel, str) or not rel.strip():
+            return
+        s = rel.strip().replace("\\", "/")
+        if s.startswith(("/", "\\")) or ".." in s:
+            return
+        parts = [p for p in Path(s).parts if p and p not in (".",)]
+        if ".." in parts:
+            return
+        target = (self._workspace / s).resolve()
+        try:
+            target.relative_to(self._workspace.resolve())
+        except ValueError:
+            return
+        ws = self._workspace.resolve()
+        if target == ws or target == (ws / "output"):
+            return
+        if not target.exists():
+            return
+        try:
+            if target.is_dir():
+                shutil.rmtree(target, ignore_errors=True)
+            else:
+                target.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     def _hydrate_from_db(self) -> None:
         conn = get_connection(self._workspace)
         rows = conn.execute(
@@ -224,14 +338,44 @@ class TrainingJobManager:
 
     def list_jobs(self) -> list[TrainJob]:
         with self._lock:
-            return sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
+            jobs = sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
+        for j in jobs:
+            self._hydrate_swift_run_relpath_from_log(j)
+        return jobs
 
     def get_job(self, job_id: str) -> TrainJob | None:
         with self._lock:
-            return self._jobs.get(job_id)
+            j = self._jobs.get(job_id)
+        if j is not None:
+            self._hydrate_swift_run_relpath_from_log(j)
+        return j
+
+    def _hydrate_swift_run_relpath_from_log(self, job: TrainJob) -> None:
+        """训练开始后日志会出现 on_train_begin 的实际 output_dir；解析后写入 request 并持久化。"""
+        if not isinstance(job.request, dict) or job.request.get("swift_run_relpath"):
+            return
+        if not job.log_path or not job.log_path.is_file():
+            return
+        raw = _extract_swift_effective_output_dir_from_log(job.log_path)
+        if not raw:
+            return
+        rel = _output_path_as_workspace_rel(self._workspace, raw)
+        to_save: TrainJob | None = None
+        with self._lock:
+            j = self._jobs.get(job.id)
+            if not j or not isinstance(j.request, dict) or j.request.get("swift_run_relpath"):
+                return
+            j.request = dict(j.request)
+            j.request["swift_run_relpath"] = rel
+            to_save = j
+        if to_save:
+            self._save_job_to_db(to_save)
 
     def create_job(self, body: TrainJobCreate) -> TrainJob:
         job_id = str(uuid.uuid4())
+        rfc = body.resume_from_checkpoint
+        if not (isinstance(rfc, str) and rfc.strip()):
+            body = body.model_copy(update={"output_dir": "output/"})
         body = _resolve_output_dir_for_new_job(body, job_id)
         jobs_dir = self._workspace / "output" / "workshop-jobs"
         jobs_dir.mkdir(parents=True, exist_ok=True)
@@ -317,7 +461,11 @@ class TrainingJobManager:
                 else:
                     j.status = "failed"
                     j.error_message = _format_train_exit_message(code)
-                self._save_job_to_db(j)
+            j2 = self._jobs.get(job_id)
+            if j2:
+                _attach_swift_run_relpath(self._workspace, j2)
+                with self._lock:
+                    self._save_job_to_db(j2)
 
         threading.Thread(target=_wait, daemon=True).start()
         return job
@@ -352,12 +500,28 @@ class TrainingJobManager:
                 return False
             if j.status in ("pending", "running"):
                 return False
+            out_rel: str | None = None
+            if j.request and isinstance(j.request.get("output_dir"), str):
+                out_rel = j.request["output_dir"]
+            # 多个任务可共享同一 output_dir（如「继续训练」新旧两条记录）；仅当再无其它任务引用时才删目录
+            out_key = _norm_output_dir_key(str(out_rel)) if out_rel else ""
+            share_with_others = False
+            if out_key:
+                for oid, oj in self._jobs.items():
+                    if oid == job_id:
+                        continue
+                    ood = (oj.request or {}).get("output_dir")
+                    if isinstance(ood, str) and _norm_output_dir_key(ood) == out_key:
+                        share_with_others = True
+                        break
             del self._jobs[job_id]
             if j.log_path and j.log_path.is_file():
                 try:
                     j.log_path.unlink()
                 except OSError:
                     pass
+            if not share_with_others:
+                self._remove_directory_for_output_dir(out_rel)
             self._delete_job_from_db(job_id)
             return True
 
@@ -403,6 +567,8 @@ class TrainingJobManager:
             p["val_dataset"],
             "--output_dir",
             p["output_dir"],
+            "--add_version",
+            "true",
             "--lora_rank",
             str(p["lora_rank"]),
             "--lora_alpha",

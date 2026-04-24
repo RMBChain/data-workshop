@@ -8,13 +8,29 @@ from typing import Any
 from fastapi import APIRouter
 
 from backend.app.config import get_settings
+from backend.app.services import modelscope_manager as mscm
 
 router = APIRouter(tags=["system"])
 
-try:
-    import torch
-except Exception:  # 某些最小环境
-    torch = None  # type: ignore[assignment]
+# 延迟到首次需要时再 import torch，使 main 里对 torch.cuda 的 filterwarnings 已生效
+_torch_mod: object | None = None
+_torch_load_failed: bool = False
+
+
+def _get_torch() -> object | None:
+    global _torch_mod, _torch_load_failed
+    if _torch_load_failed:
+        return None
+    if _torch_mod is not None:
+        return _torch_mod
+    try:
+        import torch as _t
+
+        _torch_mod = _t
+    except Exception:
+        _torch_load_failed = True
+        _torch_mod = None
+    return _torch_mod
 
 
 @router.get("/system/resources")
@@ -42,10 +58,11 @@ async def system_resources() -> dict[str, Any]:
 async def system_info() -> dict[str, Any]:
     torch_ver = "未安装"
     cuda = False
-    if torch is not None:
-        torch_ver = str(torch.__version__)
+    t = _get_torch()
+    if t is not None:
+        torch_ver = str(getattr(t, "__version__", ""))
         try:
-            cuda = bool(torch.cuda.is_available())
+            cuda = bool(t.cuda.is_available())  # type: ignore[union-attr]
         except Exception:
             cuda = False
     return {
@@ -59,11 +76,12 @@ async def system_info() -> dict[str, Any]:
 
 @router.get("/system/paths")
 async def system_paths() -> dict[str, Any]:
-    home = Path.home()
     ws = get_settings().workspace_root.resolve()
+    mroot = mscm.modelscope_cache_dir()
     return {
         "workspace_root": str(ws),
-        "modelscope_cache": str((home / ".cache" / "modelscope").resolve()),
+        "modelscope_cache": str(mroot),
+        "modelscope_hub": str(mscm.modelscope_hub_root()),
         "data_dir": str((ws / "data").resolve()),
         "output_dir": str((ws / "output").resolve()),
     }

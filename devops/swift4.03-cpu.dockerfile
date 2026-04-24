@@ -62,6 +62,8 @@ RUN uv pip install tensorboard==2.20.0               -i ${PYPI_INDEX}
 RUN uv pip install decord==0.6.0                     -i ${PYPI_INDEX}
 RUN uv pip install cleanvision==0.3.7                -i ${PYPI_INDEX}
 RUN uv pip install jinja2==3.1.6                     -i ${PYPI_INDEX}
+# 与 data-workshop workshop-requirements 一致；即使纯 CPU 也会 import torch.cuda，用官方 nvidia-ml-py 替代弃用的 pynvml 包，避免 FutureWarning
+RUN uv pip install "nvidia-ml-py>=12.560.0"         -i ${PYPI_INDEX}
 # RUN uv cache clean
 
 RUN printf '%s\n' \

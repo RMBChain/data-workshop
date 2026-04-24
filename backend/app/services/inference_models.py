@@ -1,7 +1,103 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
+
+from backend.app.db import get_connection
+from backend.app.services.job_manager import _latest_checkpoint_relpath
+
+
+def _safe_workspace_rel(rel: str) -> str | None:
+    s = (rel or "").strip().replace("\\", "/").rstrip("/")
+    if not s or s == "—":
+        return None
+    p = Path(s)
+    if p.is_absolute():
+        return None
+    if ".." in p.parts:
+        return None
+    return s
+
+
+def _training_job_display_name(req: dict[str, Any], job_id: str) -> str:
+    n = str(req.get("job_name") or "").strip()
+    if n and n != "—":
+        return n
+    return f"训练 · {job_id[:8]}"
+
+
+def _adapter_relpath_for_registered_training(workspace: Path, req: dict[str, Any]) -> str | None:
+    base = _safe_workspace_rel(str(req.get("swift_run_relpath") or req.get("output_dir") or ""))
+    if not base:
+        return None
+    ws = workspace.resolve()
+    out = ws / base
+    ckpt_rel: str | None = None
+    if out.is_dir():
+        ckpt_rel = _latest_checkpoint_relpath(workspace, base)
+        if ckpt_rel:
+            ckpt = ws / ckpt_rel.replace("\\", "/")
+            if ckpt.is_dir() and (ckpt / "adapter_config.json").is_file():
+                return ckpt_rel.replace("\\", "/")
+        if (out / "adapter_config.json").is_file():
+            return base
+        adapters = sorted(
+            (p for p in out.rglob("adapter_config.json") if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if adapters:
+            try:
+                return adapters[0].parent.resolve().relative_to(ws).as_posix()
+            except ValueError:
+                pass
+    fallback = ckpt_rel or base
+    return fallback.replace("\\", "/")
+
+
+def list_registered_training_models(workspace: Path) -> list[dict[str, Any]]:
+    """仅 `training_jobs_persist` 中状态为 succeeded 的训练任务；路径由 request 与（若存在）磁盘上的 checkpoint/adapter 推断。"""
+    root = workspace.resolve()
+    conn = get_connection(root)
+    rows = conn.execute(
+        "SELECT id, request_json FROM training_jobs_persist "
+        "WHERE status = 'succeeded' "
+        "ORDER BY CAST(created_at AS REAL) DESC"
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows or []:
+        jid = str(row["id"])
+        raw = row["request_json"] or "{}"
+        try:
+            req = json.loads(raw) if isinstance(raw, str) else {}
+        except json.JSONDecodeError:
+            req = {}
+        if not isinstance(req, dict):
+            req = {}
+        adapter_rel = _adapter_relpath_for_registered_training(root, req)
+        if not adapter_rel:
+            continue
+        jn = _training_job_display_name(req, jid)
+        tbm = str(req.get("model") or "").strip()
+        project_title = str(req.get("project_title") or "").strip() or None
+        batch_name = str(req.get("batch_name") or "").strip() or None
+        dataset_name = str(req.get("dataset_name") or "").strip() or None
+        out.append(
+            {
+                "id": f"lora:{adapter_rel}",
+                "kind": "lora",
+                "path": adapter_rel,
+                "train_base_model": tbm or None,
+                "job_id": jid,
+                "job_name": jn,
+                "label": jn,
+                "project_title": project_title,
+                "batch_name": batch_name,
+                "dataset_name": dataset_name,
+            }
+        )
+    return out[:200]
 
 
 def list_workspace_models(workspace: Path) -> list[dict[str, Any]]:

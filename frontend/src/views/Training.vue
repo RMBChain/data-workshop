@@ -43,6 +43,8 @@ const form = reactive({
   save_steps: 1000000,
   eval_steps: 1000000,
   save_total_limit: 1,
+  /** ms-swift DataLoader 并行进程数，常用 0～CPU 逻辑核心数 */
+  dataloader_num_workers: 2,
 });
 
 const activeDatasetHint = ref("");
@@ -87,24 +89,26 @@ function defaultTrainJobName(datasetLabel: string) {
   return `${base}#${Date.now()}`;
 }
 
-/** 是否按任务 ID 自动使用 output/<id>；新建任务时不误用「当前所选任务」的目录；无任务时 output/<数据集版本id> 也视为占位由后端展开。 */
-function isAutoOutputDir(path: string, selectedJobId: string | null): boolean {
-  const p = path.trim().replace(/\\/g, "/").replace(/\/+$/, "") || "";
-  if (p === "" || p === "output") return true;
-  if (selectedJobId && p === `output/${selectedJobId}`) return true;
-  const vid = selectedDatasetVersionId.value;
-  if (vid != null && vid !== "" && p === `output/${vid}`) return true;
-  return false;
-}
-
 /**
- * 有当前训练任务用任务 ID；否则用传入或当前选中的数据集版本 ID；都无则为 output/。
+ * 查看某任务时：以任务记录中的 output_dir 为准；否则展示用 output/<versionId>（同版本多次训练共用该目录，ms-swift 用 v0-/v1-… 分子目录）。
  * @param versionId 来自 Select 的 @update:value 时传入，避免 v-model 尚未提交导致读到旧选中项。
  */
 function syncOutputDirWithTaskOrDataset(versionId?: string | null) {
   if (currentJobId.value) {
-    form.output_dir = `output/${currentJobId.value}`;
-    return;
+    const row = jobs.value.find((j) => (j as { id?: string }).id === currentJobId.value) as
+      | { request?: { output_dir?: unknown; dataset_version_id?: unknown } }
+      | undefined;
+    const req = row?.request;
+    const od0 = req?.output_dir;
+    if (typeof od0 === "string" && od0.trim()) {
+      form.output_dir = od0.trim();
+      return;
+    }
+    const dvid0 = req?.dataset_version_id;
+    if (typeof dvid0 === "string" && dvid0.trim()) {
+      form.output_dir = `output/${dvid0.trim()}`;
+      return;
+    }
   }
   const vid = versionId !== undefined ? versionId : selectedDatasetVersionId.value;
   if (vid != null && vid !== "") {
@@ -544,10 +548,11 @@ const overallJobStatusTagColor = computed(() => {
 });
 
 const jobColumns = [
-  { title: "任务名称", dataIndex: "job_name", key: "job_name", ellipsis: true, width: 200 },
+  { title: "训练名称", dataIndex: "job_name", key: "job_name", ellipsis: true, width: 200 },
   { title: "项目", dataIndex: "project_title", key: "project_title", ellipsis: true, width: 120 },
   { title: "批次", dataIndex: "batch_name", key: "batch_name", ellipsis: true, width: 120 },
   { title: "数据集", dataIndex: "dataset_name", key: "dataset_name", ellipsis: true, width: 140 },
+  { title: "输出LoRA 路径", dataIndex: "output_dir", key: "output_dir", ellipsis: true, width: 220 },
   { title: "开始时间", dataIndex: "created_at", key: "created_at", width: 100 },
   { title: "结束时间", dataIndex: "finished_at", key: "finished_at", width: 100 },
   { title: "状态", dataIndex: "status", key: "status", width: 60 },
@@ -578,9 +583,11 @@ function formatJobEnd(finished: unknown, status: string | undefined): string {
 }
 
 function onChartsResize() {
-  resCpuChart?.resize();
-  resMemChart?.resize();
-  chart?.resize();
+  requestAnimationFrame(() => {
+    resCpuChart?.resize();
+    resMemChart?.resize();
+    chart?.resize();
+  });
 }
 
 onMounted(() => {
@@ -673,6 +680,67 @@ function trainingJobNameText(record: { job_name?: string | null }): string {
 function trainingJobNameTitle(record: { job_name?: string | null }): string | undefined {
   const t = trainingJobNameText(record);
   return t !== "—" ? t : undefined;
+}
+
+function trainingOutputDirText(record: { output_dir?: string | null; request?: { output_dir?: unknown } }): string {
+  const top = record.output_dir;
+  if (typeof top === "string" && top.trim() && top !== "—") return top.trim();
+  const raw = record.request?.output_dir;
+  const s = typeof raw === "string" ? raw.trim() : "";
+  return s || "—";
+}
+
+/** 列表格展示：统一到数据集版本根目录 output/<versionId>（隐藏任务子目录等）。 */
+function trainingOutputDirVersionLevelText(record: {
+  output_dir?: string | null;
+  request?: { output_dir?: unknown; dataset_version_id?: unknown };
+}): string {
+  const reqVid = record.request?.dataset_version_id;
+  if (typeof reqVid === "string" && reqVid.trim()) {
+    return `output/${reqVid.trim()}`;
+  }
+  const full = trainingOutputDirText(record);
+  if (full === "—") return full;
+  const parts = full
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "")
+    .split("/")
+    .filter(Boolean);
+  if (parts.length >= 3 && parts[0] === "output") {
+    return `output/${parts[1]}`;
+  }
+  return full;
+}
+
+function trainingOutputDirTitle(record: { output_dir?: string | null; request?: { output_dir?: unknown } }): string | undefined {
+  const t = trainingOutputDirText(record);
+  return t !== "—" ? t : undefined;
+}
+
+/** 列表优先展示 ms-swift 本次运行目录（日志解析的 swift_run_relpath，含 v0-/v1-）；尚无则退回版本级路径。 */
+function trainingOutputDirRunText(record: {
+  output_dir?: string | null;
+  request?: { output_dir?: unknown; swift_run_relpath?: unknown; dataset_version_id?: unknown };
+}): string {
+  const run = record.request?.swift_run_relpath;
+  if (typeof run === "string" && run.trim()) return run.trim();
+  return trainingOutputDirVersionLevelText(record);
+}
+
+function trainingOutputDirRunTitle(record: {
+  output_dir?: string | null;
+  request?: { output_dir?: unknown; swift_run_relpath?: unknown };
+}): string | undefined {
+  const lines: string[] = [];
+  const run = record.request?.swift_run_relpath;
+  if (typeof run === "string" && run.trim()) {
+    lines.push(`ms-swift 运行目录：${run.trim()}`);
+  }
+  const base = trainingOutputDirText(record);
+  if (base !== "—") {
+    lines.push(`任务 output_dir：${base}`);
+  }
+  return lines.length ? lines.join("\n") : undefined;
 }
 
 function openTrainingJobNameEditor(record: { id?: string; job_name?: string | null }) {
@@ -791,26 +859,29 @@ async function startTraining() {
         : null;
     const dataLabel = (ver?.name ?? "").trim() || (ver ? String(ver.id) : "");
     const resolvedJobName = (form.job_name || "").trim() || defaultTrainJobName(dataLabel);
-    const autoOut = isAutoOutputDir(form.output_dir, currentJobId.value);
+    const dvid = selectedDatasetVersionId.value != null && selectedDatasetVersionId.value !== "" ? String(selectedDatasetVersionId.value) : "";
     const r = await http.post<{
       id: string;
       status: string;
       error_message?: string | null;
+      output_dir?: string | null;
     }>("/api/training/jobs", {
       ...form,
-      output_dir: autoOut ? "output/" : form.output_dir,
+      output_dir: "output/",
+      dataset_version_id: dvid,
       job_name: resolvedJobName,
       project_title: (ver?.project_title ?? "").trim(),
       batch_name: (ver?.batch_name ?? "").trim(),
       dataset_name: dataLabel,
     });
     currentJobId.value = r.data.id;
-    if (autoOut) form.output_dir = `output/${r.data.id}`;
+    const ro = (r.data.output_dir ?? "").trim();
+    form.output_dir = ro || (dvid ? `output/${dvid}` : "output/");
     jobStatus.value = r.data.status;
     jobError.value =
       r.data.error_message != null && String(r.data.error_message).trim() ? String(r.data.error_message) : "";
     form.job_name = "";
-    message.success(`任务已创建：${resolvedJobName}`);
+    message.success(ro ? `任务已创建：${resolvedJobName}（${ro}）` : `任务已创建：${resolvedJobName}`);
     stopLogPoll();
     logPoll = setInterval(() => {
       void refreshLogs();
@@ -868,11 +939,14 @@ async function continueTraining() {
 function selectJob(id: string) {
   currentJobId.value = id;
   const row = jobs.value.find((j) => (j as { id?: string }).id === id) as
-    | { request?: { output_dir?: unknown } }
+    | { output_dir?: unknown; request?: { output_dir?: unknown; dataset_version_id?: unknown } }
     | undefined;
-  const raw = row?.request?.output_dir;
+  const req = row?.request;
+  const topOd = row?.output_dir;
+  const raw = typeof topOd === "string" && topOd.trim() && topOd !== "—" ? topOd : req?.output_dir;
   const od = typeof raw === "string" ? raw.trim() : "";
-  form.output_dir = od || `output/${id}`;
+  const dvid = typeof req?.dataset_version_id === "string" ? req.dataset_version_id.trim() : "";
+  form.output_dir = od || (dvid ? `output/${dvid}` : "output/");
   stopLogPoll();
   logPoll = setInterval(() => void refreshLogs(), 1500);
   void refreshLogs();
@@ -904,7 +978,7 @@ watch(logText, () => {
               <a-space :size="8" align="center">
                 <a @click="selectJob(String((record as { id: string }).id))">查看</a>
                 <a-popconfirm
-                  title="确定删除该条训练任务记录？"
+                  title="确定删除？将移除任务记录与日志；仅当无其它任务共用同一 output 目录时，才删除该目录下文件（如 checkpoint/LoRA）。"
                   ok-text="确定"
                   cancel-text="取消"
                   @confirm="deleteJobById(String((record as { id: string }).id))"
@@ -924,6 +998,23 @@ watch(logText, () => {
                 {{ trainingJobNameText(record as { job_name?: string | null }) }}
               </span>
               <EditOutlined class="training-job-name-edit" @click="openTrainingJobNameEditor(record as { id?: string; job_name?: string | null })" />
+            </span>
+            <span
+              v-else-if="column.key === 'output_dir' && record && typeof record === 'object'"
+              :title="
+                trainingOutputDirRunTitle(
+                  record as { output_dir?: string | null; request?: { output_dir?: unknown; swift_run_relpath?: unknown } },
+                )
+              "
+            >
+              {{
+                trainingOutputDirRunText(
+                  record as {
+                    output_dir?: string | null;
+                    request?: { output_dir?: unknown; swift_run_relpath?: unknown; dataset_version_id?: unknown };
+                  },
+                )
+              }}
             </span>
             <span v-else>{{ text }}</span>
           </template>
@@ -1065,9 +1156,15 @@ watch(logText, () => {
             >
           </a-form-item>
         </a-col>
-        <a-col :span="6">
+        <a-col :span="8">
           <a-form-item label="输出目录">
-            <a-input v-model:value="form.output_dir" />
+            <a-typography-text type="secondary" style="font-size: 13px; word-break: break-all">
+              {{
+                form.output_dir && workspaceRootAbs
+                  ? workspaceDatasetAbsDisplay(form.output_dir)
+                  : "—"
+              }}
+            </a-typography-text>
           </a-form-item>
         </a-col>
       </a-row>
@@ -1185,6 +1282,19 @@ watch(logText, () => {
         </a-col>
       </a-row>
       <a-row :gutter="16">
+        <a-col :span="4">
+          <a-form-item label="DataLoader 进程数">
+            <a-input-number
+              v-model:value="form.dataloader_num_workers"
+              :min="0"
+              :max="128"
+              style="width: 100%"
+            />
+          </a-form-item>
+        </a-col>
+      </a-row>
+
+      <a-row :gutter="16">
         <a-col :span="24" style="margin-top: 4px; margin-bottom: 4px">
           <a-space wrap>
             <a-button
@@ -1244,54 +1354,59 @@ watch(logText, () => {
         </a-typography-paragraph>
         <a-typography-title :level="5">资源（约 2s）</a-typography-title>
         <a-row :gutter="[16, 16]">
-          <a-col :xs="24" :lg="12">
-            <div
-              style="
-                display: flex;
-                align-items: baseline;
-                justify-content: space-between;
-                gap: 8px;
-                flex-wrap: wrap;
-                margin-bottom: 4px;
-              "
-            >
-              <span style="font-size: 12px; color: rgba(0, 0, 0, 0.45)">CPU 使用率</span>
-              <span
-                v-if="resourceSnapshot"
-                style="font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; color: rgba(0, 0, 0, 0.88)"
-                >{{ resourceSnapshot.cpu_percent.toFixed(1) }}%</span
-              >
-              <span v-else style="font-size: 12px; color: rgba(0, 0, 0, 0.25)">—</span>
+          <a-col :span="24">
+            <div class="res-charts-pair">
+              <div class="res-charts-pair__panel">
+                <div
+                  style="
+                    display: flex;
+                    align-items: baseline;
+                    justify-content: space-between;
+                    gap: 8px;
+                    flex-wrap: wrap;
+                    margin-bottom: 4px;
+                  "
+                >
+                  <span style="font-size: 12px; color: rgba(0, 0, 0, 0.45)">CPU 使用率</span>
+                  <span
+                    v-if="resourceSnapshot"
+                    style="font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; color: rgba(0, 0, 0, 0.88)"
+                    >{{ resourceSnapshot.cpu_percent.toFixed(1) }}%</span
+                  >
+                  <span v-else style="font-size: 12px; color: rgba(0, 0, 0, 0.25)">—</span>
+                </div>
+                <div ref="resCpuChartRef" class="res-charts-pair__chart" />
+              </div>
+              <div class="res-charts-pair__vbar" aria-hidden="true" />
+              <div class="res-charts-pair__panel">
+                <div
+                  style="
+                    display: flex;
+                    align-items: baseline;
+                    justify-content: space-between;
+                    gap: 8px;
+                    flex-wrap: wrap;
+                    margin-bottom: 4px;
+                  "
+                >
+                  <span style="font-size: 12px; color: rgba(0, 0, 0, 0.45)"
+                    >内存（已用字节，若在 docker 或 wsl 中，可能会和宿主机不同）</span
+                  >
+                  <span
+                    v-if="resourceSnapshot"
+                    style="font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; color: rgba(0, 0, 0, 0.88); text-align: right"
+                  >
+                    {{ formatBytes(resourceSnapshot.memory.used_bytes) }}
+                    <template v-if="resourceSnapshot.memory.total_bytes > 0">
+                      &nbsp;/ {{ formatBytes(resourceSnapshot.memory.total_bytes) }}
+                    </template>
+                    &nbsp;（{{ resourceSnapshot.memory.percent.toFixed(1) }}%）
+                  </span>
+                  <span v-else style="font-size: 12px; color: rgba(0, 0, 0, 0.25)">—</span>
+                </div>
+                <div ref="resMemChartRef" class="res-charts-pair__chart" />
+              </div>
             </div>
-            <div ref="resCpuChartRef" style="height: 200px; width: 100%" />
-          </a-col>
-          <a-col :xs="24" :lg="12">
-            <div
-              style="
-                display: flex;
-                align-items: baseline;
-                justify-content: space-between;
-                gap: 8px;
-                flex-wrap: wrap;
-                margin-bottom: 4px;
-              "
-            >
-              <span style="font-size: 12px; color: rgba(0, 0, 0, 0.45)"
-                >内存（已用字节，若在 docker 或 wsl 中，可能会和宿主机不同）</span
-              >
-              <span
-                v-if="resourceSnapshot"
-                style="font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; color: rgba(0, 0, 0, 0.88); text-align: right"
-              >
-                {{ formatBytes(resourceSnapshot.memory.used_bytes) }}
-                <template v-if="resourceSnapshot.memory.total_bytes > 0">
-                  &nbsp;/ {{ formatBytes(resourceSnapshot.memory.total_bytes) }}
-                </template>
-                &nbsp;（{{ resourceSnapshot.memory.percent.toFixed(1) }}%）
-              </span>
-              <span v-else style="font-size: 12px; color: rgba(0, 0, 0, 0.25)">—</span>
-            </div>
-            <div ref="resMemChartRef" style="height: 200px; width: 100%" />
           </a-col>
         </a-row>
         <a-typography-text v-if="resourceSnapshot?.note" type="warning" style="display: block; margin-top: 4px; font-size: 12px">
@@ -1386,5 +1501,44 @@ watch(logText, () => {
 }
 .training-job-name-edit:hover {
   color: var(--ant-primary-color, #1677ff);
+}
+/* 资源图：用独立竖条置于两 flex 子项之间，避免栅格 gutter 与 border 在缩放时错位；min-width:0 便于 ECharts 重算 */
+.res-charts-pair {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  width: 100%;
+  box-sizing: border-box;
+}
+.res-charts-pair__panel {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.res-charts-pair__chart {
+  height: 200px;
+  width: 100%;
+  min-width: 0;
+}
+.res-charts-pair__vbar {
+  flex: 0 0 1px;
+  width: 1px;
+  align-self: stretch;
+  min-height: 0;
+  background: rgba(0, 0, 0, 0.08);
+  margin: 0 8px;
+  box-sizing: content-box;
+}
+@media (max-width: 991px) {
+  .res-charts-pair {
+    flex-direction: column;
+  }
+  .res-charts-pair__vbar {
+    display: none;
+  }
+  .res-charts-pair__panel:last-of-type {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(0, 0, 0, 0.08);
+  }
 }
 </style>

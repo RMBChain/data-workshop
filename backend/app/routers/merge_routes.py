@@ -10,14 +10,14 @@ from backend.app.services.paths import resolve_under_workspace
 
 router = APIRouter(tags=["merge"])
 
-_mgr: MergeJobManager | None = None
+_merge_manager: MergeJobManager | None = None
 
 
-def _mgr() -> MergeJobManager:
-    global _mgr
-    if _mgr is None:
-        _mgr = MergeJobManager(get_settings().workspace_root.resolve())
-    return _mgr
+def get_merge_manager() -> MergeJobManager:
+    global _merge_manager
+    if _merge_manager is None:
+        _merge_manager = MergeJobManager(get_settings().workspace_root.resolve())
+    return _merge_manager
 
 
 @router.post("/merge/jobs")
@@ -27,7 +27,7 @@ async def create_merge_job(body: MergeJobCreate) -> dict[str, Any]:
         resolve_under_workspace(root, body.output_path)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    job = _mgr().create_job(body)
+    job = get_merge_manager().create_job(body)
     return {
         "id": job.id,
         "status": job.status,
@@ -38,7 +38,7 @@ async def create_merge_job(body: MergeJobCreate) -> dict[str, Any]:
 
 @router.get("/merge/jobs/{job_id}")
 async def get_merge_job(job_id: str) -> dict[str, Any]:
-    j = _mgr().get(job_id)
+    j = get_merge_manager().get(job_id)
     if not j:
         raise HTTPException(status_code=404, detail="任务不存在")
     return {
@@ -55,16 +55,16 @@ async def get_merge_job(job_id: str) -> dict[str, Any]:
 
 @router.get("/merge/jobs/{job_id}/logs")
 async def get_merge_logs(job_id: str) -> dict[str, Any]:
-    j = _mgr().get(job_id)
+    j = get_merge_manager().get(job_id)
     if not j:
         raise HTTPException(status_code=404, detail="任务不存在")
-    text, truncated = _mgr().read_log(job_id)
+    text, truncated = get_merge_manager().read_log(job_id)
     return {"text": text, "truncated": truncated}
 
 
 @router.post("/merge/jobs/{job_id}/cancel")
 async def cancel_merge_job(job_id: str) -> dict[str, bool]:
-    ok = _mgr().cancel(job_id)
+    ok = get_merge_manager().cancel(job_id)
     if not ok:
         raise HTTPException(status_code=400, detail="无法取消该任务")
     return {"ok": True}
@@ -72,7 +72,7 @@ async def cancel_merge_job(job_id: str) -> dict[str, bool]:
 
 @router.post("/merge/jobs/{job_id}/validate")
 async def validate_merge_job(job_id: str) -> dict[str, Any]:
-    j = _mgr().get(job_id)
+    j = get_merge_manager().get(job_id)
     if not j or j.status != "succeeded":
         raise HTTPException(status_code=400, detail="仅成功完成的合并任务可校验")
     out = (j.request or {}).get("output_path", "")
