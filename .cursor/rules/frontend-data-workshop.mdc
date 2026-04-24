@@ -1,0 +1,25 @@
+---
+description: 前端（Vue 3 + Vite + Ant Design Vue）约定与复用模式
+globs: frontend/**/*
+alwaysApply: false
+---
+
+# 技术栈
+
+- **Vue 3**（`<script setup>`）、**Vue Router**（`src/router/index.ts`）、**Ant Design Vue 4** + reset.css、**axios**、部分页面使用 **ECharts**。
+- **Node**：`package.json` 要求 `>=22`。
+
+# HTTP 与 API
+
+- 统一使用 `frontend/src/api/http.ts` 导出的 **`http`**（`baseURL: ""`），请求路径以 **`/api/...`** 开头，与 Vite 代理及生产反代一致。
+- 在视图中常见：`import { http } from "../api/http"` 或按深度 `../../api/http`。
+- 复杂列表/任务页常见：**轮询**（`setInterval` + 离场 `onUnmounted` 清理）、`message` 反馈（`ant-design-vue`）。
+
+# 页面与文档标题
+
+- 路由 `meta.title` 为各页中文标题；`router.afterEach` 将 `document.title` 设为 **「{title} · 数据工坊」**；新增路由时请设置 `meta.title`。
+- UI 文案以**简体中文**为主，与业务术语（数据工坊、训练、LoRA 合并、数据集等）保持一致。
+
+# 风格
+
+- 新页面/组件与现有 `views/`、`components/` 一致：组合式 API、类型定义靠近使用处或与后端响应字段注释对齐；表格空值常显示 **「—」**。

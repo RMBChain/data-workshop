@@ -41,12 +41,17 @@ async def create_merge_job(body: MergeJobCreate) -> dict[str, Any]:
 
 @router.get("/merge/training-status")
 async def get_merge_training_status() -> dict[str, Any]:
-    """各训练 job_id 对应的 LoRA 合并态：未合并 / 合并中 / 已取消 / 失败 / 成功（内存任务 + 磁盘 workshop_merge_meta）。"""
+    """各训练 job_id 对应的 LoRA 合并态：未合并 / 合并中 / 已取消 / 失败 / 成功。
+    内存中最新 MergeJob 优先（避免磁盘成功掩盖后续失败尝试），无内存记录时回退到磁盘 workshop_merge_meta.json 检测。
+    output_path_by_job_id：仅合并且成功解析到输出目录时非 null（成功合并任务 request.output_path 或磁盘 meta 旁目录）。"""
     root = get_settings().workspace_root.resolve()
     rows = list_registered_training_models(root)
     m = get_merge_manager()
-    by_jid = training_merge_status_by_job_id(root, rows, m)
-    return {"status_by_job_id": by_jid}
+    by_jid, output_by_jid = training_merge_status_by_job_id(root, rows, m)
+    return {
+        "status_by_job_id": by_jid,
+        "output_path_by_job_id": output_by_jid,
+    }
 
 
 @router.get("/merge/jobs/{job_id}")

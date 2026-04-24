@@ -1,0 +1,23 @@
+---
+description: 数据工坊（Data Workshop）项目结构与运行方式，供全仓库对话复用
+alwaysApply: true
+---
+
+# 项目概览
+
+- **目标**：围绕 ms-swift 的数据集、训练、合并、推理、评测等流程提供 Web UI 与 **FastAPI** 后端；工作区为可配置的**仓库/容器根目录**（产出与任务状态落在该目录下）。
+- **布局**：`frontend/`（Vite + Vue 3 + TypeScript + Ant Design Vue + Vue Router + axios），`backend/app/`（FastAPI + 业务与任务管理 + `scripts/` 子进程）。
+
+# 开发端口与 API
+
+- 本地前端默认 **8701**（`vite.config.ts`），Vite 将 **`/api` 代理到 127.0.0.1:8702**。
+- 后端路由在 `main.py` 中**统一** `include_router(..., prefix="/api")`，故前端请求形如 **`/api/...`**（相对根路径，由代理转发）。
+- 生产构建时通常由 **nginx 同域反代 `/api`**；前端 axios（`frontend/src/api/http.ts`）**`baseURL` 为空字符串**，与上述约定一致。
+
+# 环境变量（后端）
+
+- 使用 **`WORKSHOP_` 前缀**（见 `backend/app/config.py`）：如 `WORKSHOP_WORKSPACE_ROOT`、`WORKSHOP_CORS_ORIGINS`、`WORKSHOP_LOG_LEVEL`、`WORKSHOP_SWIFT_EXECUTABLE` 等；日志级别等见 `logutil.py`。
+
+# 与现有规则
+
+- 容器内查看/重启 API 见同目录 **view-api-logs**。
