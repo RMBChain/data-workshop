@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -64,17 +65,17 @@ def main() -> int:
     merged.save_pretrained(str(out), safe_serialization=True)
     processor = AutoProcessor.from_pretrained(base, trust_remote_code=True)
     processor.save_pretrained(str(out))
+    meta: dict = {
+        "base": args.base,
+        "lora_used": str(lora_p),
+        "lora_ignored": [str(x) for x in loras[1:]],
+        "extra_parsed": json.loads(args.extra or "[]"),
+    }
+    mj = (os.environ.get("WORKSHOP_MERGE_JOB_ID") or "").strip()
+    if mj:
+        meta["merge_job_id"] = mj
     (out / "workshop_merge_meta.json").write_text(
-        json.dumps(
-            {
-                "base": args.base,
-                "lora_used": str(lora_p),
-                "lora_ignored": [str(x) for x in loras[1:]],
-                "extra_parsed": json.loads(args.extra or "[]"),
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
+        json.dumps(meta, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     print(f"完成: {out}")

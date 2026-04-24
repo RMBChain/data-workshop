@@ -7,7 +7,11 @@ type MergedModelRow = {
   id: string;
   path: string;
   label: string;
+  /** 来自 dataset_versions.val_relpath（与合并所用 LoRA 对应训练的数据集版本一致） */
   val_jsonl: string;
+  dataset_version_id?: string | null;
+  /** 写入 workshop_merge_meta.json 的 Web 合并任务 id（仅新合并有） */
+  merge_job_id?: string | null;
 };
 
 const DEFAULT_VAL = "data/val.jsonl";
@@ -27,7 +31,8 @@ function filterMergedOption(input: string, option: { value?: string | null }) {
   if (!q) return true;
   const m = mergedModels.value.find((x) => x.path === option.value);
   if (!m) return false;
-  return `${m.label} ${m.path}`.toLowerCase().includes(q);
+  const extra = [m.merge_job_id, m.dataset_version_id].filter(Boolean).join(" ");
+  return `${m.label} ${m.path} ${extra}`.toLowerCase().includes(q);
 }
 
 async function loadMergedModels() {
@@ -65,6 +70,12 @@ function workspaceDatasetAbsDisplay(relRaw: string): string {
 }
 
 const dataPathFull = computed(() => workspaceDatasetAbsDisplay(dataPath.value));
+
+const selectedMergedModel = computed((): MergedModelRow | null => {
+  const p = selectedMergedPath.value;
+  if (!p) return null;
+  return mergedModels.value.find((x) => x.path === p) ?? null;
+});
 
 async function loadWorkspacePaths() {
   try {
@@ -138,8 +149,23 @@ async function start() {
           placeholder="选择合并产物后自动填充下方验证集路径"
         />
       </a-form-item>
-      <a-form-item label="数据 JSONL（工作区相对）">
-        <a-input v-model:value="dataPath" />
+      <a-form-item label="验证集 JSONL（工作区相对）">
+        <a-input
+          v-model:value="dataPath"
+          placeholder="选择上方合并模型后，按该次合并所用训练的数据集版本自动填入 val"
+        />
+        <a-typography-text
+          v-if="selectedMergedModel?.dataset_version_id || selectedMergedModel?.merge_job_id"
+          type="secondary"
+          style="display: block; margin-top: 6px; font-size: 12px"
+        >
+          <template v-if="selectedMergedModel?.merge_job_id"
+            >合并任务 id：{{ selectedMergedModel.merge_job_id }} ·
+          </template>
+          <template v-if="selectedMergedModel?.dataset_version_id"
+            >数据集版本 id：{{ selectedMergedModel.dataset_version_id }}（val 来自该版本在库中的 <code>val</code> 路径）</template
+          >
+        </a-typography-text>
         <a-typography-text v-if="dataPathFull" type="secondary" style="display: block; margin-top: 6px"
           >完整路径：{{ dataPathFull }}</a-typography-text
         >

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 import time
 import uuid
@@ -24,13 +25,34 @@ router = APIRouter(tags=["eval"])
 _DEFAULT_VAL_JSONL = "data/val.jsonl"
 
 
-def _suggest_val_jsonl_from_lora_used(workspace: Path, lora_used: str) -> str:
-    """根据合并元数据中的 LoRA 路径，在已成功训练任务中匹配并返回当时使用的 val 集相对路径。"""
+def _val_relpath_for_training_request(conn: sqlite3.Connection, req: dict[str, Any]) -> str:
+    """优先用「数据集版本」表中的 val 路径，与「数据集 / 训练」中配置一致；否则回退到训练请求中的 val_dataset。"""
+    dvid = str(req.get("dataset_version_id") or "").strip()
+    if dvid:
+        row = conn.execute(
+            "SELECT val_relpath FROM dataset_versions WHERE id = ?",
+            (dvid,),
+        ).fetchone()
+        if row and row["val_relpath"] is not None:
+            s = str(row["val_relpath"] or "").strip().replace("\\", "/")
+            if s:
+                return s
+    vd = str(req.get("val_dataset") or "").strip().replace("\\", "/")
+    return vd if vd else _DEFAULT_VAL_JSONL
+
+
+def _val_jsonl_and_dataset_id_for_lora(
+    workspace: Path, lora_used: str
+) -> tuple[str, str | None]:
+    """
+    根据合并使用的 LoRA 在已成功任务中反查训练请求：
+    通过 dataset_version_id 用 dataset_versions.val_relpath 作为验证集（即 val jsonl 工作区相对路径）。
+    """
     try:
         lora_p = Path(lora_used).resolve()
         lora_rel = lora_p.relative_to(workspace.resolve()).as_posix()
     except (ValueError, OSError):
-        return _DEFAULT_VAL_JSONL
+        return _DEFAULT_VAL_JSONL, None
     conn = get_connection(workspace)
     rows = conn.execute(
         "SELECT request_json FROM training_jobs_persist WHERE status = 'succeeded' "
@@ -48,9 +70,9 @@ def _suggest_val_jsonl_from_lora_used(workspace: Path, lora_used: str) -> str:
         if not adapter:
             continue
         if adapter.replace("\\", "/") == lora_rel.replace("\\", "/"):
-            vd = str(req.get("val_dataset") or "").strip().replace("\\", "/")
-            return vd if vd else _DEFAULT_VAL_JSONL
-    return _DEFAULT_VAL_JSONL
+            dvid = str(req.get("dataset_version_id") or "").strip() or None
+            return _val_relpath_for_training_request(conn, req), dvid
+    return _DEFAULT_VAL_JSONL, None
 
 
 @router.get("/eval/merged-models")
@@ -71,14 +93,18 @@ async def list_merged_models_for_eval() -> dict[str, Any]:
                 continue
             rel = meta_path.parent.relative_to(root).as_posix()
             lora_raw = str(meta.get("lora_used") or "").strip()
-            val_jsonl = (
-                _suggest_val_jsonl_from_lora_used(root, lora_raw) if lora_raw else _DEFAULT_VAL_JSONL
-            )
+            if lora_raw:
+                val_jsonl, dvid = _val_jsonl_and_dataset_id_for_lora(root, lora_raw)
+            else:
+                val_jsonl, dvid = _DEFAULT_VAL_JSONL, None
+            merge_jid = str(meta.get("merge_job_id") or "").strip() or None
             by_path[rel] = {
                 "id": f"merged:{rel}",
                 "path": rel,
                 "label": f"合并模型 · {meta_path.parent.name}",
                 "val_jsonl": val_jsonl,
+                "dataset_version_id": dvid,
+                "merge_job_id": merge_jid,
             }
     for m in list_workspace_models(root):
         if m.get("kind") != "merge":
@@ -91,6 +117,8 @@ async def list_merged_models_for_eval() -> dict[str, Any]:
             "path": p,
             "label": str(m.get("label") or f"合并/权重 · {p}"),
             "val_jsonl": _DEFAULT_VAL_JSONL,
+            "dataset_version_id": None,
+            "merge_job_id": None,
         }
     items = sorted(by_path.values(), key=lambda x: str(x.get("path") or ""))
     return {"items": items, "default_val_jsonl": _DEFAULT_VAL_JSONL}
