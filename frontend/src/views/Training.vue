@@ -11,7 +11,17 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { http } from "../api/http";
 
-type HubModelRow = { model_id: string; path: string; size_bytes: number };
+type HubDownloadRecord = {
+  status?: "downloading" | "completed" | "failed" | "interrupted";
+  completed_at?: string;
+};
+
+type HubModelRow = {
+  model_id: string;
+  path: string;
+  size_bytes: number;
+  download_record?: HubDownloadRecord;
+};
 
 const router = useRouter();
 const hubModels = ref<HubModelRow[]>([]);
@@ -182,8 +192,20 @@ const currentJobNameDisplay = computed(() => {
   return "";
 });
 
+/** 与「模型管理」一致：仅统计本应用标记为下载完成的模型（含旧版仅有 completed_at 的记录）。 */
+function isHubDownloadSuccess(rec: HubDownloadRecord | undefined): boolean {
+  if (!rec) return false;
+  if (rec.status === "failed" || rec.status === "downloading" || rec.status === "interrupted") {
+    return false;
+  }
+  if (rec.status === "completed") return true;
+  return Boolean(rec.completed_at);
+}
+
+const readyHubModels = computed(() => hubModels.value.filter((m) => isHubDownloadSuccess(m.download_record)));
+
 const modelSelectOptions = computed(() =>
-  hubModels.value.map((m) => ({
+  readyHubModels.value.map((m) => ({
     value: m.model_id,
     label: `${m.model_id} · ${formatBytes(m.size_bytes)}`,
   })),
@@ -225,9 +247,10 @@ async function loadWorkspacePaths() {
 }
 
 function syncModelFromHub() {
-  const ids = new Set(hubModels.value.map((m) => m.model_id));
+  const list = readyHubModels.value;
+  const ids = new Set(list.map((m) => m.model_id));
   if (form.model && ids.has(form.model)) return;
-  form.model = hubModels.value[0]?.model_id ?? "";
+  form.model = list[0]?.model_id ?? "";
 }
 
 async function loadHubModels() {
@@ -529,8 +552,10 @@ async function applyYaml() {
     await loadDatasetVersions({ forceSelectActive: true });
     await loadHubModels();
     const m = (form as { model?: string }).model;
-    if (m && !hubModels.value.some((h) => h.model_id === m)) {
-      message.warning("YAML 中的模型未在本机列表中，已改为列表中第一项。请先下载对应该模型或重新选择。");
+    if (m && !readyHubModels.value.some((h) => h.model_id === m)) {
+      message.warning(
+        "YAML 中的模型未在本机「下载完成」列表中，已改为列表中第一项。请先在模型管理中成功下载该模型或重新选择。",
+      );
       syncModelFromHub();
     }
     message.success("已应用 YAML 到表单");
@@ -719,12 +744,12 @@ async function refreshLogs() {
 }
 
 async function startTraining() {
-  if (hubModels.value.length === 0) {
+  if (readyHubModels.value.length === 0) {
     message.warning("请先在「设置 → 模型管理」中成功下载至少一个模型");
     return;
   }
-  if (!form.model || !hubModels.value.some((m) => m.model_id === form.model)) {
-    message.warning("请从列表中选择已下载的模型");
+  if (!form.model || !readyHubModels.value.some((m) => m.model_id === form.model)) {
+    message.warning("请从列表中选择已下载完成的模型");
     return;
   }
   if (!form.train_dataset.trim() || !form.val_dataset.trim()) {
@@ -998,10 +1023,10 @@ watch(logText, () => {
             <template #label>
               <span style="display: inline-flex; align-items: center; gap: 4px">
                 基于模型
-                <a-tooltip title="仅本机已下载">
+                <a-tooltip title="仅列出在模型管理中标记为下载完成的模型">
                   <InfoCircleOutlined
                     style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                    aria-label="仅本机已下载"
+                    aria-label="仅下载完成的模型"
                     role="img"
                   />
                 </a-tooltip>
@@ -1015,7 +1040,7 @@ watch(logText, () => {
                 :disabled="loadingHub"
                 show-search
                 option-filter-prop="label"
-                placeholder="无可用模型时请先到设置中下载"
+                placeholder="无下载完成模型时请先到设置中下载"
                 style="flex: 1; min-width: 0"
               />
               <a-tooltip title="刷新模型列表">
@@ -1032,8 +1057,17 @@ watch(logText, () => {
                 </a-button>
               </a-tooltip>
             </div>
-            <a-typography-text v-if="!loadingHub && hubModels.length === 0" type="secondary" style="display: block; margin-top: 6px"
-              >当前没有检测到魔搭本机已缓存的模型。下载完成后点右侧刷新。</a-typography-text
+            <a-typography-text
+              v-if="!loadingHub && readyHubModels.length === 0 && hubModels.length === 0"
+              type="secondary"
+              style="display: block; margin-top: 6px"
+              >当前没有检测到魔搭本机模型目录。下载完成后点右侧刷新。</a-typography-text
+            >
+            <a-typography-text
+              v-else-if="!loadingHub && readyHubModels.length === 0 && hubModels.length > 0"
+              type="secondary"
+              style="display: block; margin-top: 6px"
+              >本机有模型目录，但尚无下载完成记录（可能仍在下载或上次失败/中断）。请到「设置 → 模型管理」确认状态，完成后点右侧刷新。</a-typography-text
             >
           </a-form-item>
         </a-col>
@@ -1581,7 +1615,7 @@ watch(logText, () => {
             <a-button
               type="primary"
               :loading="submitting"
-              :disabled="loadingHub || !hubModels.length || !form.model"
+              :disabled="loadingHub || !readyHubModels.length || !form.model"
               @click="startTraining"
               >提交训练</a-button
             >
