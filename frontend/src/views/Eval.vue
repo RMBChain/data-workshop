@@ -1,15 +1,93 @@
 <script setup lang="ts">
 import { message } from "ant-design-vue";
-import { ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { http } from "../api/http";
 
-const dataPath = ref("data/val.jsonl");
+type MergedModelRow = {
+  id: string;
+  path: string;
+  label: string;
+  val_jsonl: string;
+};
+
+const DEFAULT_VAL = "data/val.jsonl";
+const dataPath = ref(DEFAULT_VAL);
+const mergedModels = ref<MergedModelRow[]>([]);
+const mergedModelsLoading = ref(false);
+const selectedMergedPath = ref<string | null>(null);
 const acc = ref(true);
 const bleu = ref(true);
 const rouge = ref(true);
 const job = ref<Record<string, unknown> | null>(null);
 const items = ref<Record<string, unknown>[]>([]);
 let t: ReturnType<typeof setInterval> | null = null;
+
+function filterMergedOption(input: string, option: { value?: string | null }) {
+  const q = input.trim().toLowerCase();
+  if (!q) return true;
+  const m = mergedModels.value.find((x) => x.path === option.value);
+  if (!m) return false;
+  return `${m.label} ${m.path}`.toLowerCase().includes(q);
+}
+
+async function loadMergedModels() {
+  mergedModelsLoading.value = true;
+  try {
+    const r = await http.get("/api/eval/merged-models");
+    mergedModels.value = (r.data.items ?? []) as MergedModelRow[];
+  } catch {
+    mergedModels.value = [];
+  } finally {
+    mergedModelsLoading.value = false;
+  }
+}
+
+/** 与后端 workspace_root 一致，仅用于展示完整路径 */
+const workspaceRootAbs = ref("");
+
+/** 将工作区内相对路径显示为自工作区根起的绝对路径（与 Training.vue 一致，仅用于展示） */
+function workspaceDatasetAbsDisplay(relRaw: string): string {
+  const rel = (relRaw ?? "").trim();
+  if (!rel) return "";
+  const root = workspaceRootAbs.value.trim().replace(/[\\/]+$/, "");
+  if (!root) return rel.replace(/\\/g, "/");
+  if (/^[a-zA-Z]:[\\/]/.test(rel)) return rel;
+  if (rel.startsWith("\\\\")) return rel;
+  const rootIsWin = /^[a-zA-Z]:/.test(root);
+  if (rel.startsWith("/") && !rootIsWin) return rel;
+  const sep = rootIsWin ? "\\" : "/";
+  const relNorm = rel
+    .replace(/^[\\/]+/, "")
+    .split(/[/\\]+/)
+    .filter(Boolean)
+    .join(sep);
+  return `${root}${sep}${relNorm}`;
+}
+
+const dataPathFull = computed(() => workspaceDatasetAbsDisplay(dataPath.value));
+
+async function loadWorkspacePaths() {
+  try {
+    const r = await http.get<{ workspace_root?: string }>("/api/system/paths");
+    workspaceRootAbs.value = (r.data.workspace_root ?? "").trim();
+  } catch {
+    workspaceRootAbs.value = "";
+  }
+}
+
+onMounted(() => {
+  void loadWorkspacePaths();
+  void loadMergedModels();
+});
+
+watch(selectedMergedPath, (p) => {
+  if (!p) {
+    dataPath.value = DEFAULT_VAL;
+    return;
+  }
+  const row = mergedModels.value.find((x) => x.path === p);
+  dataPath.value = row?.val_jsonl?.trim() || DEFAULT_VAL;
+});
 
 async function start() {
   const r = await http.post("/api/eval/jobs", {
@@ -40,12 +118,31 @@ async function start() {
     <a-alert
       type="info"
       show-icon
-      message="MVP 仅生成逐条结果占位与指标壳；可后续接入与标注对齐的计分逻辑。"
+      message="评测合并后的LoRA模型。"
       style="margin-bottom: 12px"
     />
     <a-form layout="vertical" style="max-width: 480px">
+      <a-form-item label="通过 LoRA 合并的模型">
+        <a-select
+          v-model:value="selectedMergedPath"
+          allow-clear
+          show-search
+          :filter-option="filterMergedOption"
+          :loading="mergedModelsLoading"
+          :options="
+            mergedModels.map((m) => ({
+              value: m.path,
+              label: m.label,
+            }))
+          "
+          placeholder="选择合并产物后自动填充下方验证集路径"
+        />
+      </a-form-item>
       <a-form-item label="数据 JSONL（工作区相对）">
         <a-input v-model:value="dataPath" />
+        <a-typography-text v-if="dataPathFull" type="secondary" style="display: block; margin-top: 6px"
+          >完整路径：{{ dataPathFull }}</a-typography-text
+        >
       </a-form-item>
       <a-form-item label="指标">
         <a-checkbox v-model:checked="acc">准确率</a-checkbox>

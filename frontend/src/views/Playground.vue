@@ -214,7 +214,7 @@ async function send() {
     <a-alert
       type="info"
       show-icon
-      message="LoRA 在基座之上推理：基座与训练时「模型管理」的 model id 一致。终端里「Loading weights」是把已缓存的基座从磁盘读入内存（首次约数十秒），不是重新联网下模型；同一进程内再次推理会快很多。图片：uploads/playground/，png/jpg/webp/gif/bmp，约 25MB 内。"
+      message="LoRA 在基座之上推理。终端里「Loading weights」是把已缓存的基座从磁盘读入内存（首次约数十秒），不是重新联网下模型；同一进程内再次推理会快很多。"
       style="margin-bottom: 12px"
     />
     <a-row :gutter="16">
@@ -241,64 +241,70 @@ async function send() {
             <a-button :loading="unloadModelLoading" @click="unloadSelectedModel">卸载模型</a-button>
           </a-space>
           <a-divider />
-          <a-form-item label="图片（单张，可拖拽或点击选择）">
-            <input
-              ref="fileInputRef"
-              type="file"
-              class="playground-image-input"
-              :accept="IMAGE_ACCEPT"
-              @change="onImageChange"
-            />
-            <div
-              class="playground-image-drop"
-              :class="{ 'playground-image-drop--filled': imageFile }"
-              @dragover="onDragOverImage"
-              @drop="onDropImage"
-            >
-              <template v-if="!imageFile">
-                <div class="playground-image-empty" @click="triggerFileInput">
-                  <span class="playground-image-empty__hint">将图片拖到这里，或点击选择</span>
-                  <span class="playground-image-empty__sub">仅 1 张，png / jpg / webp / gif / bmp，约 25MB 内</span>
-                </div>
-              </template>
-              <div v-else class="playground-image-filled">
-                <a-image
-                  v-if="imageObjectUrl"
-                  class="playground-image-thumb"
-                  :src="imageObjectUrl"
-                  :width="96"
-                  :height="96"
-                  alt=""
-                  :preview="true"
+          <a-row :gutter="16" class="playground-image-token-row">
+            <a-col :span="12">
+              <a-form-item label="图片（单张，可拖拽或点击选择）">
+                <input
+                  ref="fileInputRef"
+                  type="file"
+                  class="playground-image-input"
+                  :accept="IMAGE_ACCEPT"
+                  @change="onImageChange"
                 />
-                <div class="playground-image-filled__meta">
-                  <div class="playground-image-filled__name" :title="imageFile.name">
-                    {{ imageFile.name }}
+                <div
+                  class="playground-image-drop"
+                  :class="{ 'playground-image-drop--filled': imageFile }"
+                  @dragover="onDragOverImage"
+                  @drop="onDropImage"
+                >
+                  <template v-if="!imageFile">
+                    <div class="playground-image-empty" @click="triggerFileInput">
+                      <span class="playground-image-empty__hint">将图片拖到这里，或点击选择</span>
+                      <span class="playground-image-empty__sub">仅 1 张，png / jpg / webp / gif / bmp，约 25MB 内</span>
+                    </div>
+                  </template>
+                  <div v-else class="playground-image-filled">
+                    <a-image
+                      v-if="imageObjectUrl"
+                      class="playground-image-thumb"
+                      :src="imageObjectUrl"
+                      :width="96"
+                      :height="96"
+                      alt=""
+                      :preview="true"
+                    />
+                    <div class="playground-image-filled__meta">
+                      <div class="playground-image-filled__name" :title="imageFile.name">
+                        {{ imageFile.name }}
+                      </div>
+                      <a-space :size="4" wrap>
+                        <a-button type="link" size="small" class="playground-image-filled__change" @click="triggerFileInput">
+                          更换
+                        </a-button>
+                        <a-button
+                          type="link"
+                          danger
+                          size="small"
+                          class="playground-image-filled__remove"
+                          @click="clearImage"
+                        >
+                          <template #icon><DeleteOutlined /></template>
+                          删除
+                        </a-button>
+                      </a-space>
+                    </div>
                   </div>
-                  <a-space :size="4" wrap>
-                    <a-button type="link" size="small" class="playground-image-filled__change" @click="triggerFileInput">
-                      更换
-                    </a-button>
-                    <a-button
-                      type="link"
-                      danger
-                      size="small"
-                      class="playground-image-filled__remove"
-                      @click="clearImage"
-                    >
-                      <template #icon><DeleteOutlined /></template>
-                      删除
-                    </a-button>
-                  </a-space>
                 </div>
-              </div>
-            </div>
-          </a-form-item>
+              </a-form-item>
+            </a-col>
+            <a-col :span="12">
+              <a-form-item label="max_new_tokens">
+                <a-input-number v-model:value="maxNew" :min="8" :max="4096" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+          </a-row>
           <a-form-item label="提示词">
             <a-textarea v-model:value="prompt" :rows="4" />
-          </a-form-item>
-          <a-form-item label="max_new_tokens">
-            <a-input-number v-model:value="maxNew" :min="8" :max="4096" style="width: 100%" />
           </a-form-item>
           <a-button type="primary" :loading="loading" @click="send">发送</a-button>
         </a-form>
@@ -312,6 +318,10 @@ async function send() {
 </template>
 
 <style scoped>
+.playground-image-token-row {
+  width: 100%;
+}
+
 .playground-image-input {
   position: absolute;
   width: 0;

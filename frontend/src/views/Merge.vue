@@ -15,6 +15,10 @@ type SuccessTrainingRow = {
   project_title?: string | null;
   batch_name?: string | null;
   dataset_name?: string | null;
+  /** 与训练表单的「数据集版本」ID 一致（数据 id） */
+  dataset_version_id?: string | null;
+  /** ms-swift add_version 子目录（如 v0-…），默认合并输出目录末段；无则回退 job_id */
+  swift_train_version?: string | null;
 };
 
 type MergeLogProgress = {
@@ -27,6 +31,21 @@ type MergeLogProgress = {
 const router = useRouter();
 const base = ref("Qwen/Qwen3-VL-2B-Instruct");
 const output = ref("output/merged-workshop");
+
+/** 默认：output/merged-workshop/{数据 id}/{训练版本}，训练版本为 v0-…（无则 job_id）。 */
+function defaultMergeOutputPath(row: SuccessTrainingRow): string {
+  const dataId = (row.dataset_version_id ?? "").trim();
+  const trainVer =
+    (row.swift_train_version ?? "").trim() || (row.job_id ?? "").trim();
+  const root = "output/merged-workshop";
+  if (dataId && trainVer) {
+    return `${root}/${dataId}/${trainVer}`.replace(/\/+/g, "/");
+  }
+  if (trainVer) {
+    return `${root}/${trainVer}`.replace(/\/+/g, "/");
+  }
+  return root;
+}
 const log = ref("");
 const jobId = ref<string | null>(null);
 const mergeJobStatus = ref<string | null>(null);
@@ -97,6 +116,11 @@ watch(
     const m = row?.train_base_model?.trim();
     if (m) {
       base.value = m;
+    }
+    if (row) {
+      output.value = defaultMergeOutputPath(row);
+    } else {
+      output.value = "output/merged-workshop";
     }
   },
 );
@@ -180,6 +204,7 @@ onUnmounted(() => {
 <template>
   <div>
     <a-typography-title :level="4">LoRA 合并</a-typography-title>
+    <a-divider style="border-top: 2px solid rgba(0, 0, 0, 0.35)" />
     <a-alert
       type="info"
       show-icon
@@ -208,22 +233,28 @@ onUnmounted(() => {
     >
       <a-button type="link" @click="() => router.push('/training')">去训练</a-button>
     </a-empty>
-
-    <a-form layout="vertical" style="max-width: 600px">
-      <a-form-item label="基座（由所选训练决定，不可修改）">
-        <a-input v-model:value="base" disabled />
-      </a-form-item>
-      <a-form-item label="将合并的 LoRA（由所选训练决定，不可手改）">
-        <a-input :value="selectedRow?.path ?? '—（未选择训练）'" disabled />
-      </a-form-item>
-      <a-form-item label="输出目录（工作区相对）">
-        <a-input v-model:value="output" />
-      </a-form-item>
-      <a-space>
-        <a-button type="primary" :disabled="!selectedRow" :loading="runSubmitting" @click="run">执行合并</a-button>
-        <a-button type="link" @click="goPlay">去推理试跑</a-button>
-      </a-space>
+    <a-divider style="border-top: 2px solid rgba(0, 0, 0, 0.35)" />
+    <a-typography-title :level="5">合并参数</a-typography-title>
+    <a-form layout="vertical">
+      <a-row :gutter="16">
+        <a-col :span="7">
+          <a-form-item label="基座（由所选训练决定，不可修改）">
+            <a-input v-model:value="base" disabled />
+          </a-form-item>
+        </a-col>
+        <a-col :span="7">
+          <a-form-item label="将合并的 LoRA（由所选训练决定，不可手改）">
+            <a-input :value="selectedRow?.path ?? '—（未选择训练）'" disabled />
+          </a-form-item>
+        </a-col>
+        <a-col :span="7">
+          <a-form-item label="输出目录（工作区相对）">
+            <a-input v-model:value="output" />
+          </a-form-item>
+        </a-col>
+      </a-row>
     </a-form>
+    <a-button type="primary" :disabled="!selectedRow" :loading="runSubmitting" @click="run" >执行合并</a-button>
 
     <div
       v-if="
