@@ -1134,7 +1134,7 @@ watch(logText, () => {
           <a-typography-text type="secondary" style="display: block; margin-bottom: 12px">
             模型 ID / 路径请在上方「基于模型」中选择；此处为架构、模板、精度与序列等 ms-swift 参数。
           </a-typography-text>
-          <a-row :gutter="16">
+          <a-row :gutter="16" class="training-form-grid-row">
             <a-col :xs="24" :sm="12" :md="6">
               <a-form-item>
                 <template #label>
@@ -1237,7 +1237,7 @@ watch(logText, () => {
           <a-typography-text type="secondary" style="display: block; margin-bottom: 12px">
             训练 / 验证集路径见上方「训练集 / 验证集」（随「数据集选择」联动）。保存目录见「输出目录」。
           </a-typography-text>
-          <a-row :gutter="16">
+          <a-row :gutter="16" class="training-form-grid-row">
             <a-col :xs="24" :sm="12" :md="6">
               <a-form-item label="num_train_epochs">
                 <a-input-number v-model:value="form.num_train_epochs" :min="1" :max="200" style="width: 100%" />
@@ -1360,7 +1360,7 @@ watch(logText, () => {
           <a-typography-text type="secondary" style="display: block; margin-bottom: 12px">
             对应 ms-swift 的 <code>quant_method</code> / <code>quant_bits</code>（常见文档里的 4bit QLoRA）。不设位数则关闭量化加载。
           </a-typography-text>
-          <a-row :gutter="16">
+          <a-row :gutter="16" class="training-form-grid-row training-form-grid-row--qlora">
             <a-col :xs="24" :sm="12" :md="6">
               <a-form-item>
                 <template #label>
@@ -1414,7 +1414,12 @@ watch(logText, () => {
         </a-collapse-panel>
 
         <a-collapse-panel key="advanced_more" header="进阶与其他">
-          <a-row :gutter="16">
+          <a-row :gutter="16" class="training-form-grid-row">
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item label="dataloader_num_workers">
+                <a-input-number v-model:value="form.dataloader_num_workers" :min="0" :max="128" style="width: 100%" />
+              </a-form-item>
+            </a-col>
             <a-col :xs="24" :sm="12" :md="6">
               <a-form-item label="train_type">
                 <a-select v-model:value="form.train_type" :options="trainTypeOptions" style="width: 100%" />
@@ -1469,23 +1474,6 @@ watch(logText, () => {
                 <a-input v-model:value="form.deepspeed" placeholder="zero2 / 配置文件路径…" allow-clear />
               </a-form-item>
             </a-col>
-            <a-col :span="24">
-              <a-form-item>
-                <template #label>
-                  <span style="display: inline-flex; align-items: center; gap: 4px">
-                    resume_from_checkpoint
-                    <a-tooltip title="断点目录（工作区相对路径）。「继续训练」会自动填入最新 checkpoint。">
-                      <QuestionCircleOutlined
-                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                        aria-label="resume 说明"
-                        role="img"
-                      />
-                    </a-tooltip>
-                  </span>
-                </template>
-                <a-input v-model:value="form.resume_from_checkpoint" placeholder="可选" allow-clear />
-              </a-form-item>
-            </a-col>
             <a-col :xs="24" :sm="12" :md="6">
               <a-form-item>
                 <template #label>
@@ -1503,28 +1491,13 @@ watch(logText, () => {
                 <a-switch v-model:checked="form.merge_lora" />
               </a-form-item>
             </a-col>
-            <a-col :xs="24" :sm="12" :md="18">
-              <a-form-item>
-                <template #label>
-                  <span style="display: inline-flex; align-items: center; gap: 4px">
-                    adapters
-                    <a-tooltip title="逗号分隔的 adapter 路径；仅加载权重时常用，与 resume_from_checkpoint 不同。">
-                      <QuestionCircleOutlined
-                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                        aria-label="adapters 说明"
-                        role="img"
-                      />
-                    </a-tooltip>
-                  </span>
-                </template>
-                <a-input v-model:value="form.adapters" placeholder="path1,path2" allow-clear />
-              </a-form-item>
-            </a-col>
             <a-col :xs="24" :sm="12" :md="6">
               <a-form-item label="freeze_vit">
                 <a-switch v-model:checked="form.freeze_vit" />
               </a-form-item>
             </a-col>
+
+
             <a-col :xs="24" :sm="12" :md="6">
               <a-form-item>
                 <template #label>
@@ -1564,9 +1537,38 @@ watch(logText, () => {
                 <a-input-number v-model:value="form.video_max_token_num" :min="16" :max="512" style="width: 100%" />
               </a-form-item>
             </a-col>
-            <a-col :xs="24" :sm="12" :md="6">
-              <a-form-item label="dataloader_num_workers">
-                <a-input-number v-model:value="form.dataloader_num_workers" :min="0" :max="128" style="width: 100%" />
+            <a-col :xs="24" :sm="12" :md="18">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    adapters
+                    <a-tooltip title="逗号分隔的 adapter 路径；仅加载权重时常用，与 resume_from_checkpoint 不同。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="adapters 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input v-model:value="form.adapters" placeholder="path1,path2" allow-clear />
+              </a-form-item>
+            </a-col>
+            <a-col :span="18">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    resume_from_checkpoint
+                    <a-tooltip title="断点目录（工作区相对路径）。「继续训练」会自动填入最新 checkpoint。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="resume 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input v-model:value="form.resume_from_checkpoint" placeholder="可选" allow-clear />
               </a-form-item>
             </a-col>
           </a-row>
@@ -1717,5 +1719,26 @@ watch(logText, () => {
 }
 .training-job-name-edit:hover {
   color: var(--ant-primary-color, #1677ff);
+}
+
+/* 折叠面板内栅格表单：每项占满列宽，标签区宽度一致，控件对齐 */
+.training-form-grid-row :deep(.ant-form-item) {
+  width: 100%;
+}
+.training-form-grid-row :deep(.ant-form-item-row) {
+  align-items: flex-start;
+}
+.training-form-grid-row :deep(.ant-form-item-label) {
+  flex: 0 0 200px;
+  max-width: 45%;
+}
+.training-form-grid-row :deep(.ant-form-item-control) {
+  flex: 1 1 0;
+  min-width: 0;
+}
+/* QLoRA：bnb_* 等 label 更长，加宽标签列 */
+.training-form-grid-row.training-form-grid-row--qlora :deep(.ant-form-item-label) {
+  flex: 0 0 260px;
+  max-width: 55%;
 }
 </style>
