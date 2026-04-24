@@ -1,0 +1,24 @@
+---
+description: 后端（FastAPI + WORKSHOP_ 配置 + services）约定
+globs: backend/**/*.py
+alwaysApply: false
+---
+
+# 应用结构
+
+- 入口 **`backend/app/main.py`**：`create_app()`、`CORSMiddleware`、`/api` 前缀注册各子路由；`lifespan` 中初始化日志、工作区、启动清理等。
+- 新增 HTTP 能力：在 `backend/app/routers/` 增加 **`APIRouter`**，于 `main.py` **`include_router(..., prefix="/api")`**；路由上可用 **`tags=[...]`** 分组（OpenAPI）。
+
+# 配置
+
+- **`backend.app.config.get_settings()`**：`pydantic-settings`，环境变量前缀 **`WORKSHOP_`**，默认 `workspace_root` 指向**仓库根**（`Path(__file__).parents[2]`）；Docker/部署通过 `WORKSHOP_WORKSPACE_ROOT` 等覆盖。
+
+# 路径安全
+
+- 用户传入的相对路径需落在工作区内时，使用 **`backend.app.services.paths.resolve_under_workspace(root, relative)`**；失败时与路由中 **`ValueError` → `HTTPException(400, ...)`** 模式一致，禁止路径穿越。
+
+# 代码风格
+
+- 新模块使用 **`from __future__ import annotations`**；包内导入以 **`backend.app...`** 为根。
+- 子进程/长任务逻辑放在 **`services/`** 与**脚本**（`backend/scripts/`）中，路由层薄封装；业务 logger 多使用如 **`logging.getLogger("workshop")`** 或与模块名一致。
+- Torch 相关：入口已对 `torch.cuda` 的 **pynvml FutureWarning** 做过滤，勿随意移除；依赖以 **`requirements.txt`** 为准（含 `nvidia-ml-py` 说明，勿混用已弃用 PyPI 名 `pynvml`）。

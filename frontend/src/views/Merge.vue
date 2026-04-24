@@ -97,6 +97,8 @@ const successRows = ref<SuccessTrainingRow[]>([]);
 const successLoading = ref(false);
 const selectedJobIds = ref<string[]>([]);
 const mergeStatusByJobId = ref<Record<string, MergeUiStatus>>({});
+/** 仅合并成功时由 GET /api/merge/training-status 的 output_path_by_job_id 提供实际输出路径 */
+const mergeOutputPathByJobId = ref<Record<string, string | null | undefined>>({});
 
 function parseMergeUiStatus(v: string | undefined): MergeUiStatus {
   if (v === "merging" || v === "interrupted" || v === "failed" || v === "success" || v === "none") {
@@ -111,11 +113,16 @@ type SuccessTableRow = SuccessTrainingRow & {
 };
 
 const successTableRows = computed((): SuccessTableRow[] =>
-  successRows.value.map((r) => ({
-    ...r,
-    merge_output_path: defaultMergeOutputPath(r),
-    merge_status: parseMergeUiStatus(mergeStatusByJobId.value[r.job_id]),
-  })),
+  successRows.value.map((r) => {
+    const merge_status = parseMergeUiStatus(mergeStatusByJobId.value[r.job_id]);
+    const fromApi = mergeOutputPathByJobId.value[r.job_id];
+    const p = fromApi == null || typeof fromApi !== "string" ? "" : fromApi.trim();
+    return {
+      ...r,
+      merge_output_path: merge_status === "success" ? p : "",
+      merge_status,
+    };
+  }),
 );
 
 const selectedRow = computed((): SuccessTrainingRow | null => {
@@ -152,8 +159,13 @@ async function loadMergeStatus() {
       next[k] = parseMergeUiStatus(v);
     }
     mergeStatusByJobId.value = next;
+    mergeOutputPathByJobId.value = (r.data?.output_path_by_job_id ?? {}) as Record<
+      string,
+      string | null | undefined
+    >;
   } catch {
     mergeStatusByJobId.value = {};
+    mergeOutputPathByJobId.value = {};
   }
 }
 

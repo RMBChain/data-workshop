@@ -35,13 +35,22 @@ def _merged_output_dir_looks_valid(out_dir: Path) -> bool:
     return (out_dir / "config.json").is_file() or has_weights or (out_dir / "adapter_config.json").is_file()
 
 
-def _lora_rels_with_disk_merge(workspace: Path) -> set[str]:
+def _output_relpath_from_request(req: dict[str, Any]) -> str | None:
+    o = (req or {}).get("output_path")
+    if o is None:
+        return None
+    s = str(o).strip().replace("\\", "/")
+    return s or None
+
+
+def _disk_lora_to_output_relpath(workspace: Path) -> dict[str, str]:
+    """已写入磁盘的合法合并：LoRA 工作区相对路径 -> 合并输出目录（工作区相对）。"""
     root = workspace.resolve()
-    out = root / "output"
-    ok: set[str] = set()
-    if not out.is_dir():
-        return ok
-    for meta_path in out.rglob("workshop_merge_meta.json"):
+    out_map: dict[str, str] = {}
+    out_root = root / "output"
+    if not out_root.is_dir():
+        return out_map
+    for meta_path in out_root.rglob("workshop_merge_meta.json"):
         if "merge-jobs" in meta_path.parts:
             continue
         parent = meta_path.parent
@@ -54,9 +63,15 @@ def _lora_rels_with_disk_merge(workspace: Path) -> set[str]:
         if not isinstance(raw, dict):
             continue
         rel = _lora_relpath_from_meta_lora_used(root, str(raw.get("lora_used") or ""))
-        if rel:
-            ok.add(_norm_lora_relpath(rel))
-    return ok
+        if not rel:
+            continue
+        k = _norm_lora_relpath(rel)
+        try:
+            out_rel = parent.resolve().relative_to(root).as_posix()
+        except (ValueError, OSError):
+            continue
+        out_map[k] = out_rel
+    return out_map
 
 
 def _latest_job_per_lora(manager: MergeJobManager) -> dict[str, MergeJob]:
@@ -79,32 +94,54 @@ def _latest_job_per_lora(manager: MergeJobManager) -> dict[str, MergeJob]:
 
 
 def _ui_status(mem: MergeJob | None, on_disk: bool) -> MergeUiStatus:
-    if mem and mem.status in ("pending", "running"):
-        return "merging"
-    if mem and mem.status == "succeeded":
-        return "success"
+    """优先使用内存中最新 MergeJob 的状态（反映最近尝试结果），仅在无内存记录时回退到磁盘成功标记。
+    这避免了之前「磁盘成功掩盖后续失败尝试」的逻辑漏洞。"""
+    if mem:
+        if mem.status in ("pending", "running"):
+            return "merging"
+        if mem.status == "succeeded":
+            return "success"
+        if mem.status == "failed":
+            return "failed"
+        if mem.status == "cancelled":
+            return "interrupted"
+        # 其他状态（如旧的）回退到磁盘检查
     if on_disk:
         return "success"
-    if mem and mem.status == "failed":
-        return "failed"
-    if mem and mem.status == "cancelled":
-        return "interrupted"
     return "none"
+
+
+def _merge_output_relpath_for_lora(
+    mem: MergeJob | None, on_disk: bool, lora_key: str, disk_map: dict[str, str]
+) -> str | None:
+    st = _ui_status(mem, on_disk)
+    if st != "success":
+        return None
+    if mem and mem.status == "succeeded":
+        o = _output_relpath_from_request(mem.request or {})
+        if o:
+            return o
+    return disk_map.get(lora_key)
 
 
 def training_merge_status_by_job_id(
     workspace: Path,
     training_rows: list[dict[str, Any]],
     manager: MergeJobManager,
-) -> dict[str, MergeUiStatus]:
-    disk = _lora_rels_with_disk_merge(workspace)
+) -> tuple[dict[str, MergeUiStatus], dict[str, str | None]]:
+    disk_map = _disk_lora_to_output_relpath(workspace)
+    disk = set(disk_map.keys())
     jmap = _latest_job_per_lora(manager)
     out: dict[str, MergeUiStatus] = {}
+    paths: dict[str, str | None] = {}
     for row in training_rows:
         jid = str(row.get("job_id") or "").strip()
         path = str(row.get("path") or "").strip()
         if not jid or not path:
             continue
         k = _norm_lora_relpath(path)
-        out[jid] = _ui_status(jmap.get(k), k in disk)
-    return out
+        on_disk = k in disk
+        mem = jmap.get(k)
+        out[jid] = _ui_status(mem, on_disk)
+        paths[jid] = _merge_output_relpath_for_lora(mem, on_disk, k, disk_map)
+    return out, paths
