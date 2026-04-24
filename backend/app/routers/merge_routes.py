@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 
 from backend.app.config import get_settings
 from backend.app.services.merge_job_manager import MergeJobCreate, MergeJobManager
+from backend.app.services.merge_log_progress import parse_merge_log_progress
 from backend.app.services.paths import resolve_under_workspace
 
 router = APIRouter(tags=["merge"])
@@ -59,7 +60,7 @@ async def get_merge_logs(job_id: str) -> dict[str, Any]:
     if not j:
         raise HTTPException(status_code=404, detail="任务不存在")
     text, truncated = get_merge_manager().read_log(job_id)
-    return {"text": text, "truncated": truncated}
+    return {"text": text, "truncated": truncated, "progress": parse_merge_log_progress(text)}
 
 
 @router.post("/merge/jobs/{job_id}/cancel")
