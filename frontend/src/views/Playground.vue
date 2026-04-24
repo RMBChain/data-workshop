@@ -242,7 +242,7 @@ async function send() {
           </a-space>
           <a-divider />
           <a-row :gutter="16" class="playground-image-token-row">
-            <a-col :span="12">
+            <a-col :span="16">
               <a-form-item label="图片（单张，可拖拽或点击选择）">
                 <input
                   ref="fileInputRef"
@@ -309,7 +309,7 @@ async function send() {
           <a-button type="primary" :loading="loading" @click="send">发送</a-button>
         </a-form>
       </a-col>
-      <a-col :span="14">
+      <a-col :span="10">
         <a-typography-title :level="5">回答</a-typography-title>
         <a-textarea v-model:value="reply" :rows="18" readonly placeholder="多模态输出将显示在这里" />
       </a-col>

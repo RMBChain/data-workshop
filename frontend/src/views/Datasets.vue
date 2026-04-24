@@ -349,7 +349,6 @@ function goTrain() {
         { title: '训练', dataIndex: 'train_count', key: 'train_count', width: 72 },
         { title: '验证', dataIndex: 'val_count', key: 'val_count', width: 72 },
         { title: '备注', dataIndex: 'note', key: 'note' },
-        { title: '激活', dataIndex: 'is_active', key: 'is_active', width: 80 },
         {
           title: '操作',
           key: 'action',
