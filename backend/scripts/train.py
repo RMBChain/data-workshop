@@ -11,6 +11,12 @@ import torch
 from contextlib import contextmanager
 from pathlib import Path
 
+# 直接执行本脚本时 sys.path 只有 backend/scripts，无法 import backend.*
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_rp = str(_REPO_ROOT)
+if _rp not in sys.path:
+    sys.path.insert(0, _rp)
+
 
 def _parse_cli_bool(value: str | bool) -> bool:
     """
@@ -119,6 +125,25 @@ def train_with_swift(
     **kwargs,
 ):
     """默认偏 CPU 安全（float32、eager）；可通过参数改为 GPU / flash_attn / bf16 等。"""
+    try:
+        from backend.app.services import modelscope_manager as mscm
+
+        model_name = mscm.swift_model_arg_if_hub_cached(str(model_name))
+        if not (str(kwargs.get("model_type") or "").strip()):
+            hint = mscm.infer_ms_swift_model_type_from_hub_dir(str(model_name))
+            if hint:
+                kwargs["model_type"] = hint
+                if not (str(kwargs.get("template") or "").strip()) and hint in (
+                    "qwen3_vl",
+                    "qwen2_vl",
+                    "qwen2_5_vl",
+                ):
+                    kwargs["template"] = hint
+        mt_hf = (kwargs.get("model_type") or "").strip()
+        if mt_hf:
+            mscm.ensure_config_json_hf_model_type(model_name, mt_hf)
+    except Exception:
+        pass
     kwargs.setdefault("torch_dtype", "float32")
     kwargs.setdefault("attn_impl", "eager")
     kwargs.setdefault("bf16", False)

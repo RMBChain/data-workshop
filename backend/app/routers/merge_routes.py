@@ -99,7 +99,11 @@ async def validate_merge_job(job_id: str) -> dict[str, Any]:
     if not p.is_dir():
         return {"ok": False, "detail": "输出目录不存在"}
     cfg = p / "config.json"
-    has_weights = (p / "model.safetensors").is_file() or (p / "pytorch_model.bin").is_file()
+    has_weights = (
+        (p / "model.safetensors").is_file()
+        or (p / "pytorch_model.bin").is_file()
+        or any(p.glob("model-*-of-*.safetensors"))
+    )
     if not cfg.is_file() and not has_weights and not (p / "adapter_config.json").is_file():
         return {"ok": False, "detail": "未检测到常见模型或适配器元数据文件。"}
     return {

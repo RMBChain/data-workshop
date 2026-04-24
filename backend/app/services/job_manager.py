@@ -17,6 +17,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from backend.app.db import get_connection, json_dumps
+from backend.app.services import modelscope_manager as mscm
 
 
 class TrainJobCreate(BaseModel):
@@ -24,7 +25,7 @@ class TrainJobCreate(BaseModel):
 
     model: str = Field(
         default="",
-        description="须与「模型管理」中本机已下载的 ModelScope 模型 id 一致，例如 Qwen/Qwen3-VL-2B-Instruct",
+        description="须与「模型管理」中本机已下载的 model id 一致（作者/名称）；魔搭或 Hugging Face 下载均可，任务启动时会自动改为本机缓存目录并传给 ms-swift",
     )
     train_dataset: str = "data/train.jsonl"
     val_dataset: str = "data/val.jsonl"
@@ -576,12 +577,13 @@ class TrainingJobManager:
     def _build_command(self, body: TrainJobCreate) -> list[str]:
         exe = sys.executable
         p = body.model_dump()
+        model_arg = mscm.swift_model_arg_if_hub_cached(str(p.get("model") or ""))
         cmd: list[str] = [
             exe,
             "-u",
             str(self._workspace / "backend" / "scripts" / "train.py"),
             "--model",
-            p["model"],
+            model_arg,
             "--train_dataset",
             p["train_dataset"],
             "--val_dataset",
@@ -649,10 +651,19 @@ class TrainingJobManager:
         if rfc:
             cmd.extend(["--resume_from_checkpoint", str(rfc)])
 
-        mt = (p.get("model_type") or "").strip()
+        user_mt = (p.get("model_type") or "").strip()
+        mt = user_mt
+        inferred_mt = False
+        if not mt:
+            hint = mscm.infer_ms_swift_model_type_from_hub_dir(model_arg)
+            if hint:
+                mt = hint
+                inferred_mt = True
         if mt:
             cmd.extend(["--model_type", mt])
         tpl = (p.get("template") or "").strip()
+        if not tpl and inferred_mt and mt in ("qwen3_vl", "qwen2_vl", "qwen2_5_vl"):
+            tpl = mt
         if tpl:
             cmd.extend(["--template", tpl])
         sys_prompt = (p.get("system") or "").strip()
@@ -690,5 +701,9 @@ class TrainingJobManager:
             if parts:
                 cmd.append("--adapters")
                 cmd.extend(parts)
+
+        # 子进程里 train.py 的补全可能因 import/异常被跳过；在发起任务时同步写入本地 hub 的 config.json
+        if mt and Path(model_arg).is_dir():
+            mscm.ensure_config_json_hf_model_type(model_arg, mt)
 
         return cmd

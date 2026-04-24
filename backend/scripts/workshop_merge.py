@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 import sys
+import traceback
 from pathlib import Path
 
 
@@ -20,11 +21,45 @@ def _resolve_base(p: str) -> str:
     return snapshot_download(p)
 
 
+def _parse_cli_bool(s: str) -> bool:
+    t = (s or "").strip().lower()
+    if t in ("1", "true", "t", "yes", "y"):
+        return True
+    if t in ("0", "false", "f", "no", "n"):
+        return False
+    raise argparse.ArgumentTypeError(f"expected true/false, got {s!r}")
+
+
+def _merge_torch_dtype():
+    """合并子进程默认隐藏 GPU；float32 整模易在「Writing model shards」前 OOM，优先 bf16 降峰值内存。"""
+    import torch
+
+    override = (os.environ.get("WORKSHOP_MERGE_TORCH_DTYPE") or "").strip().lower()
+    if override in ("fp32", "float32", "f32"):
+        return torch.float32
+    if override in ("fp16", "float16", "f16"):
+        return torch.float16
+    if override in ("bf16", "bfloat16"):
+        return torch.bfloat16
+    try:
+        x = torch.ones(4, 4, dtype=torch.bfloat16)
+        _ = x @ x.T
+        return torch.bfloat16
+    except Exception:
+        return torch.float32
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", required=True, help="基座：ModelScope id 或本地目录")
     ap.add_argument("--lora", required=True, action="append", dest="loras", help="LoRA 目录（可多次）")
     ap.add_argument("--output", required=True, help="输出目录（工作区内或绝对路径）")
+    ap.add_argument(
+        "--merge_lora_only",
+        type=_parse_cli_bool,
+        default=True,
+        help="为 True：merge_and_unload 后保存全量模型；为 False：仅保存 PEFT 适配器（未合并到基座）",
+    )
     ap.add_argument("--extra", default="[]", help="JSON 列表：多路时忽略除第一个以外的说明（预留）")
     args = ap.parse_args()
 
@@ -32,6 +67,7 @@ def main() -> int:
     from peft import PeftModel
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 
+    dtype = _merge_torch_dtype()
     loras: list[str] = list(args.loras)
     if len(loras) > 1:
         print(
@@ -51,25 +87,44 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     base = _resolve_base(args.base)
-    print(f"加载基座: {base}")
-    model = Qwen3VLForConditionalGeneration.from_pretrained(
-        base,
-        torch_dtype=torch.float32,
-        trust_remote_code=True,
-    )
-    model = model.to("cpu")
-    print(f"加载 LoRA: {lora_p}")
-    model = PeftModel.from_pretrained(model, str(lora_p))
-    print("合并并卸载 LoRA 适配器层…")
-    merged = model.merge_and_unload()
-    merged.save_pretrained(str(out), safe_serialization=True)
-    processor = AutoProcessor.from_pretrained(base, trust_remote_code=True)
-    processor.save_pretrained(str(out))
+    print(f"加载基座: {base}（dtype={dtype}）")
+    try:
+        model = Qwen3VLForConditionalGeneration.from_pretrained(
+            base,
+            torch_dtype=dtype,
+            trust_remote_code=True,
+            low_cpu_mem_usage=True,
+        )
+        model = model.to("cpu")
+        print(f"加载 LoRA: {lora_p}")
+        model = PeftModel.from_pretrained(model, str(lora_p))
+        if args.merge_lora_only:
+            print("合并并卸载 LoRA 适配器层…")
+            merged = model.merge_and_unload()
+            # 分片降低单次写入峰值；与 HF 默认 tqdm「Writing model shards」一致
+            merged.save_pretrained(
+                str(out),
+                safe_serialization=True,
+                max_shard_size="2GB",
+            )
+        else:
+            print("未合并到基座：仅导出 PEFT 适配器目录（merge_lora_only=false）…")
+            model.save_pretrained(
+                str(out),
+                safe_serialization=True,
+                max_shard_size="2GB",
+            )
+        processor = AutoProcessor.from_pretrained(base, trust_remote_code=True)
+        processor.save_pretrained(str(out))
+    except Exception:
+        traceback.print_exc(file=sys.stderr)
+        return 1
     meta: dict = {
         "base": args.base,
         "lora_used": str(lora_p),
         "lora_ignored": [str(x) for x in loras[1:]],
         "extra_parsed": json.loads(args.extra or "[]"),
+        "merge_lora_only": bool(args.merge_lora_only),
     }
     mj = (os.environ.get("WORKSHOP_MERGE_JOB_ID") or "").strip()
     if mj:
