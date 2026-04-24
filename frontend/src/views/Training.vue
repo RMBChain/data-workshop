@@ -1587,8 +1587,8 @@ watch(logText, () => {
             >
             <a-button :disabled="!currentJobId" @click="cancelJob">取消</a-button>
             <a-button :disabled="!currentJobId" @click="continueTraining">继续训练</a-button>
-            <a-button @click="applyYaml">从 YAML 导入</a-button>
-            <a-button @click="downloadYaml">导出 YAML</a-button>
+            <a-button @click="applyYaml">从 YAML 导入配置</a-button>
+            <a-button @click="downloadYaml">导出 YAML 配置</a-button>
           </a-space>
         </a-col>
       </a-row>
