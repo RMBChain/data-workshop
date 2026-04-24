@@ -130,18 +130,23 @@ def record_hub_download_failed(model_id: str, err: str) -> None:
 
 def prune_stale_downloading_records(active_model_ids: set[str]) -> None:
     """
-    若某模型在持久化中仍为 downloading，但当前无运行中的任务，则清除该条（避免卡死为「下载中」）。
+    若持久化中仍为 ``downloading`` 但当前无运行中的任务（例如进程结束、未收到失败回调），
+    将状态改为 **interrupted**，避免列表误显示为「无记录的已缓存」。
     """
     with _hub_records_lock:
         data = _load_hub_records()
         changed = False
-        to_del: list[str] = []
-        for mid, rec in data.items():
+        for mid, rec in list(data.items()):
             if rec.get("status") == "downloading" and mid not in active_model_ids:
-                to_del.append(mid)
-        for mid in to_del:
-            del data[mid]
-            changed = True
+                started = rec.get("started_at")
+                out: dict[str, Any] = {
+                    "status": "interrupted",
+                    "interrupted_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if isinstance(started, str) and started.strip():
+                    out["started_at"] = started.strip()
+                data[mid] = out
+                changed = True
         if changed:
             _atomic_write_json(_hub_records_path(), data)
 
@@ -175,7 +180,7 @@ def list_hub_models() -> list[dict[str, Any]]:
     """
     列出 ModelScope 本机 hub 中已缓存的 `models/作者/名称` 目录（与 ModelScope 下载布局一致）。
     若曾下载**成功**（``status==completed``），**size_bytes** 用记录中的完成时体积，避免整目录统计；
-    若状态为**下载中**、**失败**或**无记录**，则对目录做 ``_dir_size`` 实时统计。
+    其他状态（含 **interrupted**、**下载中**、**失败** 或无记录）则对目录做 ``_dir_size`` 实时统计。
     """
     mdir = modelscope_hub_root() / "models"
     if not mdir.is_dir():
