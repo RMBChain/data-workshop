@@ -77,6 +77,7 @@ class MergeJobManager:
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = ""
         env.setdefault("PYTHONUNBUFFERED", "1")
+        env["WORKSHOP_MERGE_JOB_ID"] = job_id
         with self._lock:
             self._jobs[job_id] = job
         log_f = open(log_path, "w", encoding="utf-8")

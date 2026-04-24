@@ -5,8 +5,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from backend.app.config import get_settings
+from backend.app.services.inference_models import list_registered_training_models
 from backend.app.services.merge_job_manager import MergeJobCreate, MergeJobManager
 from backend.app.services.merge_log_progress import parse_merge_log_progress
+from backend.app.services.merge_training_status import training_merge_status_by_job_id
 from backend.app.services.paths import resolve_under_workspace
 
 router = APIRouter(tags=["merge"])
@@ -35,6 +37,16 @@ async def create_merge_job(body: MergeJobCreate) -> dict[str, Any]:
         "log_path": str(job.log_path) if job.log_path else None,
         "error_message": job.error_message,
     }
+
+
+@router.get("/merge/training-status")
+async def get_merge_training_status() -> dict[str, Any]:
+    """各训练 job_id 对应的 LoRA 合并态：未合并 / 合并中 / 已取消 / 失败 / 成功（内存任务 + 磁盘 workshop_merge_meta）。"""
+    root = get_settings().workspace_root.resolve()
+    rows = list_registered_training_models(root)
+    m = get_merge_manager()
+    by_jid = training_merge_status_by_job_id(root, rows, m)
+    return {"status_by_job_id": by_jid}
 
 
 @router.get("/merge/jobs/{job_id}")

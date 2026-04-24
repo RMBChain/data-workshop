@@ -28,6 +28,33 @@ type MergeLogProgress = {
   phase_hint: string | null;
 };
 
+/** 与 GET /api/merge/training-status 一致 */
+type MergeUiStatus = "none" | "merging" | "interrupted" | "failed" | "success";
+
+const MERGE_STATUS_LABEL: Record<MergeUiStatus, string> = {
+  none: "未合并",
+  merging: "合并中",
+  interrupted: "合并中断",
+  failed: "合并失败",
+  success: "合并成功",
+};
+
+function mergeStatusTagColor(s: MergeUiStatus): string {
+  if (s === "none") return "default";
+  if (s === "merging") return "processing";
+  if (s === "interrupted") return "warning";
+  if (s === "failed") return "error";
+  return "success";
+}
+
+function tableCellText(record: SuccessTableRow, dataIndex: string | undefined | unknown): string {
+  if (!dataIndex || typeof dataIndex !== "string") return "—";
+  const v = (record as Record<string, unknown>)[dataIndex];
+  if (v == null) return "—";
+  const s = String(v).trim();
+  return s || "—";
+}
+
 const router = useRouter();
 const base = ref("Qwen/Qwen3-VL-2B-Instruct");
 const output = ref("output/merged-workshop");
@@ -69,6 +96,27 @@ function normalizeMergeProgress(raw: unknown): MergeLogProgress | null {
 const successRows = ref<SuccessTrainingRow[]>([]);
 const successLoading = ref(false);
 const selectedJobIds = ref<string[]>([]);
+const mergeStatusByJobId = ref<Record<string, MergeUiStatus>>({});
+
+function parseMergeUiStatus(v: string | undefined): MergeUiStatus {
+  if (v === "merging" || v === "interrupted" || v === "failed" || v === "success" || v === "none") {
+    return v;
+  }
+  return "none";
+}
+
+type SuccessTableRow = SuccessTrainingRow & {
+  merge_output_path: string;
+  merge_status: MergeUiStatus;
+};
+
+const successTableRows = computed((): SuccessTableRow[] =>
+  successRows.value.map((r) => ({
+    ...r,
+    merge_output_path: defaultMergeOutputPath(r),
+    merge_status: parseMergeUiStatus(mergeStatusByJobId.value[r.job_id]),
+  })),
+);
 
 const selectedRow = computed((): SuccessTrainingRow | null => {
   const id = selectedJobIds.value[0];
@@ -83,6 +131,8 @@ const columns = [
   { title: "训练名称", dataIndex: "job_name", key: "job_name", ellipsis: true },
   { title: "基座", dataIndex: "train_base_model", key: "train_base_model", ellipsis: true },
   { title: "LoRA 路径", dataIndex: "path", key: "path", ellipsis: true },
+  { title: "合并后模型路径", dataIndex: "merge_output_path", key: "merge_output_path", ellipsis: true },
+  { title: "合并状态", key: "merge_status", width: 120, ellipsis: true },
 ];
 
 const rowSelection = computed(() => ({
@@ -93,10 +143,24 @@ const rowSelection = computed(() => ({
   },
 }));
 
+async function loadMergeStatus() {
+  try {
+    const r = await http.get("/api/merge/training-status");
+    const m = (r.data?.status_by_job_id ?? {}) as Record<string, string>;
+    const next: Record<string, MergeUiStatus> = {};
+    for (const [k, v] of Object.entries(m)) {
+      next[k] = parseMergeUiStatus(v);
+    }
+    mergeStatusByJobId.value = next;
+  } catch {
+    mergeStatusByJobId.value = {};
+  }
+}
+
 async function loadSuccessList() {
   successLoading.value = true;
   try {
-    const r = await http.get("/api/inference/models");
+    const [r] = await Promise.all([http.get("/api/inference/models"), loadMergeStatus()]);
     const items = (r.data?.items ?? []) as SuccessTrainingRow[];
     successRows.value = items;
     const cur = selectedJobIds.value[0];
@@ -159,6 +223,7 @@ async function run() {
         const t = await http.get(`/api/merge/jobs/${jobId.value}/logs`);
         log.value = t.data.text;
         mergeProgress.value = normalizeMergeProgress(t.data.progress);
+        void loadMergeStatus();
         if (["succeeded", "failed", "cancelled"].includes(String(s.data.status))) {
           if (poller) clearInterval(poller);
           poller = null;
@@ -217,7 +282,7 @@ onUnmounted(() => {
     </a-space>
     <a-table
       :columns="columns"
-      :data-source="successRows"
+      :data-source="successTableRows"
       :loading="successLoading"
       :pagination="false"
       :row-selection="rowSelection"
@@ -225,7 +290,22 @@ onUnmounted(() => {
       size="small"
       :scroll="{ x: 'max-content' }"
       style="width: 100%; margin-bottom: 16px"
-    />
+    >
+      <template #bodyCell="{ column, text, record }">
+        <template v-if="column.key === 'merge_status'">
+          <a-tag :color="mergeStatusTagColor((record as SuccessTableRow).merge_status)">
+            {{ MERGE_STATUS_LABEL[(record as SuccessTableRow).merge_status] }}
+          </a-tag>
+        </template>
+        <span
+          v-else-if="column && 'dataIndex' in column && column.dataIndex"
+          :title="tableCellText(record as SuccessTableRow, column.dataIndex)"
+        >
+          {{ tableCellText(record as SuccessTableRow, column.dataIndex) }}
+        </span>
+        <span v-else>{{ text ?? "—" }}</span>
+      </template>
+    </a-table>
     <a-empty
       v-if="!successLoading && successRows.length === 0"
       description="暂无已成功的训练任务（或磁盘上已找不到 LoRA/adapter）"
