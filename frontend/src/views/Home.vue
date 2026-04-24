@@ -2,8 +2,8 @@
 import { RouterLink } from "vue-router";
 
 const pipelineSteps = [
-  { key: "import", label: "导入", to: "/import" as const },
-  { key: "datasets", label: "数据集", to: "/datasets" as const },
+  { key: "import", label: "导入数据", to: "/import" as const },
+  { key: "datasets", label: "构建数据集", to: "/datasets" as const },
   { key: "train", label: "LoRA 训练", to: "/train" as const },
   { key: "playground", label: "LoRA 验证", to: "/playground" as const },
   { key: "merge", label: "LoRA 合并", to: "/merge" as const },
