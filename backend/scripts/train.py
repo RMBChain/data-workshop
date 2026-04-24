@@ -134,6 +134,9 @@ def train_with_swift(
     if kwargs.get("attn_impl") == "eager":
         kwargs["packing"] = False
 
+    # ms-swift：为 True 时在 output_dir 下再建 v0- 时间戳等子目录；数据工坊 Web 任务固定开启
+    add_version = bool(kwargs.pop("add_version", True))
+
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = ""
     env.pop("NPROC_PER_NODE", None)
@@ -151,6 +154,8 @@ def train_with_swift(
         val_dataset,
         "--output_dir",
         output_dir,
+        "--add_version",
+        str(add_version).lower(),
         "--lora_rank",
         str(kwargs.get("lora_rank", 1)),
         "--lora_alpha",
@@ -250,6 +255,12 @@ def main():
     parser.add_argument("--train_dataset", type=str, default="data/train.jsonl", help="训练集")
     parser.add_argument("--val_dataset", type=str, default="data/val.jsonl", help="验证集")
     parser.add_argument("--output_dir", type=str, default="output/qwen3vl-2b-lora", help="输出目录")
+    parser.add_argument(
+        "--add_version",
+        type=_parse_cli_bool,
+        default=True,
+        help="ms-swift: 为 True 时会在 output_dir 下再建 v0- 时间戳子目录；默认 true（与 Web 一致）",
+    )
 
     parser.add_argument("--lora_rank", type=int, default=1, help="LoRA rank（默认可选最小以省内存）")
     parser.add_argument("--lora_alpha", type=int, default=2, help="LoRA alpha")

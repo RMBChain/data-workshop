@@ -6,8 +6,16 @@ from pathlib import Path
 from typing import Any, Type
 
 
+def modelscope_cache_dir() -> Path:
+    """与 ModelScope `snapshot_download` 使用的缓存根一致：`$MODELSCOPE_CACHE` 或 `~/.cache/modelscope`。"""
+    env = (os.environ.get("MODELSCOPE_CACHE") or "").strip()
+    if env:
+        return Path(env).expanduser().resolve()
+    return (Path.home() / ".cache" / "modelscope").resolve()
+
+
 def modelscope_hub_root() -> Path:
-    return (Path.home() / ".cache" / "modelscope" / "hub").resolve()
+    return (modelscope_cache_dir() / "hub").resolve()
 
 
 def _dir_size(p: Path) -> int:
@@ -76,6 +84,27 @@ def _resolve_model_dir(model_id: str) -> Path:
     if not d.is_dir():
         raise FileNotFoundError(str(d))
     return d
+
+
+def hub_model_dir_if_cached(model_id: str) -> Path | None:
+    """若 `model_id` 在魔搭本机已有完整目录则返回绝对路径，否则 None（不触发下载）。"""
+    try:
+        return _resolve_model_dir(model_id)
+    except (ValueError, FileNotFoundError, OSError):
+        pass
+    mid = model_id.strip().replace("\\", "/").lstrip("/")
+    parts = mid.split("/")
+    if len(parts) != 2 or ".." in parts or not parts[0] or not parts[1]:
+        return None
+    root = modelscope_cache_dir().resolve()
+    legacy = (root / "models" / parts[0] / parts[1]).resolve()
+    try:
+        legacy.relative_to(root)
+    except ValueError:
+        return None
+    if legacy.is_dir():
+        return legacy
+    return None
 
 
 def delete_hub_model(model_id: str) -> None:

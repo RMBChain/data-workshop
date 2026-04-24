@@ -75,6 +75,14 @@ def _job_name_from_request(req: dict[str, Any]) -> str:
     return n if n else "—"
 
 
+def _output_dir_from_request(req: dict[str, Any]) -> str:
+    """训练产物目录（相对工作区根），创建任务时由后端解析并写入 request_json。"""
+    od = req.get("output_dir")
+    if isinstance(od, str) and od.strip():
+        return od.strip().replace("\\", "/")
+    return "—"
+
+
 def _require_model_downloaded_in_hub(model: str) -> None:
     """基础模型仅允许在魔搭本机 hub 中已存在的缓存（与「模型管理」列表一致）。"""
     mid = (model or "").strip()
@@ -108,6 +116,7 @@ async def list_training_jobs() -> dict:
                 "project_title": pt,
                 "batch_name": bn,
                 "dataset_name": dn,
+                "output_dir": _output_dir_from_request(req),
                 "request": req,
             }
         )
@@ -118,11 +127,14 @@ async def list_training_jobs() -> dict:
 async def create_training_job(body: TrainJobCreate) -> dict:
     _require_model_downloaded_in_hub(body.model)
     job = _manager_singleton().create_job(body)
+    req = job.request or {}
+    out = req.get("output_dir") if isinstance(req.get("output_dir"), str) else None
     return {
         "id": job.id,
         "status": job.status,
         "log_path": str(job.log_path) if job.log_path else None,
         "error_message": job.error_message,
+        "output_dir": out,
     }
 
 
@@ -154,6 +166,7 @@ async def get_training_job(job_id: str) -> dict:
         "project_title": pt,
         "batch_name": bn,
         "dataset_name": dn,
+        "output_dir": _output_dir_from_request(req),
         "request": req,
     }
 

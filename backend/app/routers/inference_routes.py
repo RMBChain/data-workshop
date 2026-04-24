@@ -1,26 +1,164 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+from starlette.datastructures import UploadFile
 
 from backend.app.config import get_settings
 from backend.app.db import get_connection, json_dumps
-from backend.app.services.inference_models import list_workspace_models
+from backend.app.services.inference_models import list_registered_training_models
+from backend.app.services import inference_service
 from backend.app.services.inference_service import infer_image
 from backend.app.services.paths import resolve_under_workspace
 
 router = APIRouter(tags=["inference"])
 
+_DEFAULT_BASE_MODEL = "Qwen/Qwen3-VL-2B-Instruct"
+_MAX_IMAGE_BYTES = 25 * 1024 * 1024
+_ALLOWED_IMAGE_SUFFIX = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+
+
+def _apply_model_id(base: str, adapter: str | None, model_id: str | None) -> tuple[str, str | None]:
+    if not model_id:
+        return base, adapter
+    mid = model_id
+    if mid.startswith("lora:"):
+        return base, mid.split(":", 1)[1]
+    if mid.startswith("merged:"):
+        return mid.split(":", 1)[1], None
+    return base, adapter
+
+
+async def _save_playground_upload(root: Path, upload: UploadFile) -> Path:
+    raw_name = (upload.filename or "").strip()
+    suf = Path(raw_name).suffix.lower()
+    if suf not in _ALLOWED_IMAGE_SUFFIX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的图片扩展名（允许：{', '.join(sorted(_ALLOWED_IMAGE_SUFFIX))}）",
+        )
+    dest_dir = (root / "uploads" / "playground").resolve()
+    try:
+        dest_dir.relative_to(root.resolve())
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail="上传目录配置无效") from e
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{uuid.uuid4().hex}{suf}"
+    data = await upload.read(_MAX_IMAGE_BYTES + 1)
+    if len(data) > _MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=400, detail=f"图片过大（上限 {_MAX_IMAGE_BYTES // (1024 * 1024)}MB）")
+    if not data:
+        raise HTTPException(status_code=400, detail="空文件")
+    dest.write_bytes(data)
+    return dest
+
+
+def _resolve_image_from_db_or_path(
+    root: Path,
+    *,
+    import_task_id: str | None,
+    image_workspace_path: str | None,
+) -> Path | None:
+    if import_task_id:
+        row = get_connection(root).execute(
+            "SELECT image_rel FROM import_tasks WHERE id = ?",
+            (import_task_id,),
+        ).fetchone()
+        if not row or not row[0]:
+            raise HTTPException(status_code=400, detail="未找到导入任务或缺少图片路径")
+        ir = str(row[0])
+        if ir.startswith("http://") or ir.startswith("https://"):
+            raise HTTPException(
+                status_code=400,
+                detail="该任务为远程图片 URL，按需求需使用工作区已解析的本地相对路径。",
+            )
+        return resolve_under_workspace(root, ir)
+    if image_workspace_path:
+        p = image_workspace_path.strip().replace("\\", "/")
+        return resolve_under_workspace(root, p)
+    return None
+
+
+def _run_infer(
+    root: Path,
+    img_path: Path | None,
+    *,
+    base: str,
+    adapter: str | None,
+    prompt: str,
+    max_new_tokens: int,
+) -> dict[str, Any]:
+    if adapter:
+        a = str(adapter).replace("\\", "/")
+        ap = resolve_under_workspace(root, a)
+        if not ap.is_dir():
+            raise HTTPException(status_code=400, detail="LoRA 目录不存在于工作区")
+
+    if img_path is not None and not img_path.is_file():
+        raise HTTPException(status_code=400, detail="图片文件不存在于工作区指定路径下")
+
+    try:
+        text = infer_image(
+            root,
+            img_path,
+            prompt,
+            base_model=base,
+            adapter_rel=adapter,
+            max_new_tokens=max_new_tokens,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"推理失败：{e}") from e
+    if img_path is None:
+        return {"text": text, "image_path": None}
+    try:
+        rel_img = str(img_path.resolve().relative_to(root.resolve()))
+    except ValueError:
+        rel_img = str(img_path.resolve())
+    return {"text": text, "image_path": rel_img.replace("\\", "/")}
+
 
 @router.get("/inference/models")
 async def list_models() -> dict[str, Any]:
     root = get_settings().workspace_root.resolve()
-    return {"items": list_workspace_models(root)}
+    return {"items": list_registered_training_models(root)}
+
+
+class InferenceLoadBody(BaseModel):
+    base_model: str = Field(default=_DEFAULT_BASE_MODEL)
+    adapter_path: str | None = None
+    model_id: str | None = Field(None, description="与 /inference/chat 相同，可覆盖 base/adapter")
+
+
+@router.post("/inference/load")
+async def inference_load(body: InferenceLoadBody) -> dict[str, str]:
+    """预加载与 chat 同键的基座+LoRA 到进程内缓存，减少首次点「发送」的等待时间。"""
+    root = get_settings().workspace_root.resolve()
+    base = body.base_model
+    adapter: str | None = (body.adapter_path or "").strip() or None
+    base, adapter = _apply_model_id(base, adapter, body.model_id)
+    try:
+        await asyncio.to_thread(
+            inference_service.preload_model,
+            root,
+            base_model=base,
+            adapter_rel=adapter,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"加载失败：{e}") from e
+    return {"status": "ok"}
+
+
+@router.post("/inference/unload")
+async def inference_unload() -> dict[str, str]:
+    await asyncio.to_thread(inference_service.unload_cached_model)
+    return {"status": "ok"}
 
 
 class ChatMessage(BaseModel):
@@ -29,7 +167,7 @@ class ChatMessage(BaseModel):
 
 
 class InferenceChatBody(BaseModel):
-    base_model: str = Field(default="Qwen/Qwen3-VL-2B-Instruct", description="基座或合并目录（ModelScope id 或工作区相对/本地路径）")
+    base_model: str = Field(default=_DEFAULT_BASE_MODEL, description="基座或合并目录（ModelScope id 或工作区相对/本地路径）")
     adapter_path: str | None = None
     model_id: str | None = Field(None, description="下拉 `id` 入参，覆盖 base/adapter 解析")
     prompt: str
@@ -40,68 +178,67 @@ class InferenceChatBody(BaseModel):
 
 
 @router.post("/inference/chat")
-async def inference_chat_json(body: InferenceChatBody) -> dict[str, Any]:
+async def inference_chat(request: Request) -> dict[str, Any]:
     """
-    目标契约：仅使用工作区内已登记路径，禁止随意 URL/本机未登记上传（与需求 §4 一致）。
+    JSON：沿用工作区内 `image_workspace_path` / `import_task_id`（均可省略，则仅文本多轮指令）。
+    multipart：字段同上，另可提供 `image` 文件；无图片时作纯文本推理。文件会保存到工作区 `uploads/playground/` 再推理。
     """
     settings = get_settings()
     root = settings.workspace_root.resolve()
-    base = body.base_model
-    adapter: str | None = (body.adapter_path or "").strip() or None
-    if body.model_id:
-        mid = body.model_id
-        if mid.startswith("lora:"):
-            adapter = mid.split(":", 1)[1]
-        elif mid.startswith("merged:"):
-            base = mid.split(":", 1)[1]
-            adapter = None
+    ctype = (request.headers.get("content-type") or "").lower()
 
-    img_path = None
-    if body.import_task_id:
-        row = get_connection(root).execute(
-            "SELECT image_rel FROM import_tasks WHERE id = ?",
-            (body.import_task_id,),
-        ).fetchone()
-        if not row or not row[0]:
-            raise HTTPException(status_code=400, detail="未找到导入任务或缺少图片路径")
-        ir = str(row[0])
-        if ir.startswith("http://") or ir.startswith("https://"):
-            raise HTTPException(
-                status_code=400,
-                detail="该任务为远程图片 URL，按需求需使用工作区已解析的本地相对路径。",
+    if "multipart/form-data" in ctype:
+        form = await request.form()
+        base = str(form.get("base_model") or _DEFAULT_BASE_MODEL)
+        adapter: str | None = (str(form.get("adapter_path") or "").strip() or None)
+        model_id = str(form.get("model_id") or "").strip() or None
+        prompt = str(form.get("prompt") or "")
+        import_task_id = str(form.get("import_task_id") or "").strip() or None
+        image_workspace_path = str(form.get("image_workspace_path") or "").strip() or None
+        try:
+            max_new_tokens = int(str(form.get("max_new_tokens") or "256"))
+        except ValueError:
+            max_new_tokens = 256
+        base, adapter = _apply_model_id(base, adapter, model_id)
+
+        raw_upload = form.get("image")
+        img_path: Path | None = None
+        if isinstance(raw_upload, UploadFile) and (raw_upload.filename or "").strip():
+            img_path = await _save_playground_upload(root, raw_upload)
+        if img_path is None:
+            img_path = _resolve_image_from_db_or_path(
+                root,
+                import_task_id=import_task_id,
+                image_workspace_path=image_workspace_path,
             )
-        img_path = resolve_under_workspace(root, ir)
-    elif body.image_workspace_path:
-        p = body.image_workspace_path.strip().replace("\\", "/")
-        img_path = resolve_under_workspace(root, p)
-    else:
-        raise HTTPException(status_code=400, detail="请通过 image_workspace_path 或 import_task_id 指定图片。")
-
-    if not img_path.is_file():
-        raise HTTPException(status_code=400, detail="图片文件不存在于工作区指定路径下")
-
-    if adapter:
-        a = str(adapter).replace("\\", "/")
-        ap = resolve_under_workspace(root, a)
-        if not ap.is_dir():
-            raise HTTPException(status_code=400, detail="LoRA 目录不存在于工作区")
-
-    try:
-        text = infer_image(
+        return _run_infer(
             root,
             img_path,
-            body.prompt,
-            base_model=base,
-            adapter_rel=adapter,
-            max_new_tokens=body.max_new_tokens,
+            base=base,
+            adapter=adapter,
+            prompt=prompt,
+            max_new_tokens=max_new_tokens,
         )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"推理失败：{e}") from e
-    try:
-        rel_img = str(img_path.resolve().relative_to(root.resolve()))
-    except ValueError:
-        rel_img = str(img_path.resolve())
-    return {"text": text, "image_path": rel_img.replace("\\", "/")}
+
+    body = InferenceChatBody.model_validate(await request.json())
+    base = body.base_model
+    adapter = (body.adapter_path or "").strip() or None
+    base, adapter = _apply_model_id(base, adapter, body.model_id)
+
+    img_path = _resolve_image_from_db_or_path(
+        root,
+        import_task_id=(body.import_task_id or "").strip() or None,
+        image_workspace_path=(body.image_workspace_path or "").strip() or None,
+    )
+
+    return _run_infer(
+        root,
+        img_path,
+        base=base,
+        adapter=adapter,
+        prompt=body.prompt,
+        max_new_tokens=body.max_new_tokens,
+    )
 
 
 class SessionCreateBody(BaseModel):
