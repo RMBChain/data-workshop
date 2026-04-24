@@ -16,11 +16,13 @@ import {
 } from "@ant-design/icons-vue";
 import { computed, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import ResourceInfoFloating from "../components/ResourceInfoFloating.vue";
 
 const isDev = computed(() => import.meta.env.DEV);
 const route = useRoute();
 const router = useRouter();
 const menuCollapsed = ref(false);
+const resourceInfoOpen = ref(false);
 
 function onMenuClick(info: { key: string | number }) {
   router.push(String(info.key));
@@ -55,11 +57,20 @@ function onMenuClick(info: { key: string | number }) {
         </a-tooltip>
         <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">数据工坊</span>
       </div>
-      <span style="font-size: 14px; opacity: 0.9">
-        <a-tag v-if="isDev" color="blue">环境：开发</a-tag>
-        <a-tag v-else color="green">环境：生产</a-tag>
-      </span>
+      <div style="display: flex; align-items: center; gap: 16px; flex-shrink: 0">
+        <a
+          href="#"
+          style="font-size: 14px; color: rgba(255, 255, 255, 0.88); text-decoration: none; white-space: nowrap"
+          @click.prevent="resourceInfoOpen = true"
+          >资源信息</a
+        >
+        <span style="font-size: 14px; opacity: 0.9">
+          <a-tag v-if="isDev" color="blue">环境：开发</a-tag>
+          <a-tag v-else color="green">环境：生产</a-tag>
+        </span>
+      </div>
     </a-layout-header>
+    <ResourceInfoFloating v-model:open="resourceInfoOpen" />
     <a-layout>
       <a-layout-sider
         v-model:collapsed="menuCollapsed"
