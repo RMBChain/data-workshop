@@ -74,10 +74,5 @@ onUnmounted(() => {
       copyable
       >{{ k }}：{{ v }}</a-typography-paragraph
     >
-    <a-typography-title :level="5" style="margin-top: 16px">资源（约 2s 刷新）</a-typography-title>
-    <pre v-if="(resData as { note?: string }).note" style="color: #888; font-size: 12px">{{
-      (resData as { note?: string }).note
-    }}</pre>
-    <pre v-else style="font-size: 12px; white-space: pre-wrap">{{ JSON.stringify(resData, null, 2) }}</pre>
   </a-spin>
 </template>

@@ -4,8 +4,10 @@ import {
   BranchesOutlined,
   CloudUploadOutlined,
   DatabaseOutlined,
+  BlockOutlined,
   ExportOutlined,
   FileSearchOutlined,
+  HomeOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   MessageOutlined,
@@ -68,6 +70,10 @@ function onMenuClick(info: { key: string | number }) {
         :trigger="null"
       >
         <a-menu :selected-keys="[route.path === '/' ? '/' : route.path]" mode="inline" @click="onMenuClick">
+          <a-menu-item key="/">
+            <template #icon><HomeOutlined /></template>
+            HOME
+          </a-menu-item>
           <a-menu-item key="/import">
             <template #icon><CloudUploadOutlined /></template>
             数据导入
@@ -82,15 +88,15 @@ function onMenuClick(info: { key: string | number }) {
           </a-menu-item>
           <a-menu-item key="/train">
             <template #icon><RocketOutlined /></template>
-            训练
+            LoRA 训练
           </a-menu-item>
           <a-menu-item key="/playground">
             <template #icon><MessageOutlined /></template>
-            推理沙盒
+            LoRA 验证
           </a-menu-item>
           <a-menu-item key="/merge">
             <template #icon><BranchesOutlined /></template>
-            合并
+            LoRA 合并
           </a-menu-item>
           <a-menu-item key="/eval">
             <template #icon><BarChartOutlined /></template>
@@ -100,9 +106,13 @@ function onMenuClick(info: { key: string | number }) {
             <template #icon><ExportOutlined /></template>
             导出
           </a-menu-item>
-          <a-menu-item key="/">
+          <a-menu-item key="/models">
+            <template #icon><BlockOutlined /></template>
+            模型管理
+          </a-menu-item>
+          <a-menu-item key="/system-info">
             <template #icon><SettingOutlined /></template>
-            设置
+            系统信息
           </a-menu-item>
         </a-menu>
       </a-layout-sider>

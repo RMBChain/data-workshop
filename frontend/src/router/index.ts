@@ -5,9 +5,11 @@ import ImportDataView from "../views/ImportDataView.vue";
 import Eval from "../views/Eval.vue";
 import Export from "../views/Export.vue";
 import Home from "../views/Home.vue";
+import ModelManagement from "../views/ModelManagement.vue";
 import Playground from "../views/Playground.vue";
 import Merge from "../views/Merge.vue";
 import Training from "../views/Training.vue";
+import SystemInfo from "../views/SystemInfo.vue";
 
 const router = createRouter({
   history: createWebHistory(),
@@ -16,11 +18,13 @@ const router = createRouter({
     { path: "/import", name: "import", component: DataImport, meta: { title: "数据导入" } },
     { path: "/import-data", name: "importData", component: ImportDataView, meta: { title: "数据查看" } },
     { path: "/datasets", name: "datasets", component: Datasets, meta: { title: "数据集" } },
+    { path: "/models", name: "models", component: ModelManagement, meta: { title: "模型管理" } },
     { path: "/train", name: "train", component: Training, meta: { title: "训练" } },
     { path: "/playground", name: "playground", component: Playground, meta: { title: "推理沙盒" } },
     { path: "/merge", name: "merge", component: Merge, meta: { title: "LoRA 合并" } },
     { path: "/eval", name: "eval", component: Eval, meta: { title: "评测" } },
     { path: "/export", name: "export", component: Export, meta: { title: "导出" } },
+    { path: "/system-info", name: "systemInfo", component: SystemInfo, meta: { title: "系统信息" } },
   ],
 });
 

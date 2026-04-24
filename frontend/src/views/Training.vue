@@ -506,7 +506,7 @@ async function openDatasetPathModal(kind: "train" | "val") {
 }
 
 function goModelSettings() {
-  void router.push({ path: "/", query: { tab: "models" } });
+  void router.push({ path: "/models" });
 }
 
 function goDatasets() {
