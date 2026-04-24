@@ -3,7 +3,24 @@ import { message } from "ant-design-vue";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { http } from "../api/http";
 
-type Row = { model_id: string; path: string; size_bytes: number };
+type HubDownloadRecord = {
+  /** 旧数据可能无此字段，有 completed_at 则按成功记录展示 */
+  status?: "downloading" | "completed" | "failed";
+  size_bytes?: number;
+  files_total?: number;
+  total_bytes_expected?: number;
+  completed_at?: string;
+  started_at?: string;
+  failed_at?: string;
+  error?: string;
+};
+
+type Row = {
+  model_id: string;
+  path: string;
+  size_bytes: number;
+  download_record?: HubDownloadRecord;
+};
 
 type JobState = {
   job_id: string;
@@ -37,6 +54,7 @@ type CachedRow = {
   model_id: string;
   path: string;
   size_bytes: number;
+  download_record?: HubDownloadRecord;
 };
 
 type TableRow = JobRow | CachedRow;
@@ -71,6 +89,7 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 let pollBusy = false;
 
 const tableData = computed<TableRow[]>(() => {
+  const jobModelIds = new Set(activeJobs.value.map((j) => j.model_id));
   const jobs: JobRow[] = activeJobs.value.map((j) => ({
     kind: "job",
     key: `job:${j.job_id}`,
@@ -79,11 +98,13 @@ const tableData = computed<TableRow[]>(() => {
     size_bytes: 0,
     job: j,
   }));
-  const cached: CachedRow[] = items.value.map((r) => ({
-    kind: "cached",
-    key: r.model_id,
-    ...r,
-  }));
+  const cached: CachedRow[] = items.value
+    .filter((r) => !jobModelIds.has(r.model_id))
+    .map((r) => ({
+      kind: "cached" as const,
+      key: r.model_id,
+      ...r,
+    }));
   return [...jobs, ...cached];
 });
 
@@ -96,7 +117,7 @@ const columns = [
     key: "size_bytes",
     width: 100,
   },
-  { title: "下载 / 状态", key: "status", width: 340 },
+  { title: "下载 / 状态", key: "status", width: 400 },
   { title: "操作", key: "act", width: 90 },
 ];
 
@@ -105,6 +126,20 @@ function formatBytes(n: number) {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function formatRecordTime(iso: string) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+}
+
+function isDownloadRecordSuccess(rec: HubDownloadRecord | undefined): boolean {
+  if (!rec) return false;
+  if (rec.status === "failed" || rec.status === "downloading") return false;
+  if (rec.status === "completed") return true;
+  // 旧版持久化无 status，有 completed_at 即视为成功记录
+  return Boolean(rec.completed_at);
 }
 
 function stopPoll() {
@@ -160,9 +195,20 @@ function startPoll() {
 async function refresh() {
   loading.value = true;
   try {
-    const r = await http.get<{ items: Row[]; hub_root: string }>("/api/models/hub");
+    const r = await http.get<{
+      items: Row[];
+      hub_root: string;
+      active_downloads?: JobState[];
+    }>("/api/models/hub");
     items.value = r.data.items;
     hubRoot.value = r.data.hub_root;
+    if (r.data.active_downloads?.length) {
+      activeJobs.value = r.data.active_downloads;
+      startPoll();
+    } else {
+      activeJobs.value = [];
+      stopPoll();
+    }
   } catch (e) {
     message.error("加载模型列表失败");
   } finally {
@@ -286,6 +332,16 @@ onUnmounted(() => {
         <template v-else-if="column && (column as { key?: string }).key === 'status' && record && typeof record === 'object'">
           <template v-if="'kind' in record && (record as TableRow).kind === 'job'">
             <template v-if="(record as JobRow).job.status === 'running'">
+              <div
+                style="
+                  font-size: 13px;
+                  font-weight: 500;
+                  margin-bottom: 6px;
+                  color: rgba(0, 0, 0, 0.88);
+                "
+              >
+                下载中
+              </div>
               <a-progress
                 :percent="jobProgressPercent((record as JobRow).job)"
                 status="active"
@@ -310,7 +366,58 @@ onUnmounted(() => {
               </div>
             </template>
           </template>
-          <a-typography-text v-else type="secondary">已缓存</a-typography-text>
+          <div v-else>
+            <template v-if="'kind' in record && (record as TableRow).kind === 'cached'">
+              <template
+                v-if="(record as CachedRow).download_record?.status === 'failed'"
+              >
+                <a-typography-text type="danger">上次下载失败</a-typography-text>
+                <div
+                  v-if="(record as CachedRow).download_record?.error"
+                  style="margin-top: 4px; font-size: 12px; color: rgba(0, 0, 0, 0.45); line-height: 1.4; word-break: break-word"
+                >
+                  {{ (record as CachedRow).download_record?.error }}
+                </div>
+                <div
+                  v-if="(record as CachedRow).download_record?.failed_at"
+                  style="margin-top: 2px; font-size: 12px; color: rgba(0, 0, 0, 0.35)"
+                >
+                  {{ formatRecordTime(String((record as CachedRow).download_record?.failed_at)) }}
+                </div>
+              </template>
+              <template
+                v-else-if="isDownloadRecordSuccess((record as CachedRow).download_record)"
+              >
+                <a-typography-text type="secondary">已缓存</a-typography-text>
+                <div
+                  style="margin-top: 4px; font-size: 12px; color: rgba(0, 0, 0, 0.45); line-height: 1.4"
+                >
+                  本应用下载完成
+                  <span v-if="(record as CachedRow).download_record?.completed_at">
+                    ·
+                    {{ formatRecordTime(String((record as CachedRow).download_record?.completed_at)) }}
+                  </span>
+                  <span
+                    v-if="((record as CachedRow).download_record?.files_total ?? 0) > 0"
+                  >
+                    · 文件数 {{ (record as CachedRow).download_record?.files_total }}
+                  </span>
+                </div>
+              </template>
+              <template
+                v-else-if="(record as CachedRow).download_record?.status === 'downloading'"
+              >
+                <a-typography-text type="secondary">已缓存</a-typography-text>
+                <div
+                  style="margin-top: 4px; font-size: 12px; color: rgba(0, 0, 0, 0.45)"
+                >
+                  状态：下载中（请点「刷新列表」同步进行中的任务）
+                </div>
+              </template>
+              <a-typography-text v-else type="secondary">已缓存</a-typography-text>
+            </template>
+            <a-typography-text v-else type="secondary">已缓存</a-typography-text>
+          </div>
         </template>
         <span v-else-if="column && (column as { key?: string }).key === 'size_bytes'">{{ formatBytes(Number(text) || 0) }}</span>
         <span v-else>{{ text }}</span>

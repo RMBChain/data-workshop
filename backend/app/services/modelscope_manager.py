@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import tempfile
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Type
+
+_hub_records_lock = threading.Lock()
+_HUB_RECORDS_NAME = "data_workshop_hub_records.json"
 
 
 def modelscope_cache_dir() -> Path:
@@ -16,6 +23,127 @@ def modelscope_cache_dir() -> Path:
 
 def modelscope_hub_root() -> Path:
     return (modelscope_cache_dir() / "hub").resolve()
+
+
+def _hub_records_path() -> Path:
+    return (modelscope_cache_dir() / _HUB_RECORDS_NAME).resolve()
+
+
+def _load_hub_records() -> dict[str, dict[str, Any]]:
+    p = _hub_records_path()
+    if not p.is_file():
+        return {}
+    try:
+        raw = p.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for k, v in data.items():
+        if isinstance(k, str) and isinstance(v, dict):
+            out[k] = v
+    return out
+
+
+def _atomic_write_json(path: Path, data: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        dir=str(path.parent), suffix=".tmp", prefix=path.name + "."
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def record_hub_download_success(
+    model_id: str,
+    local_path: str,
+    *,
+    files_completed: int,
+    total_bytes_expected: int,
+) -> None:
+    """本应用通过 hub 下载任务成功完成后写入，供列表展示持久化状态与当时体积。"""
+    mid = model_id.strip()
+    try:
+        sz = _dir_size(Path(local_path).resolve())
+    except OSError:
+        sz = 0
+    rec: dict[str, Any] = {
+        "status": "completed",
+        "size_bytes": int(sz),
+        "files_total": int(files_completed),
+        "total_bytes_expected": int(total_bytes_expected),
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    with _hub_records_lock:
+        data = _load_hub_records()
+        data[mid] = rec
+        _atomic_write_json(_hub_records_path(), data)
+
+
+def remove_hub_record(model_id: str) -> None:
+    mid = model_id.strip()
+    with _hub_records_lock:
+        data = _load_hub_records()
+        if mid not in data:
+            return
+        del data[mid]
+        _atomic_write_json(_hub_records_path(), data)
+
+
+def record_hub_download_start(model_id: str) -> None:
+    """创建下载任务时调用，将持久化状态标为「下载中」。"""
+    mid = model_id.strip()
+    rec: dict[str, Any] = {
+        "status": "downloading",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+    with _hub_records_lock:
+        data = _load_hub_records()
+        data[mid] = rec
+        _atomic_write_json(_hub_records_path(), data)
+
+
+def record_hub_download_failed(model_id: str, err: str) -> None:
+    """下载任务失败时写入，便于列表展示「上次下载失败」。"""
+    mid = model_id.strip()
+    msg = (err or "").strip()[:1000]
+    rec: dict[str, Any] = {
+        "status": "failed",
+        "error": msg,
+        "failed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    with _hub_records_lock:
+        data = _load_hub_records()
+        data[mid] = rec
+        _atomic_write_json(_hub_records_path(), data)
+
+
+def prune_stale_downloading_records(active_model_ids: set[str]) -> None:
+    """
+    若某模型在持久化中仍为 downloading，但当前无运行中的任务，则清除该条（避免卡死为「下载中」）。
+    """
+    with _hub_records_lock:
+        data = _load_hub_records()
+        changed = False
+        to_del: list[str] = []
+        for mid, rec in data.items():
+            if rec.get("status") == "downloading" and mid not in active_model_ids:
+                to_del.append(mid)
+        for mid in to_del:
+            del data[mid]
+            changed = True
+        if changed:
+            _atomic_write_json(_hub_records_path(), data)
 
 
 def _dir_size(p: Path) -> int:
@@ -43,27 +171,43 @@ def _dir_size(p: Path) -> int:
     return n
 
 
-def list_hub_models() -> list[dict[str, str | int]]:
+def list_hub_models() -> list[dict[str, Any]]:
     """
     列出 ModelScope 本机 hub 中已缓存的 `models/作者/名称` 目录（与 ModelScope 下载布局一致）。
+    若曾下载**成功**（``status==completed``），**size_bytes** 用记录中的完成时体积，避免整目录统计；
+    若状态为**下载中**、**失败**或**无记录**，则对目录做 ``_dir_size`` 实时统计。
     """
     mdir = modelscope_hub_root() / "models"
     if not mdir.is_dir():
         return []
-    out: list[dict[str, str | int]] = []
+    out: list[dict[str, Any]] = []
+    with _hub_records_lock:
+        records = _load_hub_records()
     for a in sorted(mdir.iterdir(), key=lambda x: x.name.lower()):
         if not a.is_dir() or a.name.startswith("."):
             continue
         for b in sorted(a.iterdir(), key=lambda x: x.name.lower()):
             if b.is_dir() and not b.name.startswith("."):
                 mid = f"{a.name}/{b.name}"
-                out.append(
-                    {
-                        "model_id": mid,
-                        "path": f"models/{mid}",
-                        "size_bytes": _dir_size(b),
-                    }
-                )
+                rec = records.get(mid)
+                st = (rec or {}).get("status")
+                if st == "completed" and rec and "size_bytes" in rec:
+                    try:
+                        pz = int(rec["size_bytes"])
+                        size_val = pz if pz >= 0 else _dir_size(b)
+                    except (TypeError, ValueError):
+                        size_val = _dir_size(b)
+                else:
+                    # 下载中 / 失败 / 无记录：使用当前目录实时体积
+                    size_val = _dir_size(b)
+                row: dict[str, str | int | dict[str, Any]] = {
+                    "model_id": mid,
+                    "path": f"models/{mid}",
+                    "size_bytes": size_val,
+                }
+                if rec is not None:
+                    row["download_record"] = rec
+                out.append(row)
     return out
 
 
@@ -110,6 +254,7 @@ def hub_model_dir_if_cached(model_id: str) -> Path | None:
 def delete_hub_model(model_id: str) -> None:
     d = _resolve_model_dir(model_id)
     shutil.rmtree(d, ignore_errors=False)
+    remove_hub_record(model_id)
 
 
 def estimate_hub_model_download_totals(model_id: str) -> tuple[int, int]:

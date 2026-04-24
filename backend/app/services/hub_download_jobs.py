@@ -11,6 +11,42 @@ _jobs_lock = threading.Lock()
 _jobs: dict[str, dict[str, Any]] = {}
 
 
+def enrich_job_state(st: dict[str, Any]) -> dict[str, Any]:
+    """与 `GET /api/models/hub/download/{job_id}` 一致，补全各百分比字段。"""
+    out = dict(st)
+    cur_t = int(out.get("current_file_total") or 0)
+    cur_d = int(out.get("current_file_done") or 0)
+    out["current_file_percent"] = (
+        round(100.0 * cur_d / cur_t, 1) if cur_t > 0 else None
+    )
+    tb = int(out.get("total_bytes_expected") or 0)
+    bd = int(out.get("bytes_downloaded") or 0)
+    ft = int(out.get("files_total_expected") or 0)
+    fc = int(out.get("files_completed") or 0)
+    overall: float | None = None
+    if tb > 0:
+        overall = min(100.0, max(0.0, round(100.0 * bd / tb, 2)))
+    elif ft > 0:
+        part = (cur_d / cur_t) if cur_t > 0 else 0.0
+        overall = min(100.0, max(0.0, round(100.0 * (fc + part) / ft, 2)))
+    out["overall_percent"] = overall
+    return out
+
+
+def list_running_jobs() -> list[dict[str, Any]]:
+    """供列表 API 在刷新页面时恢复进行中的任务状态。"""
+    out: list[dict[str, Any]] = []
+    with _jobs_lock:
+        for entry in _jobs.values():
+            st = entry["state"]
+            if st.get("status") != "running":
+                continue
+            with entry["lock"]:
+                snap = dict(entry["state"])
+            out.append(enrich_job_state(snap))
+    return out
+
+
 def _prune_stale_jobs(max_age_sec: float = 1800) -> None:
     now = time.time()
     with _jobs_lock:
@@ -59,11 +95,20 @@ def _run_job(model_id: str, state: dict[str, Any], state_lock: threading.Lock) -
             state["current_file"] = ""
             state["current_file_total"] = 0
             state["current_file_done"] = 0
+            fc = int(state.get("files_completed") or 0)
+            tbe = int(state.get("total_bytes_expected") or 0)
+        mscm.record_hub_download_success(
+            model_id,
+            path,
+            files_completed=fc,
+            total_bytes_expected=tbe,
+        )
     except Exception as e:
         with state_lock:
             state["status"] = "failed"
             state["error"] = str(e)
             state["finished_at"] = time.time()
+        mscm.record_hub_download_failed(model_id, str(e))
 
 
 def start_download_job(model_id: str) -> dict[str, Any]:
@@ -89,6 +134,7 @@ def start_download_job(model_id: str) -> dict[str, Any]:
     state_lock = threading.Lock()
     with _jobs_lock:
         _jobs[job_id] = {"state": state, "lock": state_lock}
+    mscm.record_hub_download_start(model_id)
     t = threading.Thread(
         target=_run_job,
         args=(model_id, state, state_lock),

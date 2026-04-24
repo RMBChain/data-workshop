@@ -30,7 +30,14 @@ class DeleteBody(BaseModel):
 
 @router.get("/models/hub")
 async def list_hub() -> dict[str, Any]:
-    return {"items": mscm.list_hub_models(), "hub_root": str(mscm.modelscope_hub_root())}
+    running = await asyncio.to_thread(hub_download_jobs.list_running_jobs)
+    active_mids = {str(j.get("model_id", "")).strip() for j in running if j.get("model_id")}
+    await asyncio.to_thread(mscm.prune_stale_downloading_records, active_mids)
+    return {
+        "items": mscm.list_hub_models(),
+        "hub_root": str(mscm.modelscope_hub_root()),
+        "active_downloads": running,
+    }
 
 
 @router.post("/models/hub/download")
@@ -50,23 +57,7 @@ async def download_job_status(job_id: str) -> dict[str, Any]:
     j = hub_download_jobs.get_job(job_id.strip())
     if not j:
         raise HTTPException(status_code=404, detail="任务不存在或已过期")
-    out = dict(j)
-    cur_t = int(out.get("current_file_total") or 0)
-    cur_d = int(out.get("current_file_done") or 0)
-    out["current_file_percent"] = round(100.0 * cur_d / cur_t, 1) if cur_t > 0 else None
-
-    tb = int(out.get("total_bytes_expected") or 0)
-    bd = int(out.get("bytes_downloaded") or 0)
-    ft = int(out.get("files_total_expected") or 0)
-    fc = int(out.get("files_completed") or 0)
-    overall: float | None = None
-    if tb > 0:
-        overall = min(100.0, max(0.0, round(100.0 * bd / tb, 2)))
-    elif ft > 0:
-        part = (cur_d / cur_t) if cur_t > 0 else 0.0
-        overall = min(100.0, max(0.0, round(100.0 * (fc + part) / ft, 2)))
-    out["overall_percent"] = overall
-    return out
+    return hub_download_jobs.enrich_job_state(j)
 
 
 @router.delete("/models/hub")
