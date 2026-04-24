@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -16,7 +16,15 @@ class DownloadBody(BaseModel):
     model_id: str = Field(
         ...,
         min_length=3,
-        description="ModelScope 模型 id，如 Qwen/Qwen3-VL-2B-Instruct",
+        description="模型 id（作者/名称），如 Qwen/Qwen3-VL-2B-Instruct；与来源一致",
+    )
+    source: Literal["modelscope", "huggingface"] = Field(
+        default="modelscope",
+        description="modelscope：魔搭；huggingface：Hugging Face Hub",
+    )
+    use_hf_mirror: bool | None = Field(
+        default=None,
+        description="仅 source=huggingface：null 时按环境 HF_ENDPOINT；true=hf-mirror.com；false=官网",
     )
 
 
@@ -37,6 +45,7 @@ async def list_hub() -> dict[str, Any]:
         "items": mscm.list_hub_models(),
         "hub_root": str(mscm.modelscope_hub_root()),
         "active_downloads": running,
+        "hf_hub_endpoint_host": mscm.hf_hub_endpoint_host_for_display(),
     }
 
 
@@ -48,7 +57,17 @@ async def download_to_hub(body: DownloadBody) -> dict[str, Any]:
     mid = body.model_id.strip()
     if ".." in mid or mid.startswith(("/", ".")):
         raise HTTPException(status_code=400, detail="model_id 格式无效")
-    meta = await asyncio.to_thread(hub_download_jobs.start_download_job, mid)
+    hf_resolved: str | None = None
+    if body.source == "huggingface":
+        if body.use_hf_mirror is None:
+            hf_resolved = mscm.hf_hub_endpoint_effective()
+        elif body.use_hf_mirror:
+            hf_resolved = mscm.HF_MIRROR_ENDPOINT
+        else:
+            hf_resolved = None
+    meta = await asyncio.to_thread(
+        hub_download_jobs.start_download_job, mid, body.source, hf_resolved
+    )
     return meta
 
 

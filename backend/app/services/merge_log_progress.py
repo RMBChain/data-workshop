@@ -8,6 +8,7 @@ from typing import Any
 _RE_TQDM_FULL = re.compile(r"^(.+?):\s*(\d+)%\|(?:.*?)\|\s*(\d+)/(\d+)")
 _RE_TQDM_SIMPLE = re.compile(r"^(.+?):\s*(\d+)%\|")
 _RE_LOADING_WEIGHTS = re.compile(r"(?i)^loading weights$")
+_RE_WRITING_SHARDS = re.compile(r"(?i)^writing model shards$")
 
 
 def _humanize_tqdm_label(raw: str) -> str:
@@ -28,6 +29,16 @@ def _loading_weights_hint(fraction: str | None) -> str:
     return "与后端控制台 tqdm「Loading weights」一致：正在将基座权重载入内存。"
 
 
+def _writing_shards_hint(percent: int, fraction: str | None) -> str:
+    """单分片或首个 shard 极慢时，tqdm 可能长期停在 0%。"""
+    parts = [
+        "与后端「Writing model shards」一致：正在将合并后的全量模型写入输出目录。",
+    ]
+    if percent == 0 and fraction and "/1" in fraction.replace(" ", ""):
+        parts.append("当前为 0/1 单分片时，进度条可能长时间停在 0%，通常仍在写盘，请耐心等待。")
+    return "".join(parts)
+
+
 def parse_merge_log_progress(text: str) -> dict[str, Any]:
     """解析合并子进程日志，返回与前端约定的 progress 结构（蛇形字段名）。"""
     lines = text.replace("\r\n", "\n").split("\n")
@@ -41,7 +52,13 @@ def parse_merge_log_progress(text: str) -> dict[str, Any]:
             pct = max(0, min(100, int(m.group(2))))
             fraction = f"{m.group(3)} / {m.group(4)}"
             phase = _humanize_tqdm_label(raw_label)
-            phase_hint = _loading_weights_hint(fraction) if _RE_LOADING_WEIGHTS.fullmatch(raw_label.strip()) else None
+            rstrip = raw_label.strip()
+            if _RE_LOADING_WEIGHTS.fullmatch(rstrip):
+                phase_hint: str | None = _loading_weights_hint(fraction)
+            elif _RE_WRITING_SHARDS.fullmatch(rstrip):
+                phase_hint = _writing_shards_hint(pct, fraction)
+            else:
+                phase_hint = None
             return {
                 "percent": pct,
                 "phase": phase,
@@ -52,14 +69,27 @@ def parse_merge_log_progress(text: str) -> dict[str, Any]:
         if m_simple:
             raw_label = m_simple.group(1).strip()
             pct = max(0, min(100, int(m_simple.group(2))))
-            phase_hint = _loading_weights_hint(None) if _RE_LOADING_WEIGHTS.fullmatch(raw_label.strip()) else None
+            rstrip = raw_label.strip()
+            if _RE_LOADING_WEIGHTS.fullmatch(rstrip):
+                ph = _loading_weights_hint(None)
+            elif _RE_WRITING_SHARDS.fullmatch(rstrip):
+                ph = _writing_shards_hint(pct, None)
+            else:
+                ph = None
             return {
                 "percent": pct,
                 "phase": _humanize_tqdm_label(raw_label),
                 "fraction": None,
-                "phase_hint": phase_hint,
+                "phase_hint": ph,
             }
     tail = "\n".join(lines[-40:])
+    if re.search(r"(?i)writing model shards", tail):
+        return {
+            "percent": None,
+            "phase": "写入合并后的模型",
+            "fraction": None,
+            "phase_hint": _writing_shards_hint(0, "0 / 1"),
+        }
     if "合并并卸载" in tail:
         return {"percent": None, "phase": "合并并卸载 LoRA 适配器", "fraction": None, "phase_hint": None}
     if "加载 LoRA" in tail:

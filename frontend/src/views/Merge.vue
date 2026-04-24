@@ -58,6 +58,8 @@ function tableCellText(record: SuccessTableRow, dataIndex: string | undefined | 
 const router = useRouter();
 const base = ref("Qwen/Qwen3-VL-2B-Instruct");
 const output = ref("output/merged-workshop");
+/** 与合并脚本 --merge_lora_only 一致，默认 true */
+const mergeLoraOnly = ref(true);
 
 /** 默认：output/merged-workshop/{数据 id}/{训练版本}，训练版本为 v0-…（无则 job_id）。 */
 function defaultMergeOutputPath(row: SuccessTrainingRow): string {
@@ -223,6 +225,7 @@ async function run() {
       base_model_path: base.value,
       lora_paths: paths,
       output_path: output.value,
+      merge_lora_only: mergeLoraOnly.value,
     });
     jobId.value = r.data.id;
     mergeJobStatus.value = String(r.data.status ?? "running");
@@ -345,6 +348,17 @@ onUnmounted(() => {
           </a-form-item>
         </a-col>
       </a-row>
+      <a-space direction="vertical" size="small" style="width: 100%; margin-top: 4px">
+        <a-typography-text type="secondary" style="font-size: 12px; line-height: 1.5; display: block"
+          ><code>--merge_lora_only</code>（合并脚本参数，默认 true）</a-typography-text
+        >
+        <a-checkbox
+          v-model:checked="mergeLoraOnly"
+          style="align-items: flex-start; line-height: 1.5"
+        >
+          将 LoRA 合并进基座并导出全量模型（关闭则仅导出 PEFT 适配器目录，默认开启）
+        </a-checkbox>
+      </a-space>
     </a-form>
     <a-button type="primary" :disabled="!selectedRow" :loading="runSubmitting" @click="run" >执行合并</a-button>
 
@@ -419,7 +433,6 @@ onUnmounted(() => {
         border-radius: 4px;
         white-space: pre-wrap;
       "
-      >{{ log }}</pre
-    >
+      >{{ log }}</pre>
   </div>
 </template>

@@ -84,7 +84,79 @@ def _make_progress_class(state: dict[str, Any], state_lock: threading.Lock):
     return JobProgress
 
 
-def _run_job(model_id: str, state: dict[str, Any], state_lock: threading.Lock) -> None:
+def _make_minimal_progress_class(
+    state: dict[str, Any], state_lock: threading.Lock
+) -> type:
+    """
+    与 `ProgressCallback` 子类相同的状态更新接口，但无需依赖 modelscope；
+    供 Hugging Face 逐文件下载时复用与魔搭任务一致的 `GET .../job` 轮询结构。
+    """
+
+    class JobProgress:
+        def __init__(self, filename: str, file_size: int):
+            with state_lock:
+                state["current_file"] = filename
+                state["current_file_total"] = int(file_size) if file_size else 0
+                state["current_file_done"] = 0
+
+        def update(self, size: int) -> None:
+            n = int(size)
+            with state_lock:
+                state["current_file_done"] = int(
+                    state.get("current_file_done") or 0
+                ) + n
+                state["bytes_downloaded"] = int(
+                    state.get("bytes_downloaded") or 0
+                ) + n
+
+        def end(self) -> None:
+            with state_lock:
+                state["files_completed"] = int(
+                    state.get("files_completed") or 0
+                ) + 1
+
+    return JobProgress
+
+
+def _run_job(
+    model_id: str,
+    state: dict[str, Any],
+    state_lock: threading.Lock,
+    source: str,
+    hf_endpoint: str | None = None,
+) -> None:
+    if source == "huggingface":
+        progress_cls = _make_minimal_progress_class(state, state_lock)
+        try:
+            path = mscm.download_hf_snapshot(
+                model_id,
+                progress_callbacks=[progress_cls],
+                hf_endpoint=hf_endpoint,
+            )
+        except Exception as e:
+            with state_lock:
+                state["status"] = "failed"
+                state["error"] = str(e)
+                state["finished_at"] = time.time()
+            mscm.record_hub_download_failed(model_id, str(e))
+            return
+        with state_lock:
+            state["status"] = "completed"
+            state["local_path"] = path
+            state["finished_at"] = time.time()
+            state["current_file"] = ""
+            state["current_file_total"] = 0
+            state["current_file_done"] = 0
+            fc = int(state.get("files_completed") or 0)
+            tbe = int(state.get("total_bytes_expected") or 0)
+        mscm.record_hub_download_success(
+            model_id,
+            path,
+            files_completed=fc,
+            total_bytes_expected=tbe,
+        )
+        return
+
     progress_cls = _make_progress_class(state, state_lock)
     try:
         path = mscm.download_snapshot(model_id, progress_callbacks=[progress_cls])
@@ -111,9 +183,18 @@ def _run_job(model_id: str, state: dict[str, Any], state_lock: threading.Lock) -
         mscm.record_hub_download_failed(model_id, str(e))
 
 
-def start_download_job(model_id: str) -> dict[str, Any]:
+def start_download_job(
+    model_id: str,
+    source: str = "modelscope",
+    hf_resolved_endpoint: str | None = None,
+) -> dict[str, Any]:
     _prune_stale_jobs()
-    total_b, n_files = mscm.estimate_hub_model_download_totals(model_id)
+    if source == "huggingface":
+        total_b, n_files = mscm.estimate_hf_download_totals(
+            model_id, hf_endpoint=hf_resolved_endpoint
+        )
+    else:
+        total_b, n_files = mscm.estimate_hub_model_download_totals(model_id)
     job_id = uuid.uuid4().hex
     state: dict[str, Any] = {
         "job_id": job_id,
@@ -135,9 +216,10 @@ def start_download_job(model_id: str) -> dict[str, Any]:
     with _jobs_lock:
         _jobs[job_id] = {"state": state, "lock": state_lock}
     mscm.record_hub_download_start(model_id)
+    hf_ep = hf_resolved_endpoint if source == "huggingface" else None
     t = threading.Thread(
         target=_run_job,
-        args=(model_id, state, state_lock),
+        args=(model_id, state, state_lock, source, hf_ep),
         daemon=True,
     )
     t.start()

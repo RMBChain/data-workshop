@@ -19,6 +19,10 @@ class MergeJobCreate(BaseModel):
     base_model_path: str = Field(..., description="基座：ModelScope id 或工作区内相对路径或绝对本地目录")
     lora_paths: list[str] = Field(..., min_length=1)
     output_path: str = Field(..., min_length=1, description="工作区内相对路径")
+    merge_lora_only: bool = Field(
+        True,
+        description="与 workshop_merge --merge_lora_only 一致：为 True 时将 LoRA 合并进基座并保存全量；为 False 时仅导出 PEFT 适配器目录",
+    )
 
 
 @dataclass
@@ -72,6 +76,7 @@ class MergeJobManager:
         cmd = [sys.executable, "-u", str(script), "--base", body.base_model_path, "--output", out_rel]
         for p in body.lora_paths:
             cmd.extend(["--lora", p.replace("\\", "/")])
+        cmd.extend(["--merge_lora_only", "true" if body.merge_lora_only else "false"])
         cmd.append("--extra")
         cmd.append(json_dumps([x for x in body.lora_paths[1:]]))
         env = os.environ.copy()

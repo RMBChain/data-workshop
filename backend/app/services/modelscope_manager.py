@@ -12,6 +12,9 @@ from typing import Any, Type
 _hub_records_lock = threading.Lock()
 _HUB_RECORDS_NAME = "data_workshop_hub_records.json"
 
+# 与 [HF-Mirror](https://hf-mirror.com) 说明一致，供前端选择「从镜像下载」时写入
+HF_MIRROR_ENDPOINT = "https://hf-mirror.com"
+
 
 def modelscope_cache_dir() -> Path:
     """与 ModelScope `snapshot_download` 使用的缓存根一致：`$MODELSCOPE_CACHE` 或 `~/.cache/modelscope`。"""
@@ -256,6 +259,128 @@ def hub_model_dir_if_cached(model_id: str) -> Path | None:
     return None
 
 
+def swift_model_arg_if_hub_cached(model: str) -> str:
+    """
+    将「数据工坊-模型管理」中已缓存在本机 hub 的 ``作者/名称`` 解析为**目录绝对路径**。
+
+    ms-swift 在收到 id 形参时会先走 ModelScope Hub；从 Hugging Face 下载的模型仅本地存在、魔搭上可能无此仓库。
+    传本地路径可走 ``from_pretrained(本地)``，避免误连 ModelScope。
+    """
+    m = (model or "").strip()
+    if not m or ".." in m or "://" in m:
+        return m
+    p = Path(m)
+    if p.is_dir():
+        return str(p.resolve())
+    if m.count("/") != 1:
+        return m
+    if m.startswith(("/", ".", "\\")):
+        return m
+    if len(m) >= 2 and m[1] == ":":
+        return m
+    cached = hub_model_dir_if_cached(m)
+    if cached is not None:
+        return str(cached.resolve())
+    return m
+
+
+def _infer_ms_swift_model_type_from_dirname(dirname: str) -> str | None:
+    s = (dirname or "").lower()
+    if "qwen3" in s and "vl" in s:
+        return "qwen3_vl"
+    if "qwen2.5" in s and "vl" in s:
+        return "qwen2_5_vl"
+    if "qwen2" in s and "vl" in s:
+        return "qwen2_vl"
+    return None
+
+
+def infer_ms_swift_model_type_from_hub_dir(model_arg: str) -> str | None:
+    """
+    本机模型目录下，为 ms-swift 推断 ``--model_type``（与 swift.model.models 中注册名一致）。
+
+    仅传本地路径时 swift 常无法从 id 反查，会报 *Multiple possible types*，需显式指定；
+    这里读取 ``config.json`` 的 ``architectures``，若无则根据目录名作弱启发。
+    """
+    p = Path(model_arg)
+    if not p.is_dir():
+        return None
+    cfg = p / "config.json"
+    if cfg.is_file():
+        try:
+            data = json.loads(cfg.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            return _infer_ms_swift_model_type_from_dirname(p.name)
+        archs = data.get("architectures")
+        if not isinstance(archs, list):
+            mt = data.get("model_type")
+            if isinstance(mt, str) and mt.strip():
+                return mt.strip()
+            return _infer_ms_swift_model_type_from_dirname(p.name)
+        a = ""
+        for x in archs:
+            if isinstance(x, str) and x:
+                a = x
+                break
+        if "Qwen3VL" in a or "Qwen3_VL" in a:
+            return "qwen3_vl"
+        if "Qwen2_5_VL" in a or "Qwen2.5" in a:
+            return "qwen2_5_vl"
+        if "Qwen2VL" in a or "Qwen2_VL" in a:
+            return "qwen2_vl"
+    return _infer_ms_swift_model_type_from_dirname(p.name)
+
+
+# ms-swift 的 --model_type 与 Transformers 根 config.json 的 model_type 一致（见官方 Qwen3-VL config）
+_SWIFT_TO_HF_CONFIG_MODEL_TYPE: dict[str, str] = {
+    "qwen3_vl": "qwen3_vl",
+    "qwen2_vl": "qwen2_vl",
+    "qwen2_5_vl": "qwen2_5_vl",
+}
+
+
+def ensure_config_json_hf_model_type(model_dir: str | Path, swift_model_type: str) -> bool:
+    """
+    Transformers ``AutoConfig.from_pretrained(本地目录)`` 要求根 ``config.json`` 含可识别的顶层 ``model_type``；
+    部分魔搭/衍生权重只有 ``architectures``、或 ``model_type`` 为衍生串（如 CPRT 变体），会报 *Unrecognized model*。
+
+    - 对 ``_SWIFT_TO_HF_CONFIG_MODEL_TYPE`` 中列出的架构：若缺失、为空或与标准 HF 名不一致，则**对齐**为对应值
+      （因 Transformers 只认 Qwen3-VL 等标准 ``model_type`` 字符串）。
+    - 其他 ``swift_model_type``：仅在缺失或空白时补写，避免覆盖真·自定义类。
+    """
+    p = Path(model_dir)
+    if not p.is_dir():
+        return False
+    st = (swift_model_type or "").strip()
+    if not st:
+        return False
+    cfg_path = p / "config.json"
+    if not cfg_path.is_file():
+        return False
+    try:
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    hf_type = _SWIFT_TO_HF_CONFIG_MODEL_TYPE.get(st, st)
+    raw = data.get("model_type")
+    existing = raw.strip() if isinstance(raw, str) else ""
+    if st in _SWIFT_TO_HF_CONFIG_MODEL_TYPE:
+        if existing == hf_type:
+            return False
+    else:
+        if existing:
+            return False
+    data["model_type"] = hf_type
+    try:
+        _atomic_write_json(cfg_path, data)
+    except OSError:
+        return False
+    print(f"提示: 已写入 {cfg_path.name} 顶层 model_type={hf_type!r}（Transformers 加载所需）")
+    return True
+
+
 def delete_hub_model(model_id: str) -> None:
     d = _resolve_model_dir(model_id)
     shutil.rmtree(d, ignore_errors=False)
@@ -321,3 +446,122 @@ def download_snapshot(
         kwargs["progress_callbacks"] = progress_callbacks
     p = snapshot_download(model_id, **kwargs)
     return str(p)
+
+
+def hf_hub_endpoint_effective() -> str | None:
+    """
+    Hugging Face 下载的 Hub 根 URL 仅由环境变量 ``HF_ENDPOINT`` 提供（与 huggingface_hub 一致）；
+    未设置时为本函数返回 None，请求走官方默认端点；不设其它配置项作为替代。
+    """
+    v = os.environ.get("HF_ENDPOINT")
+    if v and str(v).strip():
+        return str(v).strip().rstrip("/")
+    return None
+
+
+def hf_hub_endpoint_host_for_display() -> str | None:
+    """供前端展示当前使用的 Hub 主机名；未配置自定义端点时返回 None。"""
+    ep = hf_hub_endpoint_effective()
+    if not ep:
+        return None
+    from urllib.parse import urlparse
+
+    u = urlparse(ep)
+    if u.netloc:
+        return u.netloc
+    return ep
+
+
+def _hf_api_for(hf_endpoint: str | None):
+    from huggingface_hub import HfApi
+
+    if hf_endpoint:
+        return HfApi(endpoint=hf_endpoint)
+    return HfApi()
+
+
+def estimate_hf_download_totals(
+    model_id: str, *, hf_endpoint: str | None
+) -> tuple[int, int]:
+    """
+    通过 Hugging Face API 统计默认 revision 下可下载文件体积与文件数，供进度分母。
+    """
+    try:
+        import huggingface_hub  # noqa: F401
+    except ImportError:
+        return 0, 0
+    mid = model_id.strip()
+    try:
+        api = _hf_api_for(hf_endpoint)
+        info = api.model_info(mid, files_metadata=True)
+    except Exception:
+        return 0, 0
+    total = 0
+    n = 0
+    for s in info.siblings or []:
+        rfn = s.rfilename
+        if not rfn or rfn.endswith("/"):
+            continue
+        n += 1
+        if s.size is not None:
+            try:
+                total += int(s.size)
+            except (TypeError, ValueError):
+                pass
+    return total, n
+
+
+def download_hf_snapshot(
+    model_id: str,
+    *,
+    progress_callbacks: list[Type[Any]] | None = None,
+    hf_endpoint: str | None = None,
+) -> str:
+    """
+    从 Hugging Face 拉取到与 ModelScope 相同的本机相对布局：
+    ``hub/models/作者/名称``，便于与现有「模型管理」列表与基座 id 一致。
+    """
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as e:
+        raise RuntimeError("未安装 huggingface_hub，无法从 Hugging Face 下载") from e
+
+    hf_ep = hf_endpoint
+
+    mid = model_id.strip().replace("\\", "/")
+    if ".." in mid or mid.startswith(("/", ".")):
+        raise ValueError("非法 model_id")
+    parts = mid.split("/")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ValueError("HF 模型 id 须为 作者/名称，例如 Qwen/Qwen3-VL-2B-Instruct")
+    out_dir = (modelscope_hub_root() / "models" / parts[0] / parts[1]).resolve()
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    api = _hf_api_for(hf_ep)
+    info = api.model_info(mid, files_metadata=True)
+    progress_cls: Type[Any] | None = None
+    if progress_callbacks and len(progress_callbacks) > 0:
+        progress_cls = progress_callbacks[0]
+    for s in info.siblings or []:
+        rfn = s.rfilename
+        if not rfn or rfn.endswith("/"):
+            continue
+        size = int(s.size or 0)
+        cb = None
+        if progress_cls is not None:
+            cb = progress_cls(rfn, size)
+        dl_kw: dict[str, Any] = {
+            "repo_id": mid,
+            "filename": rfn,
+            "local_dir": out_dir,
+            "resume_download": True,
+        }
+        if hf_ep:
+            dl_kw["endpoint"] = hf_ep
+        hf_hub_download(**dl_kw)
+        if cb is not None:
+            if size:
+                cb.update(size)
+            cb.end()
+    return str(out_dir)

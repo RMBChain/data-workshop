@@ -5,6 +5,7 @@ python-multipart
 pyyaml
 httpx
 pydantic-settings>=2.0
+huggingface_hub>=0.20
 bitsandbytes>=0.43.0
 psutil>=5.9
 # torch.cuda 会 import pynvml；使用 NVIDIA 官方 nvidia-ml-py，避免旧 PyPI 包 pynvml 的 FutureWarning
