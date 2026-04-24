@@ -133,24 +133,19 @@ const selectedRow = computed((): SuccessTrainingRow | null => {
   return successRows.value.find((r) => r.job_id === id) ?? null;
 });
 
-const columns = [
-  { title: "项目名称", dataIndex: "project_title", key: "project_title", ellipsis: true },
-  { title: "批次名称", dataIndex: "batch_name", key: "batch_name", ellipsis: true },
-  { title: "数据集名称", dataIndex: "dataset_name", key: "dataset_name", ellipsis: true },
-  { title: "训练名称", dataIndex: "job_name", key: "job_name", ellipsis: true },
-  { title: "基座", dataIndex: "train_base_model", key: "train_base_model", ellipsis: true },
-  { title: "LoRA 路径", dataIndex: "path", key: "path", ellipsis: true },
-  { title: "合并后模型路径", dataIndex: "merge_output_path", key: "merge_output_path", ellipsis: true },
-  { title: "合并状态", key: "merge_status", width: 120, ellipsis: true },
+/** 卡片正文展示的字段（训练名称在卡片标题，合并状态在 extra 标签） */
+const mergeCardMetaItems: { title: string; dataIndex: keyof SuccessTableRow | string }[] = [
+  { title: "项目名称", dataIndex: "project_title" },
+  { title: "批次名称", dataIndex: "batch_name" },
+  { title: "数据集名称", dataIndex: "dataset_name" },
+  { title: "基座", dataIndex: "train_base_model" },
+  { title: "LoRA 路径", dataIndex: "path" },
+  { title: "合并后模型路径", dataIndex: "merge_output_path" },
 ];
 
-const rowSelection = computed(() => ({
-  type: "radio" as const,
-  selectedRowKeys: selectedJobIds.value,
-  onChange: (keys: (string | number)[]) => {
-    selectedJobIds.value = keys.map((k) => String(k));
-  },
-}));
+function selectSuccessRow(jobId: string) {
+  selectedJobIds.value = [jobId];
+}
 
 async function loadMergeStatus() {
   try {
@@ -295,32 +290,54 @@ onUnmounted(() => {
     <a-space style="margin-bottom: 8px">
       <a-button size="small" :loading="successLoading" @click="loadSuccessList">刷新列表</a-button>
     </a-space>
-    <a-table
-      :columns="columns"
-      :data-source="successTableRows"
-      :loading="successLoading"
-      :pagination="false"
-      :row-selection="rowSelection"
-      row-key="job_id"
-      size="small"
-      :scroll="{ x: 'max-content' }"
-      style="width: 100%; margin-bottom: 16px"
-    >
-      <template #bodyCell="{ column, text, record }">
-        <template v-if="column.key === 'merge_status'">
-          <a-tag :color="mergeStatusTagColor((record as SuccessTableRow).merge_status)">
-            {{ MERGE_STATUS_LABEL[(record as SuccessTableRow).merge_status] }}
-          </a-tag>
-        </template>
-        <span
-          v-else-if="column && 'dataIndex' in column && column.dataIndex"
-          :title="tableCellText(record as SuccessTableRow, column.dataIndex)"
+    <a-spin :spinning="successLoading">
+      <div v-if="successTableRows.length" class="merge-success-card-grid" >
+        <a-card
+          v-for="record in successTableRows"
+          :key="record.job_id"
+          class="merge-success-card"
+          :class="{ 'merge-success-card--selected': selectedJobIds[0] === record.job_id }"
+          size="small"
+          hoverable
+          @click="selectSuccessRow(record.job_id)"
         >
-          {{ tableCellText(record as SuccessTableRow, column.dataIndex) }}
-        </span>
-        <span v-else>{{ text ?? "—" }}</span>
-      </template>
-    </a-table>
+          <template #title>
+            <div class="merge-success-card-title">
+              <a-radio
+                :checked="selectedJobIds[0] === record.job_id"
+                @click.stop="selectSuccessRow(record.job_id)"
+              />
+              <span
+                class="merge-success-card-title-text"
+                :title="tableCellText(record, 'job_name')"
+              >
+                {{ tableCellText(record, "job_name") }}
+              </span>
+            </div>
+          </template>
+          <template #extra>
+            <a-tag :color="mergeStatusTagColor(record.merge_status)" @click.stop>
+              {{ MERGE_STATUS_LABEL[record.merge_status] }}
+            </a-tag>
+          </template>
+          <div class="merge-success-card-meta">
+            <div
+              v-for="item in mergeCardMetaItems"
+              :key="String(item.dataIndex)"
+              class="merge-success-card-meta-row"
+            >
+              <span class="merge-success-card-meta-label">{{ item.title }}</span>
+              <span
+                class="merge-success-card-meta-value"
+                :title="tableCellText(record, item.dataIndex)"
+              >
+                {{ tableCellText(record, item.dataIndex) }}
+              </span>
+            </div>
+          </div>
+        </a-card>
+      </div>
+    </a-spin>
     <a-empty
       v-if="!successLoading && successRows.length === 0"
       description="暂无已成功的训练任务（或磁盘上已找不到 LoRA/adapter）"
@@ -436,3 +453,83 @@ onUnmounted(() => {
       >{{ log }}</pre>
   </div>
 </template>
+
+<style scoped>
+.merge-success-card-grid {
+  margin-top: 4px;
+  margin-bottom: 16px;
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+  gap: 16px;
+}
+.merge-success-card {
+  cursor: pointer;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.merge-success-card :deep(.ant-card-head) {
+  min-height: 48px;
+  padding: 0 16px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+.merge-success-card :deep(.ant-card-head-title) {
+  padding: 10px 0;
+  min-width: 0;
+}
+.merge-success-card :deep(.ant-card-extra) {
+  padding: 10px 0;
+}
+.merge-success-card :deep(.ant-card-body) {
+  padding: 12px 16px 14px;
+}
+.merge-success-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.merge-success-card-title-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.88);
+}
+.merge-success-card--selected {
+  border-color: var(--ant-primary-color, #1677ff);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--ant-primary-color, #1677ff) 40%, transparent),
+    0 6px 16px rgba(22, 119, 255, 0.16);
+}
+.merge-success-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+.merge-success-card-meta-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  min-width: 0;
+}
+.merge-success-card-meta-label {
+  flex-shrink: 0;
+  width: 96px;
+  color: rgba(0, 0, 0, 0.45);
+  line-height: 1.5;
+}
+.merge-success-card-meta-value {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.5;
+  word-break: break-all;
+  color: rgba(0, 0, 0, 0.85);
+}
+</style>
