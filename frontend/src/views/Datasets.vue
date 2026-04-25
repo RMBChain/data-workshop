@@ -1,14 +1,22 @@
 <script setup lang="ts">
 import { message, Modal } from "ant-design-vue";
-import { EditOutlined } from "@ant-design/icons-vue";
+import { EditOutlined, PlusOutlined } from "@ant-design/icons-vue";
 import { onMounted, onUnmounted, ref, computed } from "vue";
 import { useRouter } from "vue-router";
 import { http } from "../api/http";
 
 const router = useRouter();
-const imports = ref<
-  { id: string; project_title?: string | null; batch_name?: string | null; task_count: number; created_at: string }[]
->([]);
+type ImportBatchRow = {
+  id: string;
+  project_id?: number | null;
+  project_title?: string | null;
+  batch_name?: string | null;
+  task_count: number;
+  created_at: string;
+};
+
+const imports = ref<ImportBatchRow[]>([]);
+const selectedProjectKey = ref<string | null>(null);
 const selectedBatch = ref<string | null>(null);
 const buildNote = ref("");
 const trainRatio = ref(80);
@@ -36,6 +44,53 @@ const versionViewOpen = ref(false);
 const versionViewLoading = ref(false);
 const versionViewTitle = ref("");
 const versionViewPayload = ref<VersionDataPayload | null>(null);
+const createDatasetOpen = ref(false);
+/** 从点击「生成数据集」到任务终态或轮询结束 */
+const datasetBuildLoading = ref(false);
+
+function openCreateDatasetModal() {
+  createDatasetOpen.value = true;
+}
+
+const createDatasetFormLabelCol = { flex: "0 0 300px" as const, style: { maxWidth: "200px" } };
+const createDatasetFormWrapperCol = { flex: "1 1 0", style: { minWidth: 0, maxWidth: "100%" } as const };
+
+/** 与后端 import_batches 一致：有 project_id 时按 id 分组合并；无 id 时按项目标题分组合并 */
+function importProjectKey(i: { project_id?: number | null; project_title?: string | null }): string {
+  if (i.project_id != null) return `pid:${i.project_id}`;
+  return `ptitle:${(i.project_title?.trim() || "—")}`;
+}
+
+function buildProjectOptions(items: ImportBatchRow[]): { value: string; label: string }[] {
+  const map = new Map<string, string>();
+  for (const row of items) {
+    const k = importProjectKey(row);
+    if (!map.has(k)) map.set(k, row.project_title?.trim() || "—");
+  }
+  return Array.from(map.entries()).map(([value, label]) => ({ value, label }));
+}
+
+const importProjectOptions = computed(() => buildProjectOptions(imports.value));
+
+const createDatasetBatchOptions = computed(() => {
+  const pk = selectedProjectKey.value;
+  if (pk == null) return [];
+  return imports.value
+    .filter((i) => importProjectKey(i) === pk)
+    .map((i) => {
+      const batch = (i.batch_name != null && String(i.batch_name).trim()) || "—";
+      return { value: i.id, label: `${batch} · ${i.task_count} 条` };
+    });
+});
+
+function onCreateDatasetProjectChange(val: string | null | undefined) {
+  if (val == null) {
+    selectedBatch.value = null;
+    return;
+  }
+  const list = imports.value.filter((i) => importProjectKey(i) === val);
+  selectedBatch.value = list[0]?.id ?? null;
+}
 
 function formatJson(v: unknown): string {
   try {
@@ -79,17 +134,27 @@ onUnmounted(() => {
     clearInterval(pollT.value);
     pollT.value = null;
   }
+  datasetBuildLoading.value = false;
 });
 
 async function refreshImports() {
   const r = await http.get("/api/imports");
   imports.value = r.data.items;
-  if (imports.value.length) {
-    if (!selectedBatch.value || !imports.value.some((i) => i.id === selectedBatch.value)) {
-      selectedBatch.value = imports.value[0].id;
-    }
-  } else {
+  const items = imports.value;
+  const opts = buildProjectOptions(items);
+  if (opts.length === 0) {
+    selectedProjectKey.value = null;
     selectedBatch.value = null;
+    return;
+  }
+  if (!selectedProjectKey.value || !opts.some((o) => o.value === selectedProjectKey.value)) {
+    selectedProjectKey.value = opts[0].value;
+  }
+  const list = items.filter((i) => importProjectKey(i) === selectedProjectKey.value);
+  if (!list.length) {
+    selectedBatch.value = null;
+  } else if (!selectedBatch.value || !list.some((b) => b.id === selectedBatch.value)) {
+    selectedBatch.value = list[0].id;
   }
 }
 
@@ -206,6 +271,7 @@ async function startBuild() {
     message.warning("请选择导入批次");
     return;
   }
+  datasetBuildLoading.value = true;
   try {
     const r = await http.post("/api/datasets/build", {
       import_batch_id: selectedBatch.value,
@@ -224,6 +290,7 @@ async function startBuild() {
         if (Date.now() - buildPollStart > DATASET_JOB_POLL_MAX_MS) {
           if (pollT.value) clearInterval(pollT.value);
           pollT.value = null;
+          datasetBuildLoading.value = false;
           message.warning("构建状态长时间未结束，已停止轮询。请查看「版本」或刷新后重试。");
           return;
         }
@@ -233,8 +300,10 @@ async function startBuild() {
           if (["succeeded", "failed", "cancelled"].includes(String(st.data.status))) {
             if (pollT.value) clearInterval(pollT.value);
             pollT.value = null;
+            datasetBuildLoading.value = false;
             if (st.data.status === "succeeded") {
               message.success("数据集已生成");
+              createDatasetOpen.value = false;
               await refreshVersions();
             } else if (st.data.status === "failed") {
               const em = (st.data as { error_message?: string }).error_message;
@@ -244,6 +313,7 @@ async function startBuild() {
         } catch (e: unknown) {
           if (pollT.value) clearInterval(pollT.value);
           pollT.value = null;
+          datasetBuildLoading.value = false;
           const err = e as { response?: { status?: number } };
           if (err.response?.status === 404) {
             message.error("构建任务已不存在，已停止轮询。");
@@ -254,6 +324,7 @@ async function startBuild() {
       })();
     }, DATASET_JOB_POLL_MS);
   } catch (e: unknown) {
+    datasetBuildLoading.value = false;
     const err = e as { response?: { data?: { detail?: string } } };
     message.error(err.response?.data?.detail ?? "失败");
   }
@@ -276,64 +347,89 @@ function goTrain() {
 
 <template>
   <div>
-    <a-typography-title :level="4">数据集</a-typography-title>
+    <div class="datasets-page-header">
+      <div class="datasets-page-header__title-row">
+        <a-typography-title :level="4">数据集</a-typography-title>
+        <a-tooltip title="新增数据集" placement="bottom">
+          <a-button
+            type="text"
+            class="datasets-header-add-btn"
+            aria-label="新增数据集"
+            @click="openCreateDatasetModal"
+          >
+            <template #icon>
+              <PlusOutlined />
+            </template>
+          </a-button>
+        </a-tooltip>
+      </div>
+    </div>
+
+    <a-modal
+      v-model:open="createDatasetOpen"
+      title="新建数据集"
+      width="min(960px, 96vw)"
+      :footer="null"
+      destroy-on-close
+    >
     <a-alert
       type="info"
       show-icon
       message="将导入数据转为 SFT 对话格式（qwen-vl 模板族），并划分训练集与验证集。产物位于工作区 versions/。"
       style="margin-bottom: 12px"
     />
-    <a-form layout="vertical">
-      <a-row :gutter="[16, 16]">
-        <a-col  :span="6">
-          <a-form-item label="源导入批次">
-            <a-select
-              v-model:value="selectedBatch"
-              :options="
-                imports.map((i) => {
-                  const project = i.project_title?.trim() || '—';
-                  const batch = (i.batch_name != null && String(i.batch_name).trim()) || '—';
-                  return {
-                    value: i.id,
-                    label: `#${project} # ${batch} # ${i.task_count} 条`,
-                  };
-                })
-              "
-              style="width: 100%"
-              :disabled="!imports.length"
-              placeholder="无批次时请先到「数据导入」"
-            />
-          </a-form-item>
-        </a-col>
-        <a-col :span="3">
-          <a-form-item :label="autoImageLabel">
-            <a-switch v-model:checked="addImageToken" />
-          </a-form-item>
-        </a-col>
-        <a-col  :span="2">
-          <a-form-item label="随机种子（可空）">
-            <a-input-number v-model:value="seed" style="width: 100%" />
-          </a-form-item>
-        </a-col>
-        <a-col  :span="5">
-          <a-form-item label="划分比例（训练 : 验证，默认 8:2）">
-            <a-input-number v-model:value="trainRatio" :min="0" :max="100" /> :
-            <a-input-number v-model:value="valRatio" :min="0" :max="100" />
-            <span style="margin-left: 8px; color: #666; font-size: 12px">两数之和须为 100</span>
-          </a-form-item>
-        </a-col>
-        <a-col  :span="2">
-          <a-form-item label="备注">
-            <a-input v-model:value="buildNote" />
-          </a-form-item>
-        </a-col>
-        <a-col :span="5">
-          <a-form-item style="padding-top: 28px">
-            <a-button type="primary" @click="startBuild">生成数据集</a-button>
-          </a-form-item>
-        </a-col>
-      </a-row>
-    </a-form>
+      <a-form
+        class="create-dataset-form"
+        layout="horizontal"
+        :label-col="createDatasetFormLabelCol"
+        :wrapper-col="createDatasetFormWrapperCol"
+      >
+        <a-form-item label="项目">
+          <a-select
+            v-model:value="selectedProjectKey"
+            :options="importProjectOptions"
+            style="width: 100%"
+            :disabled="!importProjectOptions.length"
+            placeholder="无导入时请到「数据导入」"
+            @change="onCreateDatasetProjectChange"
+          />
+        </a-form-item>
+        <a-form-item label="数据批次">
+          <a-select
+            v-model:value="selectedBatch"
+            :options="createDatasetBatchOptions"
+            style="width: 100%"
+            :disabled="!createDatasetBatchOptions.length"
+            placeholder="请先选择项目，或到「数据导入」创建批次"
+          />
+        </a-form-item>
+  
+        <a-form-item :label="autoImageLabel">
+          <a-switch v-model:checked="addImageToken" />
+        </a-form-item>
+  
+        <a-form-item label="随机种子（可空）">
+          <a-input-number v-model:value="seed" style="width: 100%" />
+        </a-form-item>
+
+        <a-form-item label="划分比例">
+          <a-input-number v-model:value="trainRatio" :min="0" :max="100" /> :
+          <a-input-number v-model:value="valRatio" :min="0" :max="100" />
+          <span style="margin-left: 8px; color: #666; font-size: 12px">两数之和须为 100。（训练 : 验证，默认 80:20）</span>
+        </a-form-item>
+
+        <a-form-item label="备注">
+          <a-input v-model:value="buildNote" />
+        </a-form-item>
+
+        <a-form-item :colon="false" label=" " class="create-dataset-form__actions">
+          <a-space>
+            <a-button @click="createDatasetOpen = false">取消</a-button>
+            <a-button type="primary" :loading="datasetBuildLoading" @click="startBuild">生成数据集</a-button>
+          </a-space>
+        </a-form-item>
+      </a-form>
+    </a-modal>
     <a-typography-paragraph v-if="buildJob"
       >当前构建任务：{{ String((buildJob as { id?: string }).id) }} ·
       {{ String((buildJob as { status?: string }).status) }}</a-typography-paragraph
@@ -436,6 +532,34 @@ function goTrain() {
 </template>
 
 <style scoped>
+.datasets-page-header {
+  margin-bottom: 12px;
+}
+.datasets-page-header__title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  max-width: 100%;
+  min-width: 0;
+}
+.datasets-page-header__title-row :deep(h4) {
+  margin: 0;
+  padding: 0;
+  line-height: 1.35;
+}
+.datasets-header-add-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  font-size: 18px;
+  color: rgba(0, 0, 0, 0.45);
+}
+.datasets-header-add-btn:hover {
+  color: var(--ant-primary-color, #1677ff);
+}
 .dataset-version-name-cell {
   display: inline-flex;
   align-items: center;
