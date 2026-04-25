@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { message, Modal } from "ant-design-vue";
-import { EditOutlined, QuestionCircleOutlined } from "@ant-design/icons-vue";
+import {
+  EditOutlined,
+  QuestionCircleOutlined,
+  ReloadOutlined,
+  SettingOutlined,
+} from "@ant-design/icons-vue";
 import { onMounted, reactive, ref } from "vue";
 import { http } from "../api/http";
 
@@ -25,6 +30,7 @@ const total = ref(0);
 const form = reactive({ page_size: 20 });
 /** 选中批次后展开「任务预览」折叠面板 */
 const batchPreviewCollapseKeys = ref<string[]>(["1"]);
+const settingsModalOpen = ref(false);
 const rawModalOpen = ref(false);
 const rawModalTitle = ref("");
 const rawModalText = ref("");
@@ -60,9 +66,17 @@ async function saveBatchName() {
   }
 }
 
+/** 进入页面时刷新：LS 状态、批次表；若已填 Token 则同步项目列表 */
+async function fetchInitialViewData() {
+  await refreshConfigStatus();
+  await loadBatches();
+  if (token.value.trim()) {
+    await loadProjects();
+  }
+}
+
 onMounted(() => {
-  void refreshConfigStatus();
-  void loadBatches();
+  void fetchInitialViewData();
 });
 
 function formatApiDetail(detail: unknown): string {
@@ -338,7 +352,44 @@ function batchRowClassName(record: { id?: string }) {
 
 <template>
   <div>
-    <a-typography-title :level="4">数据导入</a-typography-title>
+    <div class="data-import__page-header">
+      <div class="data-import__title-row">
+        <a-typography-title :level="4" class="data-import__title">数据导入</a-typography-title>
+        <a-tooltip
+          title="刷新项目列表"
+          placement="bottomRight"
+          :auto-adjust-overflow="false"
+        >
+          <a-button
+            type="text"
+            class="data-import__refresh-btn"
+            :loading="loadingProjects"
+            aria-label="刷新项目列表"
+            @click="loadProjects"
+          >
+            <template #icon>
+              <ReloadOutlined />
+            </template>
+          </a-button>
+        </a-tooltip>
+      </div>
+      <a-tooltip
+        title="Label Studio 连接设置"
+        placement="bottomRight"
+        :auto-adjust-overflow="false"
+      >
+        <a-button
+          type="text"
+          class="data-import__settings-btn"
+          aria-label="Label Studio 连接设置"
+          @click="settingsModalOpen = true"
+        >
+          <template #icon>
+            <SettingOutlined />
+          </template>
+        </a-button>
+      </a-tooltip>
+    </div>
     <a-divider />
     <a-typography-paragraph
       v-if="!(status as { reachable?: boolean }).reachable"
@@ -348,57 +399,6 @@ function batchRowClassName(record: { id?: string }) {
       未探测到可访问的默认 LS 地址。请用 Docker 在本地启动 Label Studio（见仓库说明），并确认
       <code>WORKSHOP_LABEL_STUDIO_URL</code> 与网络可达性。
     </a-typography-paragraph>
-    <!-- 24 栅格 4 列（每列 span=6）；基址/Token 各占两列，操作区通栏 -->
-    <a-form layout="vertical">
-      <a-row :gutter="[16, 16]">
-        <a-col :span="8">
-          <a-form-item>
-            <template #label>
-              <span>
-                Label Studio 地址
-                <a-tooltip>
-                  <template #title>
-                    后端在 Docker 内时请用 host.docker.internal（或与本机 WORKSHOP_LABEL_STUDIO_URL 一致）；仅当 API 与本机进程同机直连 LS 时用 127.0.0.1。
-                  </template>
-                  <QuestionCircleOutlined style="margin-left: 6px; color: rgba(0, 0, 0, 0.45); cursor: help" />
-                </a-tooltip>
-              </span>
-            </template>
-            <a-textarea
-              v-model:value="baseUrl"
-              placeholder="http://host.docker.internal:8080"
-              :auto-size="{ minRows: 2, maxRows: 4 }"
-            />
-          </a-form-item>
-        </a-col>
-        <a-col :span="14">
-          <a-form-item>
-            <template #label>
-              <span>
-                API Token
-                <a-tooltip>
-                  <template #title>
-                    在 Label Studio 账户/设置中创建。
-                  </template>
-                  <QuestionCircleOutlined style="margin-left: 6px; color: rgba(0, 0, 0, 0.45); cursor: help" />
-                </a-tooltip>
-              </span>
-            </template>
-            <a-textarea v-model:value="token" :rows="2" />
-          </a-form-item>
-        </a-col>
-        <a-col :span="2">
-          <a-form-item style="margin-top: 24px">
-            <a-space>
-              <a-button :loading="testing" @click="testConnection">测试连接</a-button>
-            </a-space>
-            <a-space>
-              <a-button :loading="loadingProjects" @click="loadProjects">刷新项目列表</a-button>
-            </a-space>
-          </a-form-item>
-        </a-col>
-      </a-row>
-    </a-form>
     <a-divider style="border-top: 2px solid rgba(0, 0, 0, 0.35)" />
 
         <a-typography-title :level="5" style="margin: 24px 0 12px">项目列表</a-typography-title>
@@ -436,7 +436,7 @@ function batchRowClassName(record: { id?: string }) {
                     :loading="importingIds.has(record.id)"
                     @click.stop="importProject(record.id)"
                   >
-                    导入
+                    导入数据
                   </a-button>
                 </template>
                 <div class="import-project-card-meta">
@@ -447,7 +447,7 @@ function batchRowClassName(record: { id?: string }) {
           </a-row>
         </a-spin>
         <a-typography-paragraph v-if="!loadingProjects && !projects.length" type="secondary">
-          请点击「刷新项目列表」加载 Label Studio 中的项目（需有效 Token）
+          请先在右上角打开连接设置，填写地址与 Token，再点击「刷新项目列表」加载 Label Studio 中的项目
         </a-typography-paragraph>
         <a-divider style="border-top: 2px solid rgba(0, 0, 0, 0.35)" />
         <a-typography-title :level="5" style="margin: 24px 0 12px">导入的批次列表</a-typography-title>
@@ -495,6 +495,57 @@ function batchRowClassName(record: { id?: string }) {
         </a-typography-paragraph>
        
     <a-modal
+      v-model:open="settingsModalOpen"
+      title="Label Studio 连接设置"
+      width="min(880px, 96vw)"
+      :footer="null"
+    >
+      <!-- 24 栅格 4 列（每列 span=6）；基址/Token 各占两列，操作区通栏 -->
+      <a-form layout="vertical">
+  
+            <a-form-item>
+              <template #label>
+                <span>
+                  Label Studio 地址
+                  <a-tooltip>
+                    <template #title>
+                      后端在 Docker 内时请用 host.docker.internal（或与本机 WORKSHOP_LABEL_STUDIO_URL 一致）；仅当 API 与本机进程同机直连 LS 时用 127.0.0.1。
+                    </template>
+                    <QuestionCircleOutlined style="margin-left: 6px; color: rgba(0, 0, 0, 0.45); cursor: help" />
+                  </a-tooltip>
+                </span>
+              </template>
+              <a-textarea
+                v-model:value="baseUrl"
+                placeholder="http://host.docker.internal:8080"
+                :auto-size="{ minRows: 2, maxRows: 4 }"
+              />
+            </a-form-item>
+   
+            <a-form-item>
+              <template #label>
+                <span>
+                  API Token
+                  <a-tooltip>
+                    <template #title>
+                      在 Label Studio 账户/设置中创建。
+                    </template>
+                    <QuestionCircleOutlined style="margin-left: 6px; color: rgba(0, 0, 0, 0.45); cursor: help" />
+                  </a-tooltip>
+                </span>
+              </template>
+              <a-textarea v-model:value="token" :rows="2" />
+            </a-form-item>
+ 
+            <a-form-item style="margin-top: 24px">
+              <a-space>
+                <a-button :loading="testing" @click="testConnection">测试连接</a-button>
+              </a-space>
+            </a-form-item>
+
+      </a-form>
+    </a-modal>
+    <a-modal
       v-model:open="rawModalOpen"
       :title="rawModalTitle"
       width="min(920px, 96vw)"
@@ -523,6 +574,44 @@ function batchRowClassName(record: { id?: string }) {
 </template>
 
 <style scoped>
+.data-import__page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 40px;
+}
+.data-import__page-header :deep(.ant-tooltip) {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+}
+.data-import__title {
+  margin: 0;
+}
+.data-import__title-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.data-import__refresh-btn {
+  flex-shrink: 0;
+  font-size: 18px;
+  color: rgba(0, 0, 0, 0.45);
+}
+.data-import__refresh-btn:hover {
+  color: var(--ant-primary-color, #1677ff);
+}
+.data-import__settings-btn {
+  flex-shrink: 0;
+  font-size: 18px;
+  color: rgba(0, 0, 0, 0.45);
+}
+.data-import__settings-btn:hover {
+  color: var(--ant-primary-color, #1677ff);
+}
 .import-project-card-grid {
   margin-top: 8px;
 }
