@@ -437,13 +437,13 @@ function goTrain() {
     <a-divider />
     <a-table
       :columns="[
-        { title: '名称1', dataIndex: 'name', key: 'name', ellipsis: true, width: 280 },
-        { title: '时间', dataIndex: 'created_at', key: 'created_at' },
+        { title: '数据集名称', dataIndex: 'name', key: 'name', ellipsis: true, width: 280 },
         { title: '项目名称', dataIndex: 'project_title', key: 'project_title', ellipsis: true },
         { title: '批次名称', dataIndex: 'batch_name', key: 'batch_name', ellipsis: true },
         { title: '训练', dataIndex: 'train_count', key: 'train_count', width: 72 },
         { title: '验证', dataIndex: 'val_count', key: 'val_count', width: 72 },
         { title: '备注', dataIndex: 'note', key: 'note' },
+        { title: '时间', dataIndex: 'created_at', key: 'created_at' },
         {
           title: '操作',
           key: 'action',
