@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { message } from "ant-design-vue";
 import { onMounted, reactive, ref } from "vue";
-import { http } from "../api/http";
+import { apiErrorDetail, http } from "../api/http";
 
 const filters = reactive({ project_title: "", batch_name: "" });
 const tasks = ref<Record<string, unknown>[]>([]);
@@ -34,8 +34,7 @@ async function fetchTasks() {
     }));
     total.value = r.data.total ?? 0;
   } catch (e: unknown) {
-    const err = e as { response?: { data?: { detail?: string } } };
-    message.error(err.response?.data?.detail ?? "搜索任务失败");
+    message.error(apiErrorDetail(e) ?? "搜索任务失败");
     tasks.value = [];
     total.value = 0;
   } finally {
@@ -85,8 +84,7 @@ async function openTaskRaw(record: { id: string; batch_id?: string; ls_task_id?:
     rawModalText.value = text;
     rawModalOpen.value = true;
   } catch (e: unknown) {
-    const err = e as { response?: { data?: { detail?: string } } };
-    message.error(err.response?.data?.detail ?? "获取原始数据失败");
+    message.error(apiErrorDetail(e) ?? "获取原始数据失败");
   }
 }
 

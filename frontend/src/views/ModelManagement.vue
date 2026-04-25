@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { message } from "ant-design-vue";
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { http } from "../api/http";
+import { apiErrorDetail, http } from "../api/http";
 
 type HubDownloadRecord = {
   /** 旧数据可能无此字段，有 completed_at 则按成功记录展示 */
@@ -310,7 +310,7 @@ async function startHubDownload(
     startPoll();
   } catch (e: unknown) {
     const err = e as { response?: { data?: { detail?: string } } };
-    message.error(err.response?.data?.detail ?? "创建下载任务失败");
+    message.error(apiErrorDetail(err) ?? "创建下载任务失败");
   } finally {
     downloading.value = false;
   }
@@ -323,7 +323,7 @@ async function doDelete(id: string) {
     await refresh();
   } catch (e: unknown) {
     const err = e as { response?: { data?: { detail?: string } } };
-    message.error(err.response?.data?.detail ?? "删除失败");
+    message.error(apiErrorDetail(err) ?? "删除失败");
   }
 }
 

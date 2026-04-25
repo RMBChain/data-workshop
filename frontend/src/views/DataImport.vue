@@ -7,7 +7,7 @@ import {
   SettingOutlined,
 } from "@ant-design/icons-vue";
 import { computed, onMounted, reactive, ref } from "vue";
-import { http } from "../api/http";
+import { apiErrorDetail, formatApiDetail, getApiErrorDetail, http } from "../api/http";
 
 type LsStatus = { url?: string; reachable?: boolean };
 type ImportBatch = { id: string; project_id?: number; batch_name?: string | null; task_count?: number; created_at?: string };
@@ -70,7 +70,7 @@ async function saveBatchName() {
     batchNameEditOpen.value = false;
     await loadBatches();
   } catch (e: unknown) {
-    message.error(apiDetail(e) ?? "保存失败");
+    message.error(apiErrorDetail(e) ?? "保存失败");
   } finally {
     batchNameSaving.value = false;
   }
@@ -100,7 +100,7 @@ async function saveLabelStudioConnection() {
     });
     message.success("连接设置已保存到数据库");
   } catch (e: unknown) {
-    message.error(apiDetail(e) ?? "保存失败");
+    message.error(apiErrorDetail(e) ?? "保存失败");
   } finally {
     savingConnection.value = false;
   }
@@ -118,24 +118,6 @@ async function fetchInitialViewData() {
 onMounted(() => {
   void fetchInitialViewData();
 });
-
-function formatApiDetail(detail: unknown): string {
-  if (detail == null) return "连接失败";
-  if (typeof detail === "string") return detail;
-  if (Array.isArray(detail)) {
-    return detail
-      .map((item: { msg?: string; loc?: unknown[] }) => {
-        const loc = Array.isArray(item.loc) ? item.loc.filter((x) => x !== "body").join(".") : "";
-        return loc ? `${loc}: ${item.msg ?? ""}` : (item.msg ?? JSON.stringify(item));
-      })
-      .join("；");
-  }
-  return String(detail);
-}
-
-function apiDetail(e: unknown): string | undefined {
-  return (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-}
 
 async function refreshConfigStatus() {
   try {
@@ -160,7 +142,7 @@ async function testConnection() {
     await http.post("/api/label-studio/test-connection", { base_url: baseUrl.value.trim(), token: token.value.trim() });
     message.success("已连接，Token 有效。");
   } catch (e: unknown) {
-    const d = formatApiDetail((e as { response?: { data?: { detail?: unknown } } }).response?.data?.detail ?? "连接失败");
+    const d = formatApiDetail(getApiErrorDetail(e) ?? "连接失败");
     message.error(d);
   } finally {
     testing.value = false;
@@ -183,7 +165,7 @@ async function loadProjects() {
       selectedProjectId.value = null;
     }
   } catch (e: unknown) {
-    message.error(apiDetail(e) ?? "获取项目失败");
+    message.error(apiErrorDetail(e) ?? "获取项目失败");
   } finally {
     loadingProjects.value = false;
   }
@@ -208,7 +190,7 @@ async function importProject(projectId: number) {
     message.success(`已导入 ${r.data.task_count} 条任务 (项目 ${projectId})`);
     await loadBatches();
   } catch (e: unknown) {
-    message.error(apiDetail(e) ?? "导入失败");
+    message.error(apiErrorDetail(e) ?? "导入失败");
   } finally {
     importingIds.delete(projectId);
   }
@@ -220,7 +202,7 @@ async function loadBatches() {
     const r = await http.get("/api/imports");
     batches.value = r.data.items || [];
   } catch (e: unknown) {
-    message.error(apiDetail(e) ?? "获取批次列表失败");
+    message.error(apiErrorDetail(e) ?? "获取批次列表失败");
   } finally {
     loadingBatches.value = false;
   }
@@ -244,7 +226,7 @@ function confirmDeleteBatch(batchId: string) {
         }
         await loadBatches();
       } catch (e: unknown) {
-        message.error(apiDetail(e) ?? "删除失败");
+        message.error(apiErrorDetail(e) ?? "删除失败");
         return Promise.reject(e);
       }
     },

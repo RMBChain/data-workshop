@@ -1,7 +1,6 @@
 """
 数据准备脚本：将data文件夹中的图片转换为ms-swift所需的JSONL格式
 """
-import os
 import json
 from pathlib import Path
 import random

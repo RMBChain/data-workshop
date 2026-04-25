@@ -6,16 +6,17 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field, ValidationError
 
-from backend.app.config import get_settings
+from backend.app.deps import WorkspaceRoot, get_workspace_root
 from backend.app.db import get_connection
 from backend.app.services import modelscope_manager as mscm
 from backend.app.services.job_manager import (
     TrainJobCreate,
     TrainingJobManager,
+    WORKSHOP_SAVED_FORM_JOB_ID,
     _latest_checkpoint_relpath,
 )
 from backend.app.services.training_metrics import (
@@ -26,14 +27,24 @@ from backend.app.services.training_metrics import (
 
 router = APIRouter(tags=["training"])
 
+_MAX_SAVED_FORM_PARAMS_BYTES = 400_000
+
 _manager: TrainingJobManager | None = None
 
 
 def _manager_singleton() -> TrainingJobManager:
     global _manager
     if _manager is None:
-        _manager = TrainingJobManager(get_settings().workspace_root.resolve())
+        _manager = TrainingJobManager(get_workspace_root())
     return _manager
+
+
+def _reject_reserved_training_job_id(job_id: str) -> None:
+    if job_id == WORKSHOP_SAVED_FORM_JOB_ID:
+        raise HTTPException(
+            status_code=404,
+            detail="该 id 为工作区已保存训练参数，不是训练任务；请用 GET/POST /api/training/form-params。",
+        )
 
 
 def _display_names_for_job_request(workspace: Path, req: dict[str, Any]) -> tuple[str, str, str]:
@@ -97,8 +108,7 @@ def _require_model_downloaded_in_hub(model: str) -> None:
 
 
 @router.get("/training/jobs")
-async def list_training_jobs() -> dict:
-    root = get_settings().workspace_root.resolve()
+async def list_training_jobs(root: WorkspaceRoot) -> dict:
     jobs = _manager_singleton().list_jobs()
     result = []
     for j in jobs:
@@ -140,6 +150,7 @@ async def create_training_job(body: TrainJobCreate) -> dict:
 
 @router.patch("/training/jobs/{job_id}")
 async def patch_training_job(job_id: str, body: TrainJobRenameBody) -> dict:
+    _reject_reserved_training_job_id(job_id)
     j = _manager_singleton().update_job_name(job_id, body.job_name)
     if not j:
         raise HTTPException(status_code=404, detail="任务不存在或名称为空")
@@ -148,11 +159,11 @@ async def patch_training_job(job_id: str, body: TrainJobRenameBody) -> dict:
 
 
 @router.get("/training/jobs/{job_id}")
-async def get_training_job(job_id: str) -> dict:
+async def get_training_job(root: WorkspaceRoot, job_id: str) -> dict:
+    _reject_reserved_training_job_id(job_id)
     job = _manager_singleton().get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
-    root = get_settings().workspace_root.resolve()
     req = job.request or {}
     pt, bn, dn = _display_names_for_job_request(root, req)
     return {
@@ -173,6 +184,7 @@ async def get_training_job(job_id: str) -> dict:
 
 @router.get("/training/jobs/{job_id}/logs")
 async def get_training_logs(job_id: str) -> dict:
+    _reject_reserved_training_job_id(job_id)
     job = _manager_singleton().get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -182,6 +194,7 @@ async def get_training_logs(job_id: str) -> dict:
 
 @router.post("/training/jobs/{job_id}/cancel")
 async def cancel_training_job(job_id: str) -> dict:
+    _reject_reserved_training_job_id(job_id)
     ok = _manager_singleton().cancel_job(job_id)
     if not ok:
         raise HTTPException(status_code=400, detail="无法取消该任务")
@@ -190,6 +203,7 @@ async def cancel_training_job(job_id: str) -> dict:
 
 @router.delete("/training/jobs/{job_id}")
 async def delete_training_job(job_id: str) -> dict:
+    _reject_reserved_training_job_id(job_id)
     ok = _manager_singleton().delete_job(job_id)
     if not ok:
         raise HTTPException(status_code=400, detail="仅可删除已结束且非运行中任务，或请先用取消。")
@@ -197,9 +211,9 @@ async def delete_training_job(job_id: str) -> dict:
 
 
 @router.post("/training/jobs/{job_id}/retry")
-async def retry_training_job(job_id: str) -> dict:
+async def retry_training_job(root: WorkspaceRoot, job_id: str) -> dict:
     """与 UI「继续训练」一致：在相同 output_dir 上从最新 checkpoint 恢复，而非清空目录重训。"""
-    root = get_settings().workspace_root.resolve()
+    _reject_reserved_training_job_id(job_id)
     m = _manager_singleton()
     old = m.get_job(job_id)
     if not old or not old.request:
@@ -228,6 +242,7 @@ async def retry_training_job(job_id: str) -> dict:
 
 @router.get("/training/jobs/{job_id}/metrics")
 async def get_training_metrics(job_id: str) -> dict:
+    _reject_reserved_training_job_id(job_id)
     j = _manager_singleton().get_job(job_id)
     if not j:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -273,6 +288,8 @@ async def stream_training_logs(
 ) -> Any:
     """简易 SSE：定期推送当前日志尾（与轮询等效，前端可二选一）。"""
 
+    _reject_reserved_training_job_id(job_id)
+
     async def _gen() -> Any:
         last = ""
         while True:
@@ -298,6 +315,9 @@ class TrainJobRenameBody(BaseModel):
 
 class YamlBody(BaseModel):
     yaml: str = Field(..., min_length=1, description="训练 YAML 文本")
+
+
+_NO_CACHE_HEADERS = {"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"}
 
 
 @router.post("/training/config/yaml/parse")
@@ -330,3 +350,39 @@ async def export_training_yaml(job_id: str | None = Query(None)) -> Response:
         media_type="text/yaml; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="train-config.yaml"'},
     )
+
+
+@router.get("/training/form-params")
+async def get_saved_training_form_params() -> JSONResponse:
+    """读取 `training_jobs_persist` 中固定 id 行的 request_json（与正式任务同字段、同解析流程）。"""
+    p = _manager_singleton().get_saved_form_params()
+    return JSONResponse(content={"params": p}, headers=_NO_CACHE_HEADERS)
+
+
+async def _persist_saved_training_form_params(request: Request) -> JSONResponse:
+    """写入与 POST /training/jobs 相同的 `request_json`，经 TrainJobCreate 校验与 output_dir 展开，不启训练子进程。"""
+    try:
+        raw_body = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="请求体须为合法 JSON") from e
+    if not isinstance(raw_body, dict):
+        raise HTTPException(status_code=400, detail="JSON 根节点须为对象")
+    data: dict[str, Any] = raw_body
+    payload = json.dumps(data, ensure_ascii=False)
+    if len(payload.encode("utf-8")) > _MAX_SAVED_FORM_PARAMS_BYTES:
+        raise HTTPException(status_code=400, detail="训练参数数据过大，请删减后再试")
+    try:
+        _manager_singleton().upsert_saved_form_params(data)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return JSONResponse(content={"ok": True}, headers=_NO_CACHE_HEADERS)
+
+
+@router.post("/training/form-params")
+async def post_saved_training_form_params(request: Request) -> JSONResponse:
+    return await _persist_saved_training_form_params(request)
+
+
+@router.put("/training/form-params")
+async def put_saved_training_form_params(request: Request) -> JSONResponse:
+    return await _persist_saved_training_form_params(request)

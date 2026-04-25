@@ -1,19 +1,17 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter
 
-from backend.app.config import get_settings
+from backend.app.deps import WorkspaceRoot
 from backend.app.services.inference_models import list_workspace_models
 
 router = APIRouter(tags=["exports"])
 
 
 @router.get("/exports/artifacts")
-async def list_export_artifacts() -> dict[str, Any]:
-    root = get_settings().workspace_root.resolve()
+async def list_export_artifacts(root: WorkspaceRoot) -> dict[str, Any]:
     models = list_workspace_models(root)
     out: list[dict[str, Any]] = [
         {

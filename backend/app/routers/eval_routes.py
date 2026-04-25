@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from backend.app.config import get_settings
+from backend.app.deps import WorkspaceRoot
 from backend.app.db import get_connection
 from backend.app.services.inference_models import (
     _adapter_relpath_for_registered_training,
@@ -76,9 +76,8 @@ def _val_jsonl_and_dataset_id_for_lora(
 
 
 @router.get("/eval/merged-models")
-async def list_merged_models_for_eval() -> dict[str, Any]:
+async def list_merged_models_for_eval(root: WorkspaceRoot) -> dict[str, Any]:
     """工作区内通过 LoRA 合并产出的模型目录，及建议的验证集 jsonl 相对路径（与对应训练任务一致，否则为 data/val.jsonl）。"""
-    root = get_settings().workspace_root.resolve()
     by_path: dict[str, dict[str, Any]] = {}
     out_dir = root / "output"
     if out_dir.is_dir():
@@ -148,8 +147,7 @@ _lock = threading.Lock()
 
 
 @router.post("/eval/jobs")
-async def create_eval_job(body: EvalJobCreate) -> dict[str, Any]:
-    root = get_settings().workspace_root.resolve()
+async def create_eval_job(root: WorkspaceRoot, body: EvalJobCreate) -> dict[str, Any]:
     p = resolve_under_workspace(root, body.data_jsonl)
     if not p.is_file():
         raise HTTPException(status_code=400, detail="数据文件不存在或不可访问")
@@ -171,7 +169,8 @@ async def create_eval_job(body: EvalJobCreate) -> dict[str, Any]:
             items: list[dict[str, Any]] = []
             for i, line in enumerate(lines):
                 n += 1
-                rec = json.loads(line) if line.strip() else {}
+                if line.strip():
+                    json.loads(line)
                 # MVP：占位式逐条结果
                 items.append(
                     {
@@ -245,25 +244,24 @@ async def get_eval_items(
 
 
 @router.get("/eval/reports")
-async def list_eval_reports() -> dict[str, Any]:
-    root = get_settings().workspace_root.resolve() / "output" / "eval-reports"
-    if not root.is_dir():
+async def list_eval_reports(ws: WorkspaceRoot) -> dict[str, Any]:
+    rep_root = ws / "output" / "eval-reports"
+    if not rep_root.is_dir():
         return {"items": []}
     items = [
         {
             "id": p.stem,
-            "path": str(p.relative_to(get_settings().workspace_root)).replace("\\", "/"),
+            "path": str(p.relative_to(ws)).replace("\\", "/"),
             "mtime": p.stat().st_mtime,
         }
-        for p in root.glob("*.json")
+        for p in rep_root.glob("*.json")
     ]
     items.sort(key=lambda x: x["mtime"], reverse=True)
     return {"items": items}
 
 
 @router.get("/eval/reports/{report_id}/export")
-async def export_eval_report(report_id: str) -> dict[str, str]:
-    root = get_settings().workspace_root.resolve()
+async def export_eval_report(root: WorkspaceRoot, report_id: str) -> dict[str, str]:
     p = root / "output" / "eval-reports" / f"{report_id}.json"
     if not p.is_file():
         raise HTTPException(status_code=404, detail="报告不存在")

@@ -2,7 +2,6 @@
 """
 合并LoRA权重到基础模型
 """
-import os
 from pathlib import Path
 from modelscope import snapshot_download
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor

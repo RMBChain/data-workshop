@@ -19,6 +19,9 @@ from pydantic import BaseModel, Field
 from backend.app.db import get_connection, json_dumps
 from backend.app.services import modelscope_manager as mscm
 
+# 「仅保存参数」专用：单条 training_jobs 记录，与真实任务相同 request_json 字段，不出现在任务列表
+WORKSHOP_SAVED_FORM_JOB_ID = "00000000-0000-4000-8000-00000000feed"
+
 
 class TrainJobCreate(BaseModel):
     """与 backend/scripts/train.py CLI 对齐的训练任务参数（均为相对仓库根的路径，除非为 ModelScope 模型 id）。"""
@@ -360,7 +363,11 @@ class TrainingJobManager:
 
     def list_jobs(self) -> list[TrainJob]:
         with self._lock:
-            jobs = sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
+            jobs = sorted(
+                (j for j in self._jobs.values() if j.id != WORKSHOP_SAVED_FORM_JOB_ID),
+                key=lambda j: j.created_at,
+                reverse=True,
+            )
         for j in jobs:
             self._hydrate_swift_run_relpath_from_log(j)
         return jobs
@@ -371,6 +378,37 @@ class TrainingJobManager:
         if j is not None:
             self._hydrate_swift_run_relpath_from_log(j)
         return j
+
+    def get_saved_form_params(self) -> dict[str, Any] | None:
+        with self._lock:
+            j = self._jobs.get(WORKSHOP_SAVED_FORM_JOB_ID)
+        if not j or not isinstance(j.request, dict) or not j.request:
+            return None
+        return dict(j.request)
+
+    def upsert_saved_form_params(self, data: dict[str, Any]) -> dict[str, Any]:
+        """与 create_job 相同 request_json 存库逻辑，不启动训练；status=parameters_saved。"""
+        body = TrainJobCreate.model_validate(data)
+        rfc = body.resume_from_checkpoint
+        if not (isinstance(rfc, str) and rfc.strip()):
+            body = body.model_copy(update={"output_dir": "output/"})
+        body = _resolve_output_dir_for_new_job(body, WORKSHOP_SAVED_FORM_JOB_ID)
+        with self._lock:
+            existing = self._jobs.get(WORKSHOP_SAVED_FORM_JOB_ID)
+            created = existing.created_at if existing else time.time()
+            job = TrainJob(
+                id=WORKSHOP_SAVED_FORM_JOB_ID,
+                status="parameters_saved",
+                created_at=created,
+                finished_at=None,
+                log_path=None,
+                return_code=None,
+                error_message=None,
+                request=body.model_dump(),
+            )
+            self._jobs[WORKSHOP_SAVED_FORM_JOB_ID] = job
+        self._save_job_to_db(job)
+        return job.request or {}
 
     def _hydrate_swift_run_relpath_from_log(self, job: TrainJob) -> None:
         """训练开始后日志会出现 on_train_begin 的实际 output_dir；解析后写入 request 并持久化。"""
@@ -516,6 +554,8 @@ class TrainingJobManager:
         return text, truncated
 
     def delete_job(self, job_id: str) -> bool:
+        if job_id == WORKSHOP_SAVED_FORM_JOB_ID:
+            return False
         with self._lock:
             j = self._jobs.get(job_id)
             if not j:
@@ -548,6 +588,8 @@ class TrainingJobManager:
             return True
 
     def update_job_name(self, job_id: str, job_name: str) -> TrainJob | None:
+        if job_id == WORKSHOP_SAVED_FORM_JOB_ID:
+            return None
         name = (job_name or "").strip()
         if not name:
             return None
