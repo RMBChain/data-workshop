@@ -13,12 +13,16 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.app.config import get_settings
-from backend.app.db import get_connection, json_dumps
+from backend.app.db import app_kv_get, app_kv_set, get_connection, json_dumps
 from backend.app.services import label_studio_api as ls
 from backend.app.services.paths import resolve_under_workspace
 
 router = APIRouter(tags=["label-studio"])
 log = logging.getLogger(__name__)
+
+# 持久化在 SQLite app_kv 表（与「活跃数据集」等键值同表）
+_KV_LABEL_STUDIO_BASE_URL = "label_studio.ui_base_url"
+_KV_LABEL_STUDIO_API_TOKEN = "label_studio.ui_api_token"
 
 
 async def _resolve_import_image(
@@ -72,6 +76,39 @@ class LabelStudioImportBody(BaseModel):
     base_url: str | None = None
     token: str
     task_filter: str | None = Field(None, description="预留；MVP 不筛选")
+
+
+class LabelStudioConnectionBody(BaseModel):
+    base_url: str = Field("", description="Label Studio 根 URL")
+    token: str = Field("", description="LS API Token，可空以清空已存 Token")
+
+
+@router.get("/label-studio/connection")
+async def get_label_studio_connection() -> dict[str, Any]:
+    """从数据库 app_kv 读取界面保存的基址与 Token；基址未设置时回退为配置默认。"""
+    settings = get_settings()
+    root = settings.workspace_root.resolve()
+    conn = get_connection(root)
+    raw_base = (app_kv_get(conn, _KV_LABEL_STUDIO_BASE_URL) or "").strip()
+    if not raw_base:
+        raw_base = (settings.label_studio_url or "").strip()
+    base_url = raw_base.rstrip("/")
+    token = app_kv_get(conn, _KV_LABEL_STUDIO_API_TOKEN) or ""
+    return {"base_url": base_url, "token": token}
+
+
+@router.put("/label-studio/connection")
+async def put_label_studio_connection(body: LabelStudioConnectionBody) -> dict[str, Any]:
+    """将连接设置写入数据库 app_kv。"""
+    settings = get_settings()
+    root = settings.workspace_root.resolve()
+    conn = get_connection(root)
+    base_url = (body.base_url or "").strip().rstrip("/")
+    token = body.token or ""
+    app_kv_set(conn, _KV_LABEL_STUDIO_BASE_URL, base_url)
+    app_kv_set(conn, _KV_LABEL_STUDIO_API_TOKEN, token)
+    conn.commit()
+    return {"base_url": base_url, "token": token}
 
 
 @router.get("/label-studio/status")
