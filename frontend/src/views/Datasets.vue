@@ -330,7 +330,6 @@ function goTrain() {
         <a-col :span="5">
           <a-form-item style="padding-top: 28px">
             <a-button type="primary" @click="startBuild">生成数据集</a-button>
-            <a-button type="link" @click="goTrain">去训练</a-button>
           </a-form-item>
         </a-col>
       </a-row>
