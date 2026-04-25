@@ -112,9 +112,9 @@ function taskImagePathTooltip(record: { image_rel?: unknown }): string {
 }
 
 const taskColumns = [
+  { title: "任务 ID", dataIndex: "ls_task_id", key: "ls_task_id", width: 90, align: "center" as const },
   { title: "项目名称", dataIndex: "project_title", key: "project_title", ellipsis: true, width: 120, align: "center" as const },
   { title: "批次名称", dataIndex: "batch_name", key: "batch_name", ellipsis: true, width: 120, align: "center" as const },
-  { title: "任务 ID", dataIndex: "ls_task_id", key: "ls_task_id", width: 90, align: "center" as const },
   { title: "图片", key: "task_image", width: 80, align: "center" as const },
   { title: "图片路径", key: "image_rel", width: 100, align: "center" as const },
   { title: "标注数", dataIndex: "annotation_count", key: "annotation_count", width: 80, align: "center" as const },
@@ -125,7 +125,7 @@ const taskColumns = [
 
 <template>
   <div>
-    <a-typography-title :level="4">数据查看</a-typography-title>
+    <a-typography-title :level="4">批次数据查看</a-typography-title>
     <a-typography-paragraph type="secondary" style="margin-bottom: 16px">
       按项目名称、批次名称在已导入任务中模糊搜索；留空则列出全部任务（分页）。
     </a-typography-paragraph>
@@ -157,7 +157,6 @@ const taskColumns = [
       </a-form-item>
     </a-form>
 
-    <a-typography-title :level="5" style="margin: 0 0 12px">导入任务</a-typography-title>
     <a-table
       :columns="taskColumns"
       :data-source="tasks"
