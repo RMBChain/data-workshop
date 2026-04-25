@@ -6,7 +6,6 @@ import { http } from "../api/http";
 import TrainingFormPanel from "../components/TrainingFormPanel.vue";
 
 const jobs = ref<Record<string, unknown>[]>([]);
-const jobsTableActiveKeys = ref<string[]>(["jobs"]);
 const currentJobId = ref<string | null>(null);
 
 const jobNameEditOpen = ref(false);
