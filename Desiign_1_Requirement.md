@@ -135,17 +135,26 @@ docker compose up -d --build
 
 **仅后端开发**
 ```powershell
+
+
+
+
+
+
+
 docker build -f devops/swift4.03-cpu.dockerfile -t swift4.03-cpu:latest .
 docker build -f devops/Dockerfile.workshop -t data-workshop-api:latest .
 docker rm -f workshop-api-dev
 docker run -d --name workshop-api-dev --shm-size=4g -p 127.0.0.1:8702:8000  `
   -v "${PWD}:/workspace/project"  -v "C:/_llm_model/modelscope:/root/.cache/modelscope"  `
   -w /workspace/project -e WORKSHOP_WORKSPACE_ROOT=/workspace/project  `
+  -e WORKSHOP_MERGE_USE_TMP_STAGING=1  `
   --add-host=host.docker.internal:host-gateway  `
   data-workshop-api:latest  `
   uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
   - **魔搭模型目录（宿主机）**：`C:\_llm_model\modelscope` 挂载为容器内 `/root/.cache/modelscope`，与 ModelScope 默认缓存根一致；其下应有 `hub\models\作者\模型名`（与未自定义路径时本机 `~/.cache/modelscope` 结构相同）。首次使用可提前创建空目录，下载的模型将落盘到该盘符。
+  - **合并输出**：`WORKSHOP_MERGE_USE_TMP_STAGING=1` 与根目录 `docker-compose` 中 `api` 一致；合并大模型时先写容器可写层再落盘到工作区，减轻 Windows 下对绑定挂载直写 `safetensors` 的 I/O 错误。纯 Linux/不需要时可去掉该环境变量。
   - PowerShell 下将卷挂载中的 `${PWD}` 换为当前目录的绝对路径（或将仓库根路径写死为 `-v "D:/path/to/data-workshop:/workspace/project"`）。停止/删除：`docker stop workshop-api-dev && docker rm workshop-api-dev`。
 
 **本机前端：** `cd frontend` → `nvm use 22.22.2` → `npm run dev`（**8701**，代理到宿主机 **8702** 上的 API，与上表开发 API 端口一致）。

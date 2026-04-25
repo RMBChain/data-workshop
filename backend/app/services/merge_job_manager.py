@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -13,6 +14,14 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from backend.app.db import json_dumps
+
+
+def _merge_jobs_log_dir() -> Path:
+    """合并任务日志仅服务轮询与排障；默认放系统 temp，避免与工作区 output/ 抢满盘（Docker 绑定挂载 errno 28）。"""
+    custom = (os.environ.get("WORKSHOP_MERGE_JOBS_LOG_DIR") or "").strip()
+    if custom:
+        return Path(custom).expanduser().resolve()
+    return (Path(tempfile.gettempdir()) / "workshop-merge-jobs").resolve()
 
 
 class MergeJobCreate(BaseModel):
@@ -54,9 +63,9 @@ class MergeJobManager:
 
     def create_job(self, body: MergeJobCreate) -> MergeJob:
         job_id = str(uuid.uuid4())
-        out = self._workspace / "output" / "merge-jobs"
-        out.mkdir(parents=True, exist_ok=True)
-        log_path = out / f"{job_id}.log"
+        log_dir = _merge_jobs_log_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"{job_id}.log"
         job = MergeJob(
             id=job_id,
             status="pending",

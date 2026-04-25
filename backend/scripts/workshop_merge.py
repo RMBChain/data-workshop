@@ -7,7 +7,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
+import tempfile
 import traceback
 from pathlib import Path
 
@@ -49,6 +51,12 @@ def _merge_torch_dtype():
         return torch.float32
 
 
+def _use_tmp_staging() -> bool:
+    """在 Docker Desktop（Windows 等）下向绑定挂载区直接写大 safetensors 分片常触发 EIO；先写到容器可写层再搬回工作区可规避。"""
+    v = (os.environ.get("WORKSHOP_MERGE_USE_TMP_STAGING") or "").strip().lower()
+    return v in ("1", "true", "yes", "y")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", required=True, help="基座：ModelScope id 或本地目录")
@@ -84,7 +92,18 @@ def main() -> int:
             return 1
 
     out = Path(args.output).resolve()
-    out.mkdir(parents=True, exist_ok=True)
+    use_staging = _use_tmp_staging()
+    if use_staging:
+        work_dir = Path(
+            tempfile.mkdtemp(prefix="workshop_merge_", dir=tempfile.gettempdir())
+        )
+        print(
+            f"大文件先写入临时目录，再同步到工作区: {work_dir} → {out}",
+            file=sys.stderr,
+        )
+    else:
+        out.mkdir(parents=True, exist_ok=True)
+        work_dir = out
 
     base = _resolve_base(args.base)
     print(f"加载基座: {base}（dtype={dtype}）")
@@ -103,20 +122,40 @@ def main() -> int:
             merged = model.merge_and_unload()
             # 分片降低单次写入峰值；与 HF 默认 tqdm「Writing model shards」一致
             merged.save_pretrained(
-                str(out),
+                str(work_dir),
                 safe_serialization=True,
                 max_shard_size="2GB",
             )
         else:
             print("未合并到基座：仅导出 PEFT 适配器目录（merge_lora_only=false）…")
             model.save_pretrained(
-                str(out),
+                str(work_dir),
                 safe_serialization=True,
                 max_shard_size="2GB",
             )
         processor = AutoProcessor.from_pretrained(base, trust_remote_code=True)
-        processor.save_pretrained(str(out))
+        processor.save_pretrained(str(work_dir))
+        if use_staging:
+            print(f"正在将合并结果复制到: {out}", file=sys.stderr)
+            if out.exists():
+                shutil.rmtree(out)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(work_dir), str(out))
     except Exception:
+        if (
+            use_staging
+            and work_dir.resolve() != out.resolve()
+            and work_dir.is_dir()
+        ):
+            print(
+                f"合并写入临时目录未搬回工作区，可在此路径查找或手动复制: {work_dir}",
+                file=sys.stderr,
+            )
+        print(
+            "若出现 SafetensorError / I/O error：请检查磁盘空间；"
+            "在 Docker 下可设置环境变量 WORKSHOP_MERGE_USE_TMP_STAGING=1。",
+            file=sys.stderr,
+        )
         traceback.print_exc(file=sys.stderr)
         return 1
     meta: dict = {
