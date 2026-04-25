@@ -24,6 +24,8 @@ services:
     environment:
       # 与单独部署的 Label Studio 通信：默认宿主机 127.0.0.1:8080（见 README）
       - WORKSHOP_LABEL_STUDIO_URL=http://host.docker.internal:8080
+      # 合并大模型时向绑定挂载直接写 safetensors 在 Windows/Docker 上易出现 EIO；先写 /tmp 再搬入工作区
+      - WORKSHOP_MERGE_USE_TMP_STAGING=1
       - WORKSHOP_WORKSPACE_ROOT=/workspace/project
       # 应用业务日志：INFO 或 DEBUG；抓 LS/下载细节时可加 WORKSHOP_HTTPX_LOG=1
       - WORKSHOP_LOG_LEVEL=INFO
