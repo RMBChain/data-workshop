@@ -71,7 +71,6 @@ def main() -> int:
     ap.add_argument("--extra", default="[]", help="JSON 列表：多路时忽略除第一个以外的说明（预留）")
     args = ap.parse_args()
 
-    import torch
     from peft import PeftModel
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 

@@ -11,8 +11,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from starlette.datastructures import UploadFile
 
-from backend.app.config import get_settings
 from backend.app.db import get_connection, json_dumps
+from backend.app.deps import WorkspaceRoot
 from backend.app.services.inference_models import list_registered_training_models
 from backend.app.services import inference_service
 from backend.app.services.inference_service import infer_image
@@ -125,8 +125,7 @@ def _run_infer(
 
 
 @router.get("/inference/models")
-async def list_models() -> dict[str, Any]:
-    root = get_settings().workspace_root.resolve()
+async def list_models(root: WorkspaceRoot) -> dict[str, Any]:
     return {"items": list_registered_training_models(root)}
 
 
@@ -137,9 +136,8 @@ class InferenceLoadBody(BaseModel):
 
 
 @router.post("/inference/load")
-async def inference_load(body: InferenceLoadBody) -> dict[str, str]:
+async def inference_load(root: WorkspaceRoot, body: InferenceLoadBody) -> dict[str, str]:
     """预加载与 chat 同键的基座+LoRA 到进程内缓存，减少首次点「发送」的等待时间。"""
-    root = get_settings().workspace_root.resolve()
     base = body.base_model
     adapter: str | None = (body.adapter_path or "").strip() or None
     base, adapter = _apply_model_id(base, adapter, body.model_id)
@@ -178,13 +176,11 @@ class InferenceChatBody(BaseModel):
 
 
 @router.post("/inference/chat")
-async def inference_chat(request: Request) -> dict[str, Any]:
+async def inference_chat(request: Request, root: WorkspaceRoot) -> dict[str, Any]:
     """
     JSON：沿用工作区内 `image_workspace_path` / `import_task_id`（均可省略，则仅文本多轮指令）。
     multipart：字段同上，另可提供 `image` 文件；无图片时作纯文本推理。文件会保存到工作区 `uploads/playground/` 再推理。
     """
-    settings = get_settings()
-    root = settings.workspace_root.resolve()
     ctype = (request.headers.get("content-type") or "").lower()
 
     if "multipart/form-data" in ctype:
@@ -248,9 +244,7 @@ class SessionCreateBody(BaseModel):
 
 
 @router.post("/inference/session")
-async def create_session(body: SessionCreateBody) -> dict[str, str]:
-    settings = get_settings()
-    root = settings.workspace_root.resolve()
+async def create_session(root: WorkspaceRoot, body: SessionCreateBody) -> dict[str, str]:
     sid = uuid.uuid4().hex
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     key = f"{body.base_model}::{body.adapter_path or ''}::{body.model_id or ''}"
@@ -266,8 +260,7 @@ async def create_session(body: SessionCreateBody) -> dict[str, str]:
 
 
 @router.get("/inference/sessions/{session_id}")
-async def get_session(session_id: str) -> dict[str, Any]:
-    root = get_settings().workspace_root.resolve()
+async def get_session(root: WorkspaceRoot, session_id: str) -> dict[str, Any]:
     r = get_connection(root).execute(
         "SELECT id, model_key, messages_json, updated_at FROM inference_sessions WHERE id = ?",
         (session_id,),
@@ -284,10 +277,10 @@ async def get_session(session_id: str) -> dict[str, Any]:
 
 @router.post("/inference/sessions/{session_id}/export")
 async def export_session(
+    root: WorkspaceRoot,
     session_id: str,
     export_format: str = Query("markdown", description="markdown 或 json"),
 ) -> dict[str, str]:
-    root = get_settings().workspace_root.resolve()
     r = get_connection(root).execute(
         "SELECT messages_json FROM inference_sessions WHERE id = ?",
         (session_id,),

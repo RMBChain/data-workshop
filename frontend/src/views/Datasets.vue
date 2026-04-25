@@ -3,7 +3,7 @@ import { message, Modal } from "ant-design-vue";
 import { EditOutlined, PlusOutlined } from "@ant-design/icons-vue";
 import { onMounted, onUnmounted, ref, computed } from "vue";
 import { useRouter } from "vue-router";
-import { http } from "../api/http";
+import { apiErrorDetail, http } from "../api/http";
 
 const router = useRouter();
 type ImportBatchRow = {
@@ -111,8 +111,7 @@ async function openVersionDataView(versionId: string) {
     });
     versionViewPayload.value = r.data as VersionDataPayload;
   } catch (e: unknown) {
-    const err = e as { response?: { data?: { detail?: string } } };
-    message.error(err.response?.data?.detail ?? "加载失败");
+    message.error(apiErrorDetail(e) ?? "加载失败");
     versionViewOpen.value = false;
   } finally {
     versionViewLoading.value = false;
@@ -223,8 +222,7 @@ async function saveVersionName() {
     versionNameEditOpen.value = false;
     await refreshVersions();
   } catch (e: unknown) {
-    const err = e as { response?: { data?: { detail?: string } } };
-    message.error(err.response?.data?.detail ?? "保存失败");
+    message.error(apiErrorDetail(e) ?? "保存失败");
   } finally {
     versionNameSaving.value = false;
   }
@@ -236,8 +234,7 @@ async function activateVersion(versionId: string) {
     message.success("已激活该版本");
     await refreshVersions();
   } catch (e: unknown) {
-    const err = e as { response?: { data?: { detail?: string } } };
-    message.error(err.response?.data?.detail ?? "激活失败");
+    message.error(apiErrorDetail(e) ?? "激活失败");
   }
 }
 
@@ -259,8 +256,7 @@ function deleteVersion(versionId: string) {
         }
         await refreshVersions();
       } catch (e: unknown) {
-        const err = e as { response?: { data?: { detail?: string } } };
-        message.error(err.response?.data?.detail ?? "删除失败");
+        message.error(apiErrorDetail(e) ?? "删除失败");
       }
     },
   });
@@ -314,19 +310,18 @@ async function startBuild() {
           if (pollT.value) clearInterval(pollT.value);
           pollT.value = null;
           datasetBuildLoading.value = false;
-          const err = e as { response?: { status?: number } };
-          if (err.response?.status === 404) {
+          const st = (e as { response?: { status?: number } }).response?.status;
+          if (st === 404) {
             message.error("构建任务已不存在，已停止轮询。");
           } else {
-            message.error("获取构建状态失败，已停止轮询。");
+            message.error(apiErrorDetail(e) ?? "获取构建状态失败，已停止轮询。");
           }
         }
       })();
     }, DATASET_JOB_POLL_MS);
   } catch (e: unknown) {
     datasetBuildLoading.value = false;
-    const err = e as { response?: { data?: { detail?: string } } };
-    message.error(err.response?.data?.detail ?? "失败");
+    message.error(apiErrorDetail(e) ?? "失败");
   }
 }
 
@@ -335,8 +330,7 @@ async function loadPreview() {
     const r = await http.get("/api/datasets/preview", { params: {} });
     preview.value = r.data.sample;
   } catch (e: unknown) {
-    const err = e as { response?: { data?: { detail?: string } } };
-    message.error(err.response?.data?.detail ?? "无预览");
+    message.error(apiErrorDetail(e) ?? "无预览");
   }
 }
 

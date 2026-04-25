@@ -3,7 +3,6 @@
 推理脚本 - 测试微调后的Qwen3-VL模型
 支持图片和文本输入的推理测试
 """
-import os
 from pathlib import Path
 import torch
 from modelscope import snapshot_download

@@ -2,9 +2,9 @@
 import { message } from "ant-design-vue";
 import { InfoCircleOutlined, QuestionCircleOutlined, ReloadOutlined } from "@ant-design/icons-vue";
 import * as echarts from "echarts";
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, toRaw, watch } from "vue";
 import { useRouter } from "vue-router";
-import { http } from "../api/http";
+import { apiErrorDetail, getApiErrorDetail, http } from "../api/http";
 
 type HubDownloadRecord = {
   status?: "downloading" | "completed" | "failed" | "interrupted";
@@ -25,8 +25,10 @@ const props = withDefaults(
     jobNamePrefill?: string;
     /** 父级「新建训练」每次打开递增，用于在无预填时重新生成默认名称 */
     newTrainOpenSeq?: number;
+    /** 训练参数全屏 Modal 是否打开；为 false 时不拉取/合并已保存参数，避免未展示时写坏表单 */
+    panelVisible?: boolean;
   }>(),
-  { jobNamePrefill: "", newTrainOpenSeq: 0 },
+  { jobNamePrefill: "", newTrainOpenSeq: 0, panelVisible: false },
 );
 
 const currentJobId = defineModel<string | null>("currentJobId", { default: null });
@@ -95,6 +97,7 @@ const datasetPathModalLoading = ref(false);
 const datasetPathModalError = ref("");
 const loadingDatasetPaths = ref(false);
 const submitting = ref(false);
+const savingFormParams = ref(false);
 const logText = ref("");
 const logPre = ref<HTMLPreElement | null>(null);
 const jobStatus = ref("");
@@ -432,7 +435,11 @@ function onBatchKeyChange(bk: string | null | undefined) {
   onDatasetVersionSelect(list[0]!.id);
 }
 
-async function loadDatasetVersions(opts?: { forceSelectActive?: boolean }) {
+async function loadDatasetVersions(opts?: {
+  forceSelectActive?: boolean;
+  /** 若存在且仍在本机版本列表中，优先生效（与合并已保存训练参数时一致，避免先被默认/激活版覆盖） */
+  preferVersionId?: string | null;
+}) {
   loadingDatasetPaths.value = true;
   try {
     const r = await http.get<{
@@ -445,8 +452,11 @@ async function loadDatasetVersions(opts?: { forceSelectActive?: boolean }) {
     const ids = new Set(items.map((x) => x.id));
     const act = r.data.active_version_id;
 
+    const pref = (opts?.preferVersionId ?? "").trim();
     let pick: string | null = null;
-    if (opts?.forceSelectActive) {
+    if (pref && ids.has(pref)) {
+      pick = pref;
+    } else if (opts?.forceSelectActive) {
       if (act && ids.has(act)) pick = act;
       else if (items[0]) pick = items[0].id;
     } else {
@@ -498,10 +508,11 @@ async function openDatasetPathModal(kind: "train" | "val") {
     }
     datasetPathModalText.value = t;
   } catch (e: unknown) {
-    const ax = e as { response?: { data?: { detail?: unknown } } };
-    const detail = ax.response?.data?.detail;
+    const detail = getApiErrorDetail(e);
     datasetPathModalError.value =
-      typeof detail === "string" ? detail : "无法读取文件内容，请确认路径可访问或稍后重试";
+      typeof detail === "string" && detail
+        ? detail
+        : "无法读取文件内容，请确认路径可访问或稍后重试";
   } finally {
     datasetPathModalLoading.value = false;
   }
@@ -552,8 +563,6 @@ function onChartsResize() {
 
 onMounted(() => {
   void loadWorkspacePaths();
-  void loadHubModels();
-  void loadDatasetVersions();
   window.addEventListener("resize", onChartsResize);
 });
 
@@ -605,8 +614,7 @@ async function applyYaml() {
     }
     message.success("已应用 YAML 到表单");
   } catch (e: unknown) {
-    const err = e as { response?: { data?: { detail?: string } } };
-    message.error(err.response?.data?.detail ?? "解析失败");
+    message.error(apiErrorDetail(e) ?? "解析失败");
   }
 }
 
@@ -680,6 +688,158 @@ async function refreshLogs() {
   }
 }
 
+/** 与「提交训练」POST /api/training/jobs 请求体一致（含 output_dir 占位、job_name 解析、扩展字段） */
+function buildTrainJobRequestBody(): Record<string, unknown> {
+  const ver =
+    selectedDatasetVersionId.value != null && selectedDatasetVersionId.value !== ""
+      ? datasetVersionItems.value.find((x) => x.id === selectedDatasetVersionId.value) ?? null
+      : null;
+  const dataLabel = (ver?.name ?? "").trim() || (ver ? String(ver.id) : "");
+  const dvid =
+    selectedDatasetVersionId.value != null && selectedDatasetVersionId.value !== ""
+      ? String(selectedDatasetVersionId.value)
+      : "";
+  const resolvedJobName = (form.job_name || "").trim() || defaultTrainJobName(dataLabel);
+  const plain = JSON.parse(JSON.stringify(toRaw(form))) as Record<string, unknown>;
+  return {
+    ...plain,
+    output_dir: "output/",
+    dataset_version_id: dvid,
+    job_name: resolvedJobName,
+    project_title: (ver?.project_title ?? "").trim(),
+    batch_name: (ver?.batch_name ?? "").trim(),
+    dataset_name: dataLabel,
+  };
+}
+
+async function saveTrainingFormParams() {
+  savingFormParams.value = true;
+  try {
+    await http.post("/api/training/form-params", buildTrainJobRequestBody());
+    message.success("训练参数已保存，下次打开将自动恢复");
+  } catch (e: unknown) {
+    message.error(apiErrorDetail(e) ?? String(e));
+  } finally {
+    savingFormParams.value = false;
+  }
+}
+
+/** 拉取工作区中已保存的训练参数字段，不依赖数据集是否已加载（先拿 dataset_version_id 再选版本） */
+async function fetchSavedFormParamsFromApi(): Promise<Record<string, unknown> | null> {
+  try {
+    const r = await http.get<{ params: Record<string, unknown> | null }>("/api/training/form-params", {
+      params: { _t: Date.now() },
+      headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+    });
+    const p = r.data?.params;
+    if (!p || typeof p !== "object") return null;
+    return p;
+  } catch {
+    return null;
+  }
+}
+
+function applySavedFormParamsToForm(d: Record<string, unknown>) {
+  for (const key of Object.keys(form) as (keyof typeof form)[]) {
+    if (!Object.prototype.hasOwnProperty.call(d, key)) continue;
+    const v = d[key as string];
+    if (v === undefined) continue;
+    if (key === "lorap_lr_ratio") {
+      form.lorap_lr_ratio = v === null || v === "" ? null : Number(v);
+      continue;
+    }
+    if (key === "resume_from_checkpoint") {
+      form.resume_from_checkpoint = v == null ? "" : String(v);
+      continue;
+    }
+    if (key === "quant_bits") {
+      form.quant_bits =
+        typeof v === "number" && !Number.isNaN(v) ? v : v === null || v === "" ? 4 : Number(v);
+      continue;
+    }
+    const cur = form[key];
+    if (typeof cur === "number") {
+      const n = typeof v === "number" ? v : Number(v);
+      if (!Number.isNaN(n)) (form as unknown as Record<string, unknown>)[key] = n;
+      continue;
+    }
+    if (typeof cur === "boolean") {
+      (form as unknown as Record<string, unknown>)[key] = Boolean(v);
+      continue;
+    }
+    (form as unknown as Record<string, unknown>)[key] = v as unknown;
+  }
+  if (!currentJobId.value) {
+    syncOutputDirWithTaskOrDataset();
+  }
+}
+
+/** 当点击表格「训练」加载已有任务时，初始化数据集级联选择器（使项目/批次/数据集名称可编辑） */
+async function initCascadeFromExistingJob(jobId: string) {
+  const row = props.jobs.find((j) => (j as { id?: string }).id === jobId) as
+    | {
+        request?: { dataset_version_id?: unknown; dataset_name?: unknown };
+        dataset_version_id?: unknown;
+        dataset_name?: unknown;
+      }
+    | undefined;
+  if (!row) return;
+
+  const req = row.request || {};
+  let vid = req.dataset_version_id || row.dataset_version_id;
+  if (typeof vid === "string" && vid.trim()) {
+    vid = vid.trim();
+    if (datasetVersionItems.value.some((x) => x.id === vid)) {
+      onDatasetVersionSelect(vid as string);
+      return;
+    }
+  }
+
+  // Fallback: try to match by dataset_name/project_title/batch_name
+  const dsName =
+    (typeof req.dataset_name === "string" ? req.dataset_name : String(req.dataset_name ?? "")).trim() ||
+    (row.dataset_name != null ? String(row.dataset_name) : "").trim();
+  if (dsName) {
+    const match = datasetVersionItems.value.find(
+      (v) => (v.name || v.id) === dsName || v.train_relpath?.includes(dsName),
+    );
+    if (match) {
+      onDatasetVersionSelect(match.id);
+    }
+  }
+}
+
+watch(
+  () => [props.panelVisible, currentJobId.value] as const,
+  async ([visible, jid]) => {
+    if (!visible) return;
+    try {
+      if (jid) {
+        await loadDatasetVersions();
+        await loadHubModels();
+        await initCascadeFromExistingJob(jid);
+      } else {
+        const saved = await fetchSavedFormParamsFromApi();
+        const preferVid = saved
+          ? typeof saved.dataset_version_id === "string" && saved.dataset_version_id.trim()
+            ? saved.dataset_version_id.trim()
+            : null
+          : null;
+        await loadDatasetVersions(preferVid ? { preferVersionId: preferVid } : undefined);
+        await loadHubModels();
+        if (saved) {
+          applySavedFormParamsToForm(saved);
+          await nextTick();
+        }
+        syncModelFromHub();
+      }
+    } catch (e) {
+      console.warn("Failed to initialize training form:", e);
+    }
+  },
+  { immediate: true },
+);
+
 async function startTraining() {
   if (readyHubModels.value.length === 0) {
     message.warning("请先在「设置 → 模型管理」中成功下载至少一个模型");
@@ -695,27 +855,16 @@ async function startTraining() {
   }
   submitting.value = true;
   try {
-    const ver =
-      selectedDatasetVersionId.value != null && selectedDatasetVersionId.value !== ""
-        ? datasetVersionItems.value.find((x) => x.id === selectedDatasetVersionId.value) ?? null
-        : null;
-    const dataLabel = (ver?.name ?? "").trim() || (ver ? String(ver.id) : "");
-    const resolvedJobName = (form.job_name || "").trim() || defaultTrainJobName(dataLabel);
-    const dvid = selectedDatasetVersionId.value != null && selectedDatasetVersionId.value !== "" ? String(selectedDatasetVersionId.value) : "";
+    const requestBody = buildTrainJobRequestBody();
+    const resolvedJobName = String((requestBody.job_name as string) ?? form.job_name ?? "");
+    const dvid =
+      typeof requestBody.dataset_version_id === "string" ? requestBody.dataset_version_id.trim() : "";
     const r = await http.post<{
       id: string;
       status: string;
       error_message?: string | null;
       output_dir?: string | null;
-    }>("/api/training/jobs", {
-      ...form,
-      output_dir: "output/",
-      dataset_version_id: dvid,
-      job_name: resolvedJobName,
-      project_title: (ver?.project_title ?? "").trim(),
-      batch_name: (ver?.batch_name ?? "").trim(),
-      dataset_name: dataLabel,
-    });
+    }>("/api/training/jobs", requestBody);
     const ro = (r.data.output_dir ?? "").trim();
     form.output_dir = ro || (dvid ? `output/${dvid}` : "output/");
     jobStatus.value = r.data.status;
@@ -726,8 +875,7 @@ async function startTraining() {
     currentJobId.value = r.data.id;
     emit("refresh-jobs");
   } catch (e: unknown) {
-    const err = e as { response?: { data?: { detail?: string } } };
-    message.error(err.response?.data?.detail ?? String(e));
+    message.error(apiErrorDetail(e) ?? String(e));
   } finally {
     submitting.value = false;
   }
@@ -749,8 +897,7 @@ async function continueTraining() {
     message.success("已从断点继续训练（新任务）");
     emit("refresh-jobs");
   } catch (e: unknown) {
-    const err = e as { response?: { data?: { detail?: string } } };
-    message.error(err.response?.data?.detail ?? String(e));
+    message.error(apiErrorDetail(e) ?? String(e));
   }
 }
 
@@ -895,7 +1042,7 @@ watch(
                 v-model:value="selectedProjectKey"
                 :options="projectSelectOptions"
                 :loading="loadingDatasetPaths"
-                :disabled="!datasetVersionItems.length"
+                :disabled="loadingDatasetPaths || !datasetVersionItems.length"
                 show-search
                 :filter-option="filterDatasetOption"
                 allow-clear
@@ -911,7 +1058,7 @@ watch(
                 v-model:value="selectedBatchKey"
                 :options="batchSelectOptions"
                 :loading="loadingDatasetPaths"
-                :disabled="!selectedProjectKey"
+                :disabled="loadingDatasetPaths || !selectedProjectKey"
                 show-search
                 :filter-option="filterDatasetOption"
                 allow-clear
@@ -928,7 +1075,7 @@ watch(
                   v-model:value="selectedDatasetVersionId"
                   :options="versionSelectOptions"
                   :loading="loadingDatasetPaths"
-                  :disabled="!selectedBatchKey"
+                  :disabled="loadingDatasetPaths || !selectedBatchKey"
                   show-search
                   :filter-option="filterDatasetOption"
                   allow-clear
@@ -1519,6 +1666,13 @@ watch(
         <a-row :gutter="16">
           <a-col :span="24" style="margin-top: 4px; margin-bottom: 4px">
             <a-space wrap>
+              <a-button
+                type="primary"
+                :loading="savingFormParams"
+                :disabled="savingFormParams"
+                @click="saveTrainingFormParams"
+                >仅保存参数</a-button
+              >
               <a-button
                 type="primary"
                 :loading="submitting"

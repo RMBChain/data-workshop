@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import platform
 import sys
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter
 
-from backend.app.config import get_settings
+from backend.app.deps import WorkspaceRoot
 from backend.app.services import modelscope_manager as mscm
 
 router = APIRouter(tags=["system"])
@@ -185,8 +184,7 @@ async def system_info() -> dict[str, Any]:
 
 
 @router.get("/system/paths")
-async def system_paths() -> dict[str, Any]:
-    ws = get_settings().workspace_root.resolve()
+async def system_paths(ws: WorkspaceRoot) -> dict[str, Any]:
     mroot = mscm.modelscope_cache_dir()
     return {
         "workspace_root": str(ws),

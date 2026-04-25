@@ -75,7 +75,6 @@ class LabelStudioImportBody(BaseModel):
     project_id: int
     base_url: str | None = None
     token: str
-    task_filter: str | None = Field(None, description="预留；MVP 不筛选")
 
 
 class LabelStudioConnectionBody(BaseModel):

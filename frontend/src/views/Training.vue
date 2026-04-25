@@ -2,7 +2,7 @@
 import { message } from "ant-design-vue";
 import { EditOutlined, PlusOutlined } from "@ant-design/icons-vue";
 import { onMounted, ref } from "vue";
-import { http } from "../api/http";
+import { apiErrorDetail, http } from "../api/http";
 import TrainingFormPanel from "../components/TrainingFormPanel.vue";
 
 const jobs = ref<Record<string, unknown>[]>([]);
@@ -149,8 +149,7 @@ async function saveTrainingJobName() {
     jobNameEditOpen.value = false;
     await refreshJobs();
   } catch (e: unknown) {
-    const err = e as { response?: { data?: { detail?: string } } };
-    message.error(err.response?.data?.detail ?? "保存失败");
+    message.error(apiErrorDetail(e) ?? "保存失败");
   } finally {
     jobNameSaving.value = false;
   }
@@ -220,7 +219,7 @@ onMounted(() => {
           <template #bodyCell="{ column, text, record }">
             <template v-if="column.key === 'act' && record && typeof record === 'object' && 'id' in record">
               <a-space :size="8" align="center">
-                <a @click="selectJob(String((record as { id: string }).id))">查看</a>
+                <a @click="selectJob(String((record as { id: string }).id))">训练</a>
                 <a-popconfirm
                   title="确定删除？将移除任务记录与日志；仅当无其它任务共用同一 output 目录时，才删除该目录下文件（如 checkpoint/LoRA）。"
                   ok-text="确定"
@@ -297,6 +296,7 @@ onMounted(() => {
         :jobs="(jobs as Record<string, unknown>[])"
         :job-name-prefill="jobNamePrefillForForm"
         :new-train-open-seq="newTrainOpenSeq"
+        :panel-visible="trainParamsModalOpen"
         @refresh-jobs="refreshJobs"
       />
     </a-modal>

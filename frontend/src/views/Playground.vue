@@ -2,7 +2,7 @@
 import { DeleteOutlined } from "@ant-design/icons-vue";
 import { message } from "ant-design-vue";
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { http } from "../api/http";
+import { apiErrorDetail, http } from "../api/http";
 
 const DEFAULT_BASE = "Qwen/Qwen3-VL-2B-Instruct";
 
@@ -166,7 +166,7 @@ async function loadSelectedModel() {
     message.success("模型已预加载，发送时将复用此缓存");
   } catch (e: unknown) {
     const err = e as { response?: { data?: { detail?: string } } };
-    message.error(err.response?.data?.detail ?? "预加载失败");
+    message.error(apiErrorDetail(err) ?? "预加载失败");
   } finally {
     loadModelLoading.value = false;
   }
@@ -179,7 +179,7 @@ async function unloadSelectedModel() {
     message.success("已卸载内存中的模型缓存");
   } catch (e: unknown) {
     const err = e as { response?: { data?: { detail?: string } } };
-    message.error(err.response?.data?.detail ?? "卸载失败");
+    message.error(apiErrorDetail(err) ?? "卸载失败");
   } finally {
     unloadModelLoading.value = false;
   }
@@ -201,7 +201,7 @@ async function send() {
     message.success("完成");
   } catch (e: unknown) {
     const err = e as { response?: { data?: { detail?: string } } };
-    message.error(err.response?.data?.detail ?? "失败");
+    message.error(apiErrorDetail(err) ?? "失败");
   } finally {
     loading.value = false;
   }
