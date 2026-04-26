@@ -270,7 +270,7 @@ def build_training_stages(
     main: dict[str, float | int | str | None],
 ) -> list[dict[str, Any]]:
     """
-    阶段：下载模型、Map、Train、Val（验证集 evaluate，来自 `Val: N%` tqdm）。
+    阶段：加模型、Map、Train、Val（验证集 evaluate，来自 `Val: N%` tqdm）。
     与 parse_training_progress 的汇总进度一致，主进度体现在 Train 行。
     """
     has_end = bool(re.search(r"\[train_api\]\s+on_train_end", log))
@@ -309,7 +309,7 @@ def build_training_stages(
 
     if has_end:
         return [
-            _row("download", "下载模型", 100.0, "已完成"),
+            _row("download", "加载模型", 100.0, "已完成"),
             _row("map", "Map", 100.0, "已完成"),
             _row("train", "Train", 100.0, "训练已完成"),
             _vrow(),
@@ -317,7 +317,7 @@ def build_training_stages(
 
     if m_logs:
         return [
-            _row("download", "下载模型", 100.0, "已完成"),
+            _row("download", "加载模型", 100.0, "已完成"),
             _row("map", "Map", 100.0, "已完成"),
             _row("train", "Train", t_pct, t_lbl if t_lbl else "—"),
             _vrow(),
@@ -325,7 +325,7 @@ def build_training_stages(
 
     if has_begin:
         return [
-            _row("download", "下载模型", 100.0, "已完成或跳过" if not _saw_log_downloading(log) else "已完成"),
+            _row("download", "加载模型", 100.0, "已完成或跳过" if not _saw_log_downloading(log) else "已完成"),
             _row("map", "Map", 100.0, "已完成或跳过"),
             _row("train", "Train", t_pct, t_lbl or "准备训练…"),
             _vrow(),
@@ -336,7 +336,7 @@ def build_training_stages(
         kind, p, short_lbl = tail
         if kind == "download":
             return [
-                _row("download", "下载模型", p, short_lbl),
+                _row("download", "加载模型", p, short_lbl),
                 _row("map", "Map", None, "等待模型就绪…"),
                 _row("train", "Train", None, "待开始"),
                 _vrow(),
@@ -344,14 +344,14 @@ def build_training_stages(
         if kind == "map":
             dl_lbl = "已完成" if _saw_log_downloading(log) else "已跳过/无需下载"
             return [
-                _row("download", "下载模型", 100.0, dl_lbl),
+                _row("download", "加载模型", 100.0, dl_lbl),
                 _row("map", "Map", p, short_lbl),
                 _row("train", "Train", None, "待开始"),
                 _vrow(),
             ]
         if kind == "train":
             return [
-                _row("download", "下载模型", 100.0, "已完成或跳过" if not _saw_log_downloading(log) else "已完成"),
+                _row("download", "加载模型", 100.0, "已完成或跳过" if not _saw_log_downloading(log) else "已完成"),
                 _row("map", "Map", 100.0, "已完成或跳过"),
                 _row("train", "Train", p, short_lbl),
                 _vrow(),
@@ -359,7 +359,7 @@ def build_training_stages(
 
     tr_label = t_lbl if t_lbl else ("待开始" if not log.strip() else "—")
     return [
-        _row("download", "下载模型", None, "待开始" if not log.strip() else "等待或已跳过"),
+        _row("download", "加载模型", None, "待开始" if not log.strip() else "等待或已跳过"),
         _row("map", "Map", None, "待开始" if not log.strip() else "等待中"),
         _row("train", "Train", t_pct, tr_label),
         _vrow(),
