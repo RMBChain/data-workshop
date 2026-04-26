@@ -3,7 +3,6 @@ import Datasets from "../views/Datasets.vue";
 import DataImport from "../views/DataImport.vue";
 import BatchDataView from "../views/BatchDataView.vue";
 import Eval from "../views/Eval.vue";
-import Export from "../views/Export.vue";
 import Home from "../views/Home.vue";
 import ModelManagement from "../views/ModelManagement.vue";
 import Verify from "../views/Verify.vue";
@@ -23,7 +22,6 @@ const router = createRouter({
     { path: "/verify", name: "playground", component: Verify, meta: { title: "推理沙盒" } },
     { path: "/merge", name: "merge", component: Merge, meta: { title: "LoRA 合并" } },
     { path: "/eval", name: "eval", component: Eval, meta: { title: "评测" } },
-    { path: "/export", name: "export", component: Export, meta: { title: "导出" } },
     { path: "/system-info", name: "systemInfo", component: SystemInfo, meta: { title: "系统信息" } },
   ],
 });
