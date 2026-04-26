@@ -119,6 +119,8 @@ const selectedJobIds = ref<string[]>([]);
 const mergeStatusByJobId = ref<Record<string, MergeUiStatus>>({});
 /** 仅合并成功时由 GET /api/merge/training-status 的 output_path_by_job_id 提供实际输出路径 */
 const mergeOutputPathByJobId = ref<Record<string, string | null | undefined>>({});
+/** 合并打包入库后由 zip_path_by_job_id 提供 zip 的工作区相对路径 */
+const mergeZipPathByJobId = ref<Record<string, string | null | undefined>>({});
 
 function parseMergeUiStatus(v: string | undefined): MergeUiStatus {
   if (v === "merging" || v === "interrupted" || v === "failed" || v === "success" || v === "none") {
@@ -130,6 +132,7 @@ function parseMergeUiStatus(v: string | undefined): MergeUiStatus {
 type SuccessTableRow = SuccessTrainingRow & {
   merge_output_path: string;
   merge_status: MergeUiStatus;
+  merge_zip_relpath: string;
 };
 
 const successTableRows = computed((): SuccessTableRow[] =>
@@ -137,10 +140,13 @@ const successTableRows = computed((): SuccessTableRow[] =>
     const merge_status = parseMergeUiStatus(mergeStatusByJobId.value[r.job_id]);
     const fromApi = mergeOutputPathByJobId.value[r.job_id];
     const p = fromApi == null || typeof fromApi !== "string" ? "" : fromApi.trim();
+    const zraw = mergeZipPathByJobId.value[r.job_id];
+    const z = zraw == null || typeof zraw !== "string" ? "" : zraw.trim();
     return {
       ...r,
       merge_output_path: merge_status === "success" ? p : "",
       merge_status,
+      merge_zip_relpath: z,
     };
   }),
 );
@@ -185,9 +191,14 @@ async function loadMergeStatus() {
       string,
       string | null | undefined
     >;
+    mergeZipPathByJobId.value = (r.data?.zip_path_by_job_id ?? {}) as Record<
+      string,
+      string | null | undefined
+    >;
   } catch {
     mergeStatusByJobId.value = {};
     mergeOutputPathByJobId.value = {};
+    mergeZipPathByJobId.value = {};
   }
 }
 
@@ -231,12 +242,10 @@ watch(
   },
 );
 
-async function run() {
-  const row = selectedRow.value;
-  if (!row) {
-    message.warning("请先在下方列表中选择一条已成功的训练任务");
-    return;
-  }
+/**
+ * 使用当前表单中的 base / output 与给定的 `merge_lora_only` 发起合并（`base`/`output` 在选中行变化时由 watch 同步）。
+ */
+async function startMergeForRow(row: SuccessTrainingRow, loraOnly: boolean) {
   const paths = [row.path].map((s) => s.trim()).filter(Boolean);
   if (!paths.length) {
     message.error("该训练条目缺少有效 LoRA 路径");
@@ -253,7 +262,8 @@ async function run() {
       base_model_path: base.value,
       lora_paths: paths,
       output_path: output.value,
-      merge_lora_only: mergeLoraOnly.value,
+      merge_lora_only: loraOnly,
+      training_job_id: row.job_id,
     });
     jobId.value = r.data.id;
     mergeJobStatus.value = String(r.data.status ?? "running");
@@ -296,6 +306,45 @@ async function run() {
   }
 }
 
+/** 与底部「执行合并」一致：使用复选框 `mergeLoraOnly` */
+async function run() {
+  const row = selectedRow.value;
+  if (!row) {
+    message.warning("请先在下方列表中选择一条已成功的训练任务");
+    return;
+  }
+  await startMergeForRow(row, mergeLoraOnly.value);
+}
+
+/** 卡片上：先选中该训练，再合并；`merge_lora_only` 固定为 true */
+async function runMergeForCard(row: SuccessTableRow) {
+  selectSuccessRow(row.job_id);
+  await startMergeForRow(row, true);
+}
+
+async function downloadMergeZip(row: SuccessTableRow) {
+  const z = (row.merge_zip_relpath ?? "").trim();
+  if (!z) {
+    message.warning("暂无已打包的 zip，请先成功完成合并（打包需数秒，可稍后刷新列表）");
+    return;
+  }
+  try {
+    const res = await http.get(
+      `/api/merge/training-jobs/${encodeURIComponent(row.job_id)}/export-zip`,
+      { responseType: "blob" },
+    );
+    const blob = res.data as Blob;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `merged-model-${row.job_id}.zip`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e: unknown) {
+    message.error(String((e as { message?: string })?.message ?? e));
+  }
+}
+
 function goPlay() {
   void router.push("/playground");
 }
@@ -312,7 +361,6 @@ onUnmounted(() => {
 <template>
   <div>
     <a-typography-title :level="4">LoRA 合并</a-typography-title>
-    <a-divider style="border-top: 2px solid rgba(0, 0, 0, 0.35)" />
     <a-alert
       type="info"
       show-icon
@@ -348,10 +396,6 @@ onUnmounted(() => {
         >
           <template #title>
             <div class="merge-success-card-title">
-              <a-radio
-                :checked="selectedJobIds[0] === record.job_id"
-                @click.stop="selectSuccessRow(record.job_id)"
-              />
               <span
                 class="merge-success-card-title-text"
                 :title="tableCellText(record, 'job_name')"
@@ -393,6 +437,24 @@ onUnmounted(() => {
               >
                 {{ tableCellText(record, item.dataIndex) }}
               </span>
+            </div>
+            <div class="merge-success-card-meta-actions">
+              <a-button
+                type="link"
+                :disabled="runSubmitting || record.merge_status === 'merging'"
+                :loading="runSubmitting"
+                @click.stop="runMergeForCard(record)"
+              >
+                合并成模型
+              </a-button>
+              <a-button type="link">日志</a-button>
+              <a-button
+                type="link"
+                :disabled="!record.merge_zip_relpath"
+                @click.stop="downloadMergeZip(record)"
+              >
+                下载模型(zip)
+              </a-button>
             </div>
           </div>
         </a-card>
@@ -530,7 +592,7 @@ onUnmounted(() => {
   margin-bottom: 16px;
   width: 100%;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 350px), 1fr));
   gap: 16px;
 }
 .merge-success-card {
@@ -588,6 +650,16 @@ onUnmounted(() => {
   gap: 8px;
   align-items: flex-start;
   min-width: 0;
+}
+.merge-success-card-meta-actions {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+}
+.merge-success-card-meta-actions :deep(.ant-btn) {
+  padding-inline: 4px;
 }
 .merge-success-card-meta-label {
   flex-shrink: 0;
