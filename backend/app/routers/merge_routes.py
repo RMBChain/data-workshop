@@ -4,23 +4,14 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from backend.app.deps import WorkspaceRoot, get_workspace_root
+from backend.app.deps import WorkspaceRoot
 from backend.app.services.inference_models import list_registered_training_models
-from backend.app.services.merge_job_manager import MergeJobCreate, MergeJobManager
+from backend.app.services.merge_job_manager import MergeJobCreate, get_merge_manager
 from backend.app.services.merge_log_progress import parse_merge_log_progress
 from backend.app.services.merge_training_status import training_merge_status_by_job_id
 from backend.app.services.paths import resolve_under_workspace
 
 router = APIRouter(tags=["merge"])
-
-_merge_manager: MergeJobManager | None = None
-
-
-def get_merge_manager() -> MergeJobManager:
-    global _merge_manager
-    if _merge_manager is None:
-        _merge_manager = MergeJobManager(get_workspace_root())
-    return _merge_manager
 
 
 @router.post("/merge/jobs")
