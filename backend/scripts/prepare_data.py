@@ -38,28 +38,20 @@ def prepare_dataset(data_dir="data", output_train="data/train.jsonl", output_val
     print(f"训练集: {len(train_files)} 张")
     print(f"验证集: {len(val_files)} 张")
     
-    def create_sample(image_file, prompt="请详细描述这张图片中的内容。", response_prefix="这张图片展示了"):
-        """创建单个训练样本"""
-        image_path = str(image_file.resolve()).replace('\\', '/')
+    def create_sample(
+        image_file,
+        prompt="请详细描述这张图片中的内容。",
+        response_prefix="这张图片展示了",
+    ):
+        """与 ``dataset_build`` 一致：``system`` / ``query`` / ``response`` / ``images``。"""
+        image_path = str(image_file.resolve()).replace("\\", "/")
+        query = prompt if "<image>" in prompt else f"<image>{prompt}"
 
         return {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "image": image_path},
-                        {"type": "text", "text": prompt}
-                    ]
-                },
-                {
-                    "role": "assistant",
-                    # 为了兼容PyArrow的类型检查，将content也转换为数组格式
-                    # 虽然标准格式是字符串，但PyArrow需要类型一致
-                    "content": [
-                        {"type": "text", "text": f"{response_prefix}电缆相关的图像内容。"}
-                    ]
-                }
-            ]
+            "system": "You are a helpful assistant.",
+            "query": query,
+            "response": f"{response_prefix}电缆相关的图像内容。",
+            "images": [image_path],
         }
     
     # 生成训练集

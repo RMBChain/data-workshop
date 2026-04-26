@@ -21,6 +21,14 @@
 | Label Studio | API 拉取项目；原图在 LS 侧，本系统仅持导入后的元数据与可解析路径。 |
 
 ### 1.2 SFT 字段示例（与导入结果一致时）
+训练用 JSONL **每行一条** JSON：`system`、`query`、`response`、**`images`**（单张图为单元素列表）。与 **qwen-vl** / **ms-swift** 的 query式多模态样本一致。生成数据集时，可选在 **query** 前自动加 **`<image>`**（与界面「为文本添加 image 标记」一致）。
+
+```jsonl
+{"system": "You are a helpful assistant.", "query": "请描述图片中的内容。", "response": "真正的图像描述", "images": ["/workspace/project/.../cable-003.jpg"]}
+```
+
+另可参考旧式 ShareGPT/LLaVA 的 `conversations` 形态（本 MVP 以 **上表 query/response 行** 为主）：
+
 ```json
 {
   "images": ["/path/to/image.jpg"],
@@ -30,13 +38,9 @@
   ]
 }
 ```
-```jsonl
-{"messages": [{"role": "user", "content": [{"type": "image", "image": "data/cable-010.png"}, {"type": "text", "text": "请描述图片中的内容。"}]}, {"role": "assistant", "content": [{"type": "text", "text": "这张图片展示了电缆相关的图像内容。"}]}]}
-{"messages": [{"role": "user", "content": [{"type": "image", "image": "data/cable-024.jpg"}, {"type": "text", "text": "请描述图片中的内容。"}]}, {"role": "assistant", "content": [{"type": "text", "text": "这张图片展示了电缆相关的图像内容。"}]}]}
-```
 
 ## 二、数据集（构建与划分）
-- **指令集构建**：界面模板将数据转为 SFT；自动补 `<image>`；对话模板用 **qwen-vl**（与 §3.1 模型一致）。
+- **指令集构建**：界面模板将数据转为 SFT；可选补 `<image>` 于 `query`；对话模板用 **qwen-vl**（与 §3.1 模型一致）。
 - **划分**：按比例切分训练/验证/测试，可选固定随机种子。
 - **版本**：每次处理生成可备注快照，可回滚、导出；`{workspace}/versions/`。
 
@@ -135,13 +139,6 @@ docker compose up -d --build
 
 **仅后端开发**
 ```powershell
-
-
-
-
-
-
-
 docker build -f devops/swift4.03-cpu.dockerfile -t swift4.03-cpu:latest .
 docker build -f devops/Dockerfile.workshop -t data-workshop-api:latest .
 docker rm -f workshop-api-dev

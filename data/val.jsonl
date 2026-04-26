@@ -1,11 +1,11 @@
-{"messages": [{"role": "user", "content": [{"type": "image", "image": "/workspace/project/data/cable-006.jpg"}, {"type": "text", "text": "请详细描述这张图片中的内容。"}]}, {"role": "assistant", "content": [{"type": "text", "text": "这张图片展示了电缆相关的图像内容。"}]}]}
-{"messages": [{"role": "user", "content": [{"type": "image", "image": "/workspace/project/data/cable-035.png"}, {"type": "text", "text": "请详细描述这张图片中的内容。"}]}, {"role": "assistant", "content": [{"type": "text", "text": "这张图片展示了电缆相关的图像内容。"}]}]}
-{"messages": [{"role": "user", "content": [{"type": "image", "image": "/workspace/project/data/cable-007.jpg"}, {"type": "text", "text": "请详细描述这张图片中的内容。"}]}, {"role": "assistant", "content": [{"type": "text", "text": "这张图片展示了电缆相关的图像内容。"}]}]}
-{"messages": [{"role": "user", "content": [{"type": "image", "image": "/workspace/project/data/cable-009.png"}, {"type": "text", "text": "请详细描述这张图片中的内容。"}]}, {"role": "assistant", "content": [{"type": "text", "text": "这张图片展示了电缆相关的图像内容。"}]}]}
-{"messages": [{"role": "user", "content": [{"type": "image", "image": "/workspace/project/data/cable-015.jpg"}, {"type": "text", "text": "请详细描述这张图片中的内容。"}]}, {"role": "assistant", "content": [{"type": "text", "text": "这张图片展示了电缆相关的图像内容。"}]}]}
-{"messages": [{"role": "user", "content": [{"type": "image", "image": "/workspace/project/data/cable-016.jpg"}, {"type": "text", "text": "请详细描述这张图片中的内容。"}]}, {"role": "assistant", "content": [{"type": "text", "text": "这张图片展示了电缆相关的图像内容。"}]}]}
-{"messages": [{"role": "user", "content": [{"type": "image", "image": "/workspace/project/data/cable-018.jpg"}, {"type": "text", "text": "请详细描述这张图片中的内容。"}]}, {"role": "assistant", "content": [{"type": "text", "text": "这张图片展示了电缆相关的图像内容。"}]}]}
-{"messages": [{"role": "user", "content": [{"type": "image", "image": "/workspace/project/data/cable-048.jpg"}, {"type": "text", "text": "请详细描述这张图片中的内容。"}]}, {"role": "assistant", "content": [{"type": "text", "text": "这张图片展示了电缆相关的图像内容。"}]}]}
-{"messages": [{"role": "user", "content": [{"type": "image", "image": "/workspace/project/data/cable-002.png"}, {"type": "text", "text": "请详细描述这张图片中的内容。"}]}, {"role": "assistant", "content": [{"type": "text", "text": "这张图片展示了电缆相关的图像内容。"}]}]}
-{"messages": [{"role": "user", "content": [{"type": "image", "image": "/workspace/project/data/cable-008.png"}, {"type": "text", "text": "请详细描述这张图片中的内容。"}]}, {"role": "assistant", "content": [{"type": "text", "text": "这张图片展示了电缆相关的图像内容。"}]}]}
-{"messages": [{"role": "user", "content": [{"type": "image", "image": "/workspace/project/data/cable-041.jpg"}, {"type": "text", "text": "请详细描述这张图片中的内容。"}]}, {"role": "assistant", "content": [{"type": "text", "text": "这张图片展示了电缆相关的图像内容。"}]}]}
+{"system": "You are a helpful assistant.", "query": "请详细描述这张图片中的内容。", "response": "这张图片展示了电缆相关的图像内容。", "images": ["/workspace/project/data/cable-006.jpg"]}
+{"system": "You are a helpful assistant.", "query": "请详细描述这张图片中的内容。", "response": "这张图片展示了电缆相关的图像内容。", "images": ["/workspace/project/data/cable-035.png"]}
+{"system": "You are a helpful assistant.", "query": "请详细描述这张图片中的内容。", "response": "这张图片展示了电缆相关的图像内容。", "images": ["/workspace/project/data/cable-007.jpg"]}
+{"system": "You are a helpful assistant.", "query": "请详细描述这张图片中的内容。", "response": "这张图片展示了电缆相关的图像内容。", "images": ["/workspace/project/data/cable-009.png"]}
+{"system": "You are a helpful assistant.", "query": "请详细描述这张图片中的内容。", "response": "这张图片展示了电缆相关的图像内容。", "images": ["/workspace/project/data/cable-015.jpg"]}
+{"system": "You are a helpful assistant.", "query": "请详细描述这张图片中的内容。", "response": "这张图片展示了电缆相关的图像内容。", "images": ["/workspace/project/data/cable-016.jpg"]}
+{"system": "You are a helpful assistant.", "query": "请详细描述这张图片中的内容。", "response": "这张图片展示了电缆相关的图像内容。", "images": ["/workspace/project/data/cable-018.jpg"]}
+{"system": "You are a helpful assistant.", "query": "请详细描述这张图片中的内容。", "response": "这张图片展示了电缆相关的图像内容。", "images": ["/workspace/project/data/cable-048.jpg"]}
+{"system": "You are a helpful assistant.", "query": "请详细描述这张图片中的内容。", "response": "这张图片展示了电缆相关的图像内容。", "images": ["/workspace/project/data/cable-002.png"]}
+{"system": "You are a helpful assistant.", "query": "请详细描述这张图片中的内容。", "response": "这张图片展示了电缆相关的图像内容。", "images": ["/workspace/project/data/cable-008.png"]}
+{"system": "You are a helpful assistant.", "query": "请详细描述这张图片中的内容。", "response": "这张图片展示了电缆相关的图像内容。", "images": ["/workspace/project/data/cable-041.jpg"]}

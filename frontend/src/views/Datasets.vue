@@ -39,9 +39,15 @@ const autoImageLabel = computed(
 type VersionDataPayload = {
   version_id: string;
   meta: unknown;
-  train_samples: unknown[];
-  val_samples: unknown[];
+  train_jsonl_preview: string;
+  val_jsonl_preview: string;
 };
+
+function jsonlPreviewLineCount(text: string): number {
+  const t = (text ?? "").trim();
+  if (!t) return 0;
+  return t.split(/\r?\n/).filter((line) => line.trim()).length;
+}
 const versionViewOpen = ref(false);
 const versionViewLoading = ref(false);
 const versionViewTitle = ref("");
@@ -498,7 +504,7 @@ function goTrain() {
     <a-modal
       v-model:open="versionViewOpen"
       :title="versionViewTitle"
-      width="min(960px, 96vw)"
+      width="min(1200px, 96vw)"
       :footer="null"
       destroy-on-close
     >
@@ -509,17 +515,23 @@ function goTrain() {
               class="dataset-version-view-pre"
             >{{ versionViewPayload.meta != null ? formatJson(versionViewPayload.meta) : '（无 meta.json 或无法解析）' }}</pre>
           </a-tab-pane>
-          <a-tab-pane key="train" :tab="`训练样本 (${versionViewPayload.train_samples.length})`">
+          <a-tab-pane
+            key="train"
+            :tab="`训练样本 (${jsonlPreviewLineCount(versionViewPayload.train_jsonl_preview)})`"
+          >
             <pre class="dataset-version-view-pre">{{
-              versionViewPayload.train_samples.length
-                ? formatJson(versionViewPayload.train_samples)
+              versionViewPayload.train_jsonl_preview.trim()
+                ? versionViewPayload.train_jsonl_preview
                 : '（无样本或 train.jsonl 不存在）'
             }}</pre>
           </a-tab-pane>
-          <a-tab-pane key="val" :tab="`验证样本 (${versionViewPayload.val_samples.length})`">
+          <a-tab-pane
+            key="val"
+            :tab="`验证样本 (${jsonlPreviewLineCount(versionViewPayload.val_jsonl_preview)})`"
+          >
             <pre class="dataset-version-view-pre">{{
-              versionViewPayload.val_samples.length
-                ? formatJson(versionViewPayload.val_samples)
+              versionViewPayload.val_jsonl_preview.trim()
+                ? versionViewPayload.val_jsonl_preview
                 : '（无样本或 val.jsonl 不存在）'
             }}</pre>
           </a-tab-pane>
