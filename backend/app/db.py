@@ -129,6 +129,12 @@ def init_schema(conn: sqlite3.Connection) -> None:
             request_json TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS merge_export_zips (
+            training_job_id TEXT PRIMARY KEY,
+            zip_relpath TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS eval_jobs (
             id TEXT PRIMARY KEY,
             status TEXT,
@@ -194,3 +200,58 @@ def app_kv_set(conn: sqlite3.Connection, k: str, v: str) -> None:
 
 def json_dumps(v: Any) -> str:
     return json.dumps(v, ensure_ascii=False)
+
+
+def merge_export_zip_upsert(conn: sqlite3.Connection, training_job_id: str, zip_relpath: str) -> None:
+    from datetime import datetime, timezone
+
+    tid = (training_job_id or "").strip()
+    if not tid:
+        return
+    rel = (zip_relpath or "").strip().replace("\\", "/")
+    if not rel:
+        return
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    conn.execute(
+        """
+        INSERT INTO merge_export_zips(training_job_id, zip_relpath, updated_at)
+        VALUES(?,?,?)
+        ON CONFLICT(training_job_id) DO UPDATE SET
+          zip_relpath = excluded.zip_relpath,
+          updated_at = excluded.updated_at
+        """,
+        (tid, rel, now),
+    )
+    conn.commit()
+
+
+def merge_export_zip_get(conn: sqlite3.Connection, training_job_id: str) -> str | None:
+    tid = (training_job_id or "").strip()
+    if not tid:
+        return None
+    r = conn.execute(
+        "SELECT zip_relpath FROM merge_export_zips WHERE training_job_id = ?",
+        (tid,),
+    ).fetchone()
+    if not r or r[0] is None:
+        return None
+    s = str(r[0]).strip().replace("\\", "/")
+    return s or None
+
+
+def merge_export_zip_map(conn: sqlite3.Connection, training_job_ids: list[str]) -> dict[str, str | None]:
+    ids = list(dict.fromkeys([str(x).strip() for x in training_job_ids if str(x).strip()]))
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT training_job_id, zip_relpath FROM merge_export_zips WHERE training_job_id IN ({placeholders})",
+        ids,
+    ).fetchall()
+    found: dict[str, str] = {}
+    for row in rows or []:
+        jid = str(row[0]).strip()
+        z = str(row[1]).strip().replace("\\", "/") if row[1] else ""
+        if jid and z:
+            found[jid] = z
+    return {jid: found.get(jid) for jid in ids}

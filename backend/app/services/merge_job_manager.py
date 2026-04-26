@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import sys
@@ -31,6 +32,10 @@ class MergeJobCreate(BaseModel):
     merge_lora_only: bool = Field(
         True,
         description="与 workshop_merge --merge_lora_only 一致：为 True 时将 LoRA 合并进基座并保存全量；为 False 时仅导出 PEFT 适配器目录",
+    )
+    training_job_id: str | None = Field(
+        None,
+        description="可选。对应训练任务 job_id；合并成功后将 zip 路径写入 merge_export_zips",
     )
 
 
@@ -126,6 +131,8 @@ class MergeJobManager:
         def _wait() -> None:
             threading.Thread(target=_pump, daemon=True).start()
             code = proc.wait()
+            post_zip_tid: str | None = None
+            post_zip_out: str | None = None
             with self._lock:
                 j = self._jobs.get(job_id)
                 if not j:
@@ -136,9 +143,21 @@ class MergeJobManager:
                     return
                 if code == 0:
                     j.status = "succeeded"
+                    req = j.request or {}
+                    tid = req.get("training_job_id")
+                    post_zip_tid = str(tid).strip() if tid else None
+                    op = req.get("output_path")
+                    post_zip_out = str(op).strip() if op else None
                 else:
                     j.status = "failed"
                     j.error_message = f"进程退出码 {code}"
+            if code == 0 and post_zip_tid and post_zip_out:
+                try:
+                    from backend.app.services.merge_export_zip import create_and_record_merged_zip
+
+                    create_and_record_merged_zip(self._workspace, post_zip_tid, post_zip_out)
+                except Exception:
+                    logging.getLogger("workshop.merge").exception("合并成功后打包 zip 失败")
 
         threading.Thread(target=_wait, daemon=True).start()
         return job

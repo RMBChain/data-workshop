@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 
+from backend.app.db import get_connection, merge_export_zip_get, merge_export_zip_map
 from backend.app.deps import WorkspaceRoot
 from backend.app.services.inference_models import list_registered_training_models
 from backend.app.services.merge_job_manager import MergeJobCreate, get_merge_manager
@@ -33,14 +35,31 @@ async def create_merge_job(root: WorkspaceRoot, body: MergeJobCreate) -> dict[st
 async def get_merge_training_status(root: WorkspaceRoot) -> dict[str, Any]:
     """各训练 job_id 对应的 LoRA 合并态：未合并 / 合并中 / 已取消 / 失败 / 成功。
     内存中最新 MergeJob 优先（避免磁盘成功掩盖后续失败尝试），无内存记录时回退到磁盘 workshop_merge_meta.json 检测。
-    output_path_by_job_id：仅合并且成功解析到输出目录时非 null（成功合并任务 request.output_path 或磁盘 meta 旁目录）。"""
+    output_path_by_job_id：仅合并且成功解析到输出目录时非 null（成功合并任务 request.output_path 或磁盘 meta 旁目录）。
+    zip_path_by_job_id：合并成功且已打包入库时非 null（工作区相对路径）。"""
     rows = list_registered_training_models(root)
     m = get_merge_manager()
     by_jid, output_by_jid = training_merge_status_by_job_id(root, rows, m)
+    conn = get_connection(root.resolve())
+    jids = [str(r.get("job_id") or "").strip() for r in rows if str(r.get("job_id") or "").strip()]
+    zip_by = merge_export_zip_map(conn, jids)
     return {
         "status_by_job_id": by_jid,
         "output_path_by_job_id": output_by_jid,
+        "zip_path_by_job_id": zip_by,
     }
+
+
+@router.get("/merge/training-jobs/{training_job_id}/export-zip")
+async def download_merge_export_zip(root: WorkspaceRoot, training_job_id: str) -> FileResponse:
+    conn = get_connection(root.resolve())
+    rel = merge_export_zip_get(conn, training_job_id)
+    if not rel:
+        raise HTTPException(status_code=404, detail="暂无导出包，请先成功完成合并")
+    path = resolve_under_workspace(root, rel)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="导出文件不存在，请重新合并")
+    return FileResponse(str(path), filename=path.name, media_type="application/zip")
 
 
 @router.get("/merge/jobs/{job_id}")
