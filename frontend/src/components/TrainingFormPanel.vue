@@ -1035,7 +1035,7 @@ watch(
             :loading="savingFormParams"
             :disabled="savingFormParams"
             @click="saveTrainingFormParams"
-            >仅保存参数</a-button
+            >仅保存</a-button
           >
           <a-button
             type="primary"
@@ -1045,7 +1045,7 @@ watch(
             @click="startTraining"
             >开始训练</a-button
           >
-          <a-button size="small" :disabled="!currentJobId" @click="cancelJob">取消</a-button>
+          <a-button size="small" :disabled="!currentJobId" @click="cancelJob">停止</a-button>
           <a-button size="small" :disabled="!currentJobId" @click="continueTraining">继续训练</a-button>
           <a-button size="small" @click="applyYaml">从 YAML 导入配置</a-button>
           <a-button size="small" @click="downloadYaml">导出 YAML 配置</a-button>
@@ -1786,11 +1786,11 @@ watch(
           <a-tag
             v-if="currentJobId && overallJobStatusLabel"
             :color="overallJobStatusTagColor"
-            style="margin: 0; line-height: 1.5"
+            style="margin: 0; line-height: 1.5; margin-right: 50px;""
             >
             <span>整体：{{ overallJobStatusLabel }}</span>
           </a-tag>
-          <span style="margin-right: 10px;">
+          <span style="margin-right: 50px;">
             <b>任务名称：</b>
             <template v-if="currentJobNameDisplay">{{ currentJobNameDisplay }}</template>
           </span>
@@ -1798,7 +1798,7 @@ watch(
         </a-typography-paragraph>
         <div v-if="currentJobId" style="margin-bottom: 10px">
           <div v-for="s in progressStages" :key="s.id" style="margin-bottom: 12px">
-            <div style="font-size: 12px; color: rgba(0, 0, 0, 0.65); margin-bottom: 4px">{{ s.name }}</div>
+            <div style="font-size: 12px; color: rgba(0, 0, 0, 0.65); margin-bottom: 4px"># {{ s.name }}</div>
             <a-progress
               :percent="s.percent == null ? 0 : s.percent"
               :status="stageRowStatus(s.percent)"
@@ -1830,7 +1830,7 @@ watch(
           style="
             font-family: ui-monospace, monospace;
             font-size: 12px;
-            height: 200px;
+            height: 400px;
             overflow: auto;
             background: #0d1117;
             color: #e6edf3;

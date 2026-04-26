@@ -69,11 +69,14 @@ def _build_line_messages(
     *,
     prepend_image_token: bool = True,
 ) -> dict[str, Any] | None:
+    """单图 VLM 样本。user 的 content 已含 {type:image} 时，ms-swift / Qwen-VL
+    的模板会为图像插入占位，勿在 text 里再手动加 ``<image>``，否则会出现
+    num_media=1 而 num_media_tags=2 的告警并影响训练。prepend_image_token 保留入参以兼容旧 API，现不再使用。"""
+
+    _ = prepend_image_token  # 保持请求体字段兼容，逻辑见上文
     u = (image_rel or "").strip()
     if u.startswith("http://") or u.startswith("https://"):
         user_msg = user_text
-        if prepend_image_token and "<image>" not in user_msg:
-            user_msg = f"<image>{user_msg}"
         return {
             "messages": [
                 {
@@ -106,8 +109,6 @@ def _build_line_messages(
         else:
             return None
     user_msg = user_text
-    if prepend_image_token and "<image>" not in user_msg:
-        user_msg = f"<image>{user_msg}"
     return {
         "messages": [
             {

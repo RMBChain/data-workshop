@@ -32,7 +32,9 @@ const versionNameEditId = ref<string | null>(null);
 const versionNameEditValue = ref("");
 const versionNameSaving = ref(false);
 const preview = ref<unknown>(null);
-const autoImageLabel = computed(() => "自动补全 <image> 提示");
+const autoImageLabel = computed(
+  () => "文首不追加 <image>（同条消息已有图像块时与 ms-swift 对齐，避免双占位；兼容项）",
+);
 
 type VersionDataPayload = {
   version_id: string;

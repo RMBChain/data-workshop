@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from backend.app.deps import WorkspaceRoot, get_workspace_root
 from backend.app.db import get_connection
+from backend.app.routers.datasets import _version_split_counts
 from backend.app.services import modelscope_manager as mscm
 from backend.app.services.job_manager import TrainJobCreate, TrainingJobManager, _latest_checkpoint_relpath
 from backend.app.services.training_metrics import (
@@ -34,8 +35,9 @@ def _manager_singleton() -> TrainingJobManager:
     return _manager
 
 
-def _display_names_for_job_request(workspace: Path, req: dict[str, Any]) -> tuple[str, str, str]:
-    """合并请求中携带的展示字段与按 train_relpath 在库中的回退（旧任务、或无展示字段时）。"""
+def _display_names_for_job_request(workspace: Path, req: dict[str, Any]) -> tuple[str, str, str, int | None, int | None]:
+    """合并请求中携带的展示字段与按 train_relpath 在库中的回退（旧任务、或无展示字段时）。
+    train/val 条数与「数据集·版本」列表一致：来自该版本 rel_dir 下 meta.json 的 counts。"""
 
     def _pick(stored: str, fallback: str) -> str:
         s = (stored or "").strip()
@@ -49,11 +51,13 @@ def _display_names_for_job_request(workspace: Path, req: dict[str, Any]) -> tupl
     s_dn = str(req.get("dataset_name") or "")
     tr = str(req.get("train_dataset") or "").strip()
     d_pt, d_bn, d_dn = "", "", ""
+    d_tr_n: int | None = None
+    d_va_n: int | None = None
     if tr:
         try:
             conn = get_connection(workspace)
             row = conn.execute(
-                "SELECT v.name, b.project_title, b.batch_name "
+                "SELECT v.name, b.project_title, b.batch_name, v.rel_dir "
                 "FROM dataset_versions v "
                 "LEFT JOIN import_batches b ON b.id = v.import_batch_id "
                 "WHERE v.train_relpath = ? "
@@ -63,9 +67,12 @@ def _display_names_for_job_request(workspace: Path, req: dict[str, Any]) -> tupl
             ).fetchone()
             if row:
                 d_dn, d_pt, d_bn = (row[0] or ""), (row[1] or ""), (row[2] or "")
+                rel = row[3]
+                if rel:
+                    d_tr_n, d_va_n = _version_split_counts(workspace, rel)
         except Exception:
             pass
-    return _pick(s_pt, d_pt), _pick(s_bn, d_bn), _pick(s_dn, d_dn)
+    return _pick(s_pt, d_pt), _pick(s_bn, d_bn), _pick(s_dn, d_dn), d_tr_n, d_va_n
 
 
 def _job_name_from_request(req: dict[str, Any]) -> str:
@@ -100,7 +107,7 @@ async def list_training_jobs(root: WorkspaceRoot) -> dict:
     result = []
     for j in jobs:
         req = j.request or {}
-        pt, bn, dn = _display_names_for_job_request(root, req)
+        pt, bn, dn, tr_n, va_n = _display_names_for_job_request(root, req)
         result.append(
             {
                 "id": j.id,
@@ -113,6 +120,8 @@ async def list_training_jobs(root: WorkspaceRoot) -> dict:
                 "project_title": pt,
                 "batch_name": bn,
                 "dataset_name": dn,
+                "train_count": tr_n,
+                "val_count": va_n,
                 "output_dir": _output_dir_from_request(req),
                 "request": req,
             }
@@ -209,7 +218,7 @@ async def get_training_job(root: WorkspaceRoot, job_id: str) -> dict:
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
     req = job.request or {}
-    pt, bn, dn = _display_names_for_job_request(root, req)
+    pt, bn, dn, tr_n, va_n = _display_names_for_job_request(root, req)
     return {
         "id": job.id,
         "status": job.status,
@@ -221,6 +230,8 @@ async def get_training_job(root: WorkspaceRoot, job_id: str) -> dict:
         "project_title": pt,
         "batch_name": bn,
         "dataset_name": dn,
+        "train_count": tr_n,
+        "val_count": va_n,
         "output_dir": _output_dir_from_request(req),
         "request": req,
     }

@@ -22,9 +22,9 @@ const newTrainOpenSeq = ref(0);
 
 const jobColumns = [
   { title: "训练名称", dataIndex: "job_name", key: "job_name", ellipsis: true, width: 200 },
-  { title: "项目", dataIndex: "project_title", key: "project_title", ellipsis: true, width: 120 },
-  { title: "批次", dataIndex: "batch_name", key: "batch_name", ellipsis: true, width: 120 },
   { title: "数据集", dataIndex: "dataset_name", key: "dataset_name", ellipsis: true, width: 140 },
+  { title: "训练", dataIndex: "train_count", key: "train_count", width: 72 },
+  { title: "验证", dataIndex: "val_count", key: "val_count", width: 72 },
   { title: "输出LoRA 路径", dataIndex: "output_dir", key: "output_dir", ellipsis: true, width: 220 },
   { title: "开始时间", dataIndex: "created_at", key: "created_at", width: 100 },
   { title: "结束时间", dataIndex: "finished_at", key: "finished_at", width: 100 },
@@ -60,6 +60,14 @@ function formatJobStatus(status: unknown): string {
   const s = typeof status === "string" ? status.trim() : String(status ?? "").trim();
   if (s === "parameters_saved") return "未训练";
   return s || "—";
+}
+
+/** 与数据集版本列表 `train_count` / `val_count` 一致；未知时「—」 */
+function formatJobSplitCount(v: unknown): string {
+  if (v == null || v === "") return "—";
+  const n = typeof v === "number" ? v : Number(v);
+  if (Number.isNaN(n)) return "—";
+  return String(n);
 }
 
 async function refreshJobs() {
@@ -131,6 +139,21 @@ function trainingOutputDirRunTitle(record: {
     lines.push(`任务 output_dir：${base}`);
   }
   return lines.length ? lines.join("\n") : undefined;
+}
+
+/** 数据集列 tooltip：同列展示项目、批次全名 */
+function trainingDatasetTooltipProjectText(record: { project_title?: string | null }): string {
+  const t = record.project_title;
+  if (t == null || t === "") return "—";
+  const s = String(t).trim();
+  return s || "—";
+}
+
+function trainingDatasetTooltipBatchText(record: { batch_name?: string | null }): string {
+  const t = record.batch_name;
+  if (t == null || t === "") return "—";
+  const s = String(t).trim();
+  return s || "—";
 }
 
 function openTrainingJobNameEditor(record: { id?: string; job_name?: string | null }) {
@@ -246,6 +269,12 @@ onMounted(() => {
         <span v-else-if="column.key === 'status' && record && typeof record === 'object'">{{
           formatJobStatus((record as Record<string, unknown>).status)
         }}</span>
+        <span v-else-if="column.key === 'train_count' && record && typeof record === 'object'">{{
+          formatJobSplitCount((record as Record<string, unknown>).train_count)
+        }}</span>
+        <span v-else-if="column.key === 'val_count' && record && typeof record === 'object'">{{
+          formatJobSplitCount((record as Record<string, unknown>).val_count)
+        }}</span>
         <span v-else-if="column.key === 'job_name' && record && typeof record === 'object'" class="training-job-name-cell" @click.stop>
           <span class="training-job-name-text" :title="trainingJobNameTitle(record as { job_name?: string | null })">
             {{ trainingJobNameText(record as { job_name?: string | null }) }}
@@ -269,6 +298,16 @@ onMounted(() => {
             )
           }}
         </span>
+        <a-tooltip
+          v-else-if="column.key === 'dataset_name' && record && typeof record === 'object'"
+          placement="topLeft"
+        >
+          <template #title>
+            <div>项目：{{ trainingDatasetTooltipProjectText(record as { project_title?: string | null }) }}</div>
+            <div>批次：{{ trainingDatasetTooltipBatchText(record as { batch_name?: string | null }) }}</div>
+          </template>
+          <span class="training-dataset-name-cell">{{ text }}</span>
+        </a-tooltip>
         <span v-else>{{ text }}</span>
       </template>
     </a-table>
@@ -323,6 +362,15 @@ onMounted(() => {
 }
 .training-job-name-edit:hover {
   color: var(--ant-primary-color, #1677ff);
+}
+.training-dataset-name-cell {
+  display: inline-block;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 .datasets-header-add-btn {
   flex-shrink: 0;
