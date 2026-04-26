@@ -269,9 +269,14 @@ class DatasetBuildManager:
             tr,
             vr,
         )
-        if n > 0 and n_train == 0 and tr > 0:
+        # ms-swift 需要非空训练集；0% 训练 / 100% 验证时须至少留 1 条在 train.jsonl
+        if n > 0 and n_train == 0:
             n_train = 1
             n_val = n - n_train
+        # 验证比例 >0 但样本少导致 n_val=0 时，至少分 1 条到验证集（在仍有训练样本的前提下）
+        if n > 1 and n_val == 0 and vr > 0:
+            n_val = 1
+            n_train = n - n_val
         a = lines[:n_train]
         b = lines[n_train:]
 

@@ -407,9 +407,11 @@ function goTrain() {
         </a-form-item>
 
         <a-form-item label="划分比例">
-          <a-input-number v-model:value="trainRatio" :min="0" :max="100" /> :
+          <a-input-number v-model:value="trainRatio" :min="1" :max="100" /> :
           <a-input-number v-model:value="valRatio" :min="0" :max="100" />
-          <span style="margin-left: 8px; color: #666; font-size: 12px">两数之和须为 100。（训练 : 验证，默认 80:20）</span>
+          <span style="margin-left: 8px; color: #666; font-size: 12px"
+            >两数之和须为 100；训练侧至少 1%（否则训练集为空，ms-swift 无法生成 train split）。默认 80:20。</span
+          >
         </a-form-item>
 
         <a-form-item label="备注">

@@ -91,7 +91,7 @@ class DatasetVersionNameBody(BaseModel):
 class DatasetBuildBody(BaseModel):
     import_batch_id: str
     add_image_token: bool = True
-    train_ratio: int = Field(80, ge=0, le=100)
+    train_ratio: int = Field(80, ge=1, le=100, description="至少 1%，否则训练集为空会导致 ms-swift 报错")
     val_ratio: int = Field(20, ge=0, le=100)
     random_seed: int | None = None
     note: str | None = None
