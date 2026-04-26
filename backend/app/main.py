@@ -22,7 +22,6 @@ from backend.app.services.dataset_build import mark_stale_build_jobs_failed_on_r
 from backend.app.routers import (
     datasets,
     eval_routes,
-    export_routes,
     health,
     imports,
     inference_routes,
@@ -94,7 +93,6 @@ def create_app() -> FastAPI:
     app.include_router(inference_routes.router, prefix="/api")
     app.include_router(merge_routes.router, prefix="/api")
     app.include_router(eval_routes.router, prefix="/api")
-    app.include_router(export_routes.router, prefix="/api")
     app.include_router(system_routes.router, prefix="/api")
     app.include_router(models_routes.router, prefix="/api")
     return app

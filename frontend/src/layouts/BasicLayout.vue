@@ -5,7 +5,6 @@ import {
   CloudUploadOutlined,
   DatabaseOutlined,
   BlockOutlined,
-  ExportOutlined,
   FileSearchOutlined,
   HomeOutlined,
   MenuFoldOutlined,
@@ -114,10 +113,6 @@ function onMenuClick(info: { key: string | number }) {
           <a-menu-item key="/eval">
             <template #icon><BarChartOutlined /></template>
             评测
-          </a-menu-item>
-          <a-menu-item key="/export">
-            <template #icon><ExportOutlined /></template>
-            导出
           </a-menu-item>
           <a-menu-item key="/models">
             <template #icon><BlockOutlined /></template>
