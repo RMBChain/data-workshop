@@ -2,7 +2,7 @@
 import { message } from "ant-design-vue";
 import { InfoCircleOutlined, QuestionCircleOutlined, ReloadOutlined } from "@ant-design/icons-vue";
 import * as echarts from "echarts";
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, toRaw, watch } from "vue";
+import { computed, inject, nextTick, onMounted, onUnmounted, reactive, ref, toRaw, watch, type Ref } from "vue";
 import { useRouter } from "vue-router";
 import { apiErrorDetail, getApiErrorDetail, http } from "../api/http";
 
@@ -25,13 +25,19 @@ const props = withDefaults(
     jobNamePrefill?: string;
     /** 父级「新建训练」每次打开递增，用于在无预填时重新生成默认名称 */
     newTrainOpenSeq?: number;
-    /** 训练参数全屏 Modal 是否打开；为 false 时不拉取/合并已保存参数，避免未展示时写坏表单 */
-    panelVisible?: boolean;
   }>(),
-  { jobNamePrefill: "", newTrainOpenSeq: 0, panelVisible: false },
+  { jobNamePrefill: "", newTrainOpenSeq: 0 },
 );
 
+/** 全屏训练参数 Modal；为 false 时不拉取/合并已保存参数，避免未展示时写坏表单 */
+const panelOpen = defineModel<boolean>("open", { default: false });
 const currentJobId = defineModel<string | null>("currentJobId", { default: null });
+
+/** 与 BasicLayout 中「资源信息」共用同一悬浮面板 */
+const resourceInfoFloatingOpen = inject<Ref<boolean> | undefined>("workshop:resourceInfoFloatingOpen", undefined);
+function openResourceInfoModal() {
+  if (resourceInfoFloatingOpen) resourceInfoFloatingOpen.value = true;
+}
 const emit = defineEmits<{
   (e: "refresh-jobs"): void;
 }>();
@@ -715,27 +721,37 @@ function buildTrainJobRequestBody(): Record<string, unknown> {
 async function saveTrainingFormParams() {
   savingFormParams.value = true;
   try {
-    await http.post("/api/training/form-params", buildTrainJobRequestBody());
-    message.success("训练参数已保存，下次打开将自动恢复");
+    const jid = (currentJobId.value ?? "").trim();
+    if (jid) {
+      await http.post("/api/training/form-params", buildTrainJobRequestBody(), {
+        params: { job_id: jid },
+      });
+      message.success("已更新该任务的训练参数记录");
+    } else {
+      const bodyPayload = buildTrainJobRequestBody();
+      const r = await http.post<{
+        id: string;
+        status: string;
+        output_dir?: string | null;
+        error_message?: string | null;
+      }>("/api/training/jobs/params-only", bodyPayload);
+      const ro = (r.data.output_dir ?? "").trim();
+      const dvid =
+        typeof bodyPayload.dataset_version_id === "string" ? bodyPayload.dataset_version_id.trim() : "";
+      form.output_dir = ro || (dvid ? `output/${dvid}` : "output/");
+      jobStatus.value = r.data.status;
+      jobError.value =
+        r.data.error_message != null && String(r.data.error_message).trim()
+          ? String(r.data.error_message)
+          : "";
+      currentJobId.value = r.data.id;
+      message.success("已新建任务并保存训练参数，可在列表中查看；点击「开始训练」将启动该任务。");
+    }
+    emit("refresh-jobs");
   } catch (e: unknown) {
     message.error(apiErrorDetail(e) ?? String(e));
   } finally {
     savingFormParams.value = false;
-  }
-}
-
-/** 拉取工作区中已保存的训练参数字段，不依赖数据集是否已加载（先拿 dataset_version_id 再选版本） */
-async function fetchSavedFormParamsFromApi(): Promise<Record<string, unknown> | null> {
-  try {
-    const r = await http.get<{ params: Record<string, unknown> | null }>("/api/training/form-params", {
-      params: { _t: Date.now() },
-      headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
-    });
-    const p = r.data?.params;
-    if (!p || typeof p !== "object") return null;
-    return p;
-  } catch {
-    return null;
   }
 }
 
@@ -810,7 +826,7 @@ async function initCascadeFromExistingJob(jobId: string) {
 }
 
 watch(
-  () => [props.panelVisible, currentJobId.value] as const,
+  () => [panelOpen.value, currentJobId.value] as const,
   async ([visible, jid]) => {
     if (!visible) return;
     try {
@@ -818,19 +834,18 @@ watch(
         await loadDatasetVersions();
         await loadHubModels();
         await initCascadeFromExistingJob(jid);
-      } else {
-        const saved = await fetchSavedFormParamsFromApi();
-        const preferVid = saved
-          ? typeof saved.dataset_version_id === "string" && saved.dataset_version_id.trim()
-            ? saved.dataset_version_id.trim()
-            : null
-          : null;
-        await loadDatasetVersions(preferVid ? { preferVersionId: preferVid } : undefined);
-        await loadHubModels();
-        if (saved) {
-          applySavedFormParamsToForm(saved);
+        const row = props.jobs.find((j) => (j as { id?: string }).id === jid) as
+          | { request?: Record<string, unknown> }
+          | undefined;
+        const req = row?.request;
+        if (req && typeof req === "object" && !Array.isArray(req)) {
+          applySavedFormParamsToForm(req);
           await nextTick();
         }
+        syncModelFromHub();
+      } else {
+        await loadDatasetVersions();
+        await loadHubModels();
         syncModelFromHub();
       }
     } catch (e) {
@@ -853,26 +868,57 @@ async function startTraining() {
     message.warning("训练/验证集路径来自当前激活的数据集版本。请先在「数据集」中构建并激活一版。");
     return;
   }
+  const cid = (currentJobId.value ?? "").trim();
+  const listRow = cid
+    ? (props.jobs.find((j) => (j as { id?: string }).id === cid) as { status?: string } | undefined)
+    : undefined;
+  const useStartFromSaved =
+    Boolean(cid) &&
+    (listRow?.status === "parameters_saved" ||
+      (!listRow && jobStatus.value === "parameters_saved"));
+
   submitting.value = true;
   try {
-    const requestBody = buildTrainJobRequestBody();
-    const resolvedJobName = String((requestBody.job_name as string) ?? form.job_name ?? "");
-    const dvid =
-      typeof requestBody.dataset_version_id === "string" ? requestBody.dataset_version_id.trim() : "";
-    const r = await http.post<{
-      id: string;
-      status: string;
-      error_message?: string | null;
-      output_dir?: string | null;
-    }>("/api/training/jobs", requestBody);
-    const ro = (r.data.output_dir ?? "").trim();
-    form.output_dir = ro || (dvid ? `output/${dvid}` : "output/");
-    jobStatus.value = r.data.status;
-    jobError.value =
-      r.data.error_message != null && String(r.data.error_message).trim() ? String(r.data.error_message) : "";
-    form.job_name = defaultNewTrainJobName();
-    message.success(ro ? `任务已创建：${resolvedJobName}（${ro}）` : `任务已创建：${resolvedJobName}`);
-    currentJobId.value = r.data.id;
+    if (useStartFromSaved) {
+      const r = await http.post<{
+        id: string;
+        status: string;
+        error_message?: string | null;
+        output_dir?: string | null;
+      }>(`/api/training/jobs/${encodeURIComponent(cid)}/start`);
+      const ro = (r.data.output_dir ?? "").trim();
+      const dvid = String(
+        (buildTrainJobRequestBody() as { dataset_version_id?: string }).dataset_version_id ?? "",
+      ).trim();
+      form.output_dir = ro || (dvid ? `output/${dvid}` : "output/");
+      jobStatus.value = r.data.status;
+      jobError.value =
+        r.data.error_message != null && String(r.data.error_message).trim()
+          ? String(r.data.error_message)
+          : "";
+      const jn = (form.job_name || "").trim();
+      message.success(ro ? `已开始训练：${jn || "任务"}（${ro}）` : `已开始训练：${jn || "任务"}`);
+      void refreshLogs();
+    } else {
+      const requestBody = buildTrainJobRequestBody();
+      const resolvedJobName = String((requestBody.job_name as string) ?? form.job_name ?? "");
+      const dvid =
+        typeof requestBody.dataset_version_id === "string" ? requestBody.dataset_version_id.trim() : "";
+      const r = await http.post<{
+        id: string;
+        status: string;
+        error_message?: string | null;
+        output_dir?: string | null;
+      }>("/api/training/jobs", requestBody);
+      const ro = (r.data.output_dir ?? "").trim();
+      form.output_dir = ro || (dvid ? `output/${dvid}` : "output/");
+      jobStatus.value = r.data.status;
+      jobError.value =
+        r.data.error_message != null && String(r.data.error_message).trim() ? String(r.data.error_message) : "";
+      form.job_name = defaultNewTrainJobName();
+      message.success(ro ? `任务已创建：${resolvedJobName}（${ro}）` : `任务已创建：${resolvedJobName}`);
+      currentJobId.value = r.data.id;
+    }
     emit("refresh-jobs");
   } catch (e: unknown) {
     message.error(apiErrorDetail(e) ?? String(e));
@@ -969,827 +1015,839 @@ watch(
 </script>
 
 <template>
-  <div class="training-form-panel">
-      <a-form layout="horizontal">
-        <a-row :gutter="16">
-          <a-col :span="24">
-            <a-form-item label="训练名称">
-              <a-input
-                v-model:value="form.job_name"
-                placeholder="默认：YYYYMMDD-HHmmss + 5位短码；可清空后按数据集规则生成"
-                allow-clear
-                style="width: 100%"
-                autocomplete="off"
-              />
-            </a-form-item>
-          </a-col>
-          <a-col :span="8">
-            <a-form-item>
-              <template #label>
-                <span style="display: inline-flex; align-items: center; gap: 4px">
-                  基于模型
-                  <a-tooltip title="仅列出在模型管理中标记为下载完成的模型">
-                    <InfoCircleOutlined
-                      style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                      aria-label="仅下载完成的模型"
-                      role="img"
-                    />
-                  </a-tooltip>
-                </span>
-              </template>
-              <div style="display: flex; align-items: center; gap: 8px">
-                <a-select
-                  v-model:value="form.model"
-                  :options="modelSelectOptions"
-                  :loading="loadingHub"
-                  :disabled="loadingHub"
-                  show-search
-                  option-filter-prop="label"
-                  placeholder="无下载完成模型时请先到设置中下载"
-                  style="flex: 1; min-width: 0"
-                />
-                <a-tooltip title="刷新模型列表">
-                  <a-button
-                    type="text"
-                    size="small"
-                    :loading="loadingHub"
-                    aria-label="刷新模型列表"
-                    @click="loadHubModels"
-                  >
-                    <template #icon>
-                      <ReloadOutlined />
-                    </template>
-                  </a-button>
-                </a-tooltip>
-              </div>
-              <a-typography-text
-                v-if="!loadingHub && readyHubModels.length === 0 && hubModels.length === 0"
-                type="secondary"
-                style="display: block; margin-top: 6px"
-                >当前没有检测到魔搭本机模型目录。下载完成后点右侧刷新。</a-typography-text
-              >
-              <a-typography-text
-                v-else-if="!loadingHub && readyHubModels.length === 0 && hubModels.length > 0"
-                type="secondary"
-                style="display: block; margin-top: 6px"
-                >本机有模型目录，但尚无下载完成记录（可能仍在下载或上次失败/中断）。请到「设置 → 模型管理」确认状态，完成后点右侧刷新。</a-typography-text
-              >
-            </a-form-item>
-          </a-col>
-          <a-col :span="4">
-            <a-form-item label="项目名称">
-              <a-select
-                v-model:value="selectedProjectKey"
-                :options="projectSelectOptions"
-                :loading="loadingDatasetPaths"
-                :disabled="loadingDatasetPaths || !datasetVersionItems.length"
-                show-search
-                :filter-option="filterDatasetOption"
-                allow-clear
-                placeholder="选择项目"
-                :not-found-content="loadingDatasetPaths ? '加载中…' : '暂无项目，请去「数据集」构建'"
-                @update:value="onProjectKeyChange"
-              />
-            </a-form-item>
-          </a-col>
-          <a-col :span="4">
-            <a-form-item label="批次名称">
-              <a-select
-                v-model:value="selectedBatchKey"
-                :options="batchSelectOptions"
-                :loading="loadingDatasetPaths"
-                :disabled="loadingDatasetPaths || !selectedProjectKey"
-                show-search
-                :filter-option="filterDatasetOption"
-                allow-clear
-                placeholder="选择批次"
-                :not-found-content="loadingDatasetPaths ? '加载中…' : '当前项目下暂无批次'"
-                @update:value="onBatchKeyChange"
-              />
-            </a-form-item>
-          </a-col>
-          <a-col :span="8">
-            <a-form-item label="数据集名称">
-              <div style="display: flex; align-items: center; gap: 8px; width: 100%">
-                <a-select
-                  v-model:value="selectedDatasetVersionId"
-                  :options="versionSelectOptions"
-                  :loading="loadingDatasetPaths"
-                  :disabled="loadingDatasetPaths || !selectedBatchKey"
-                  show-search
-                  :filter-option="filterDatasetOption"
-                  allow-clear
-                  placeholder="选择数据版本"
-                  style="flex: 1; min-width: 0"
-                  :not-found-content="loadingDatasetPaths ? '加载中…' : '当前批次下暂无数据版本，请去「数据集」构建'"
-                  @update:value="onDatasetVersionSelect"
-                />
-              </div>
-            </a-form-item>
-          </a-col>
-
-          <a-col :span="6">
-            <a-form-item label="输出目录">
-              <a-typography-text type="secondary" style="font-size: 13px; word-break: break-all">
-                {{
-                  form.output_dir && workspaceRootAbs
-                    ? workspaceDatasetAbsDisplay(form.output_dir)
-                    : "—"
-                }}
-              </a-typography-text>
-            </a-form-item>
-          </a-col>
-          
-          <a-col :span="6">
-            <a-form-item label="训练集">
-              <div style="min-width: 0">
-                <a-tooltip v-if="form.train_dataset" :title="workspaceDatasetAbsDisplay(form.train_dataset)">
-                  <a-typography-link
-                    style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap"
-                    @click.prevent="openDatasetPathModal('train')"
-                  >
-                    {{ form.train_dataset }}
-                  </a-typography-link>
-                </a-tooltip>
-                <a-typography-text v-else type="secondary">----</a-typography-text>
-              </div>
-            </a-form-item>
-          </a-col>
-          <a-col :span="6">
-            <a-form-item label="验证集">
-              <div style="min-width: 0">
-                <a-tooltip v-if="form.val_dataset" :title="workspaceDatasetAbsDisplay(form.val_dataset)">
-                  <a-typography-link
-                    style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap"
-                    @click.prevent="openDatasetPathModal('val')"
-                  >
-                    {{ form.val_dataset }}
-                  </a-typography-link>
-                </a-tooltip>
-                <a-typography-text v-else type="secondary">----</a-typography-text>
-              </div>
-            </a-form-item>
-          </a-col>
-        </a-row>
-        <a-alert
-          type="info"
-          show-icon
-          message="默认按常用 LoRA 配置：rank=8、alpha=32、dropout=0.05、max_length=2048、3 epoch、梯度累积 4、cosine+10% warmup、日志/评估/保存步数 10/100/500。显存紧张时请降低 max_length、batch、视觉 token，或开启量化（QLoRA）。lora_alpha/lora_rank 比值建议在 2～8。"
-          style="margin-bottom: 12px"
-        />
-        <a-collapse
-          v-model:activeKey="advancedTrainParamsActiveKeys"
-          :bordered="false"
-          style="margin-bottom: 0; background: transparent"
-        >
-          <a-collapse-panel key="lora_quad" header="最常用 LoRA（四连）">
-            <a-typography-text type="secondary" style="display: block; margin-bottom: 12px">
-              核心关系：<code>lora_alpha / lora_rank</code> 影响实际缩放，建议比值约 2～8（如 rank=8、alpha=32 → 比值为 4）。
-            </a-typography-text>
-            <a-row :gutter="16">
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      lora_rank
-                      <a-tooltip title="低秩矩阵的秩，控制额外参数量。通用 8；任务复杂可 16～32。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="lora_rank 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-input-number v-model:value="form.lora_rank" :min="1" :max="128" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      lora_alpha
-                      <a-tooltip title="缩放系数，控制 LoRA 影响强度。rank=8 时常用 32。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="lora_alpha 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-input-number v-model:value="form.lora_alpha" :min="1" :max="256" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      lora_dropout
-                      <a-tooltip title="正则化丢弃概率，减轻过拟合。常用 0.05。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="lora_dropout 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-input-number v-model:value="form.lora_dropout" :min="0" :max="0.9" :step="0.01" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      target_modules
-                      <a-tooltip title="施加 LoRA 的模块，如 q_proj,v_proj；常用 all-linear。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="target_modules 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-input v-model:value="form.target_modules" placeholder="all-linear" />
-                </a-form-item>
-              </a-col>
-            </a-row>
-          </a-collapse-panel>
-  
-          <a-collapse-panel key="core_model" header="核心与模型参数">
-            <a-typography-text type="secondary" style="display: block; margin-bottom: 12px">
-              模型 ID / 路径请在上方「基于模型」中选择；此处为架构、模板、精度与序列等 ms-swift 参数。
-            </a-typography-text>
-            <a-row :gutter="16" class="training-form-grid-row">
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      model_type
-                      <a-tooltip title="模型架构族（与 config 中 model_type 概念不同）。留空则 swift 自动推断。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="model_type 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-input v-model:value="form.model_type" placeholder="留空自动" allow-clear />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      template
-                      <a-tooltip title="对话模板类型。留空则按模型自动匹配。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="template 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-input v-model:value="form.template" placeholder="如 qwen，留空自动" allow-clear />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item label="torch_dtype">
-                  <a-select v-model:value="form.torch_dtype" :options="torchDtypeOptions" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      bf16
-                      <a-tooltip title="与 torch_dtype 配合使用；GPU 上常用 bfloat16 + bf16 true。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="bf16 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-switch v-model:checked="form.bf16" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item label="attn_impl">
-                  <a-select v-model:value="form.attn_impl" :options="attnImplOptions" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      max_length
-                      <a-tooltip title="最大 token 长度，越长越占显存 / 内存。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="max_length 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-input-number v-model:value="form.max_length" :min="128" :max="8192" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :span="24">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      system
-                      <a-tooltip title="系统提示词，或工作区内 .txt 相对路径。数据集中 system 字段优先。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="system 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-textarea v-model:value="form.system" :rows="2" placeholder="可选，用于角色设定等" allow-clear />
-                </a-form-item>
-              </a-col>
-            </a-row>
-          </a-collapse-panel>
-  
-          <a-collapse-panel key="data_train" header="数据与训练参数">
-            <a-typography-text type="secondary" style="display: block; margin-bottom: 12px">
-              训练 / 验证集路径见上方「训练集 / 验证集」（随「数据集选择」联动）。保存目录见「输出目录」。
-            </a-typography-text>
-            <a-row :gutter="16" class="training-form-grid-row">
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item label="num_train_epochs">
-                  <a-input-number v-model:value="form.num_train_epochs" :min="1" :max="200" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      per_device_train_batch_size
-                      <a-tooltip title="单卡 batch，视显存 1～4。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="batch 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-input-number v-model:value="form.per_device_train_batch_size" :min="1" :max="128" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item label="per_device_eval_batch_size">
-                  <a-input-number v-model:value="form.per_device_eval_batch_size" :min="1" :max="128" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      gradient_accumulation_steps
-                      <a-tooltip title="梯度累积，模拟更大 batch。常用 4～8。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="梯度累积说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-input-number v-model:value="form.gradient_accumulation_steps" :min="1" :max="128" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      learning_rate
-                      <a-tooltip title="LoRA 常用 1e-4；全参可更小如 1e-5。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="learning_rate 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-input-number v-model:value="form.learning_rate" :min="1e-6" :max="1e-2" :step="0.00001" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item label="lr_scheduler_type">
-                  <a-select v-model:value="form.lr_scheduler_type" :options="lrSchedulerOptions" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      warmup_ratio
-                      <a-tooltip title="预热占总步数比例，如 0.1 表示约 10%。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="warmup_ratio 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-input-number v-model:value="form.warmup_ratio" :min="0" :max="1" :step="0.01" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item label="logging_steps">
-                  <a-input-number v-model:value="form.logging_steps" :min="1" :max="10000000" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item label="eval_steps">
-                  <a-input-number v-model:value="form.eval_steps" :min="10" :max="10000000" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item label="save_steps">
-                  <a-input-number v-model:value="form.save_steps" :min="10" :max="10000000" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      save_total_limit
-                      <a-tooltip title="最多保留 checkpoint 数量。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="save_total_limit 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-input-number v-model:value="form.save_total_limit" :min="1" :max="20" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-            </a-row>
-          </a-collapse-panel>
-  
-          <a-collapse-panel key="qlora" header="QLoRA（量化 LoRA）">
-            <a-typography-text type="secondary" style="display: block; margin-bottom: 12px">
-              对应 ms-swift 的 <code>quant_method</code> / <code>quant_bits</code>（常见文档里的 4bit QLoRA）。不设位数则关闭量化加载。
-            </a-typography-text>
-            <a-row :gutter="16" class="training-form-grid-row training-form-grid-row--qlora">
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      quant_bits
-                      <a-tooltip title="如 4 表示 4bit QLoRA；留空表示不量化加载。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="quant_bits 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-input-number v-model:value="form.quant_bits" :min="0" :max="8" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      quant_method
-                      <a-tooltip title="QLoRA 常用 bnb；留空则在启用 quant_bits 时默认 bnb。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="quant_method 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-input v-model:value="form.quant_method" placeholder="bnb" allow-clear />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item label="bnb_4bit_compute_dtype">
-                  <a-select v-model:value="form.bnb_4bit_compute_dtype" :options="bnbComputeDtypeOptions" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item label="bnb_4bit_quant_type">
-                  <a-select v-model:value="form.bnb_4bit_quant_type" :options="bnbQuantTypeOptions" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item label="bnb_4bit_use_double_quant">
-                  <a-switch v-model:checked="form.bnb_4bit_use_double_quant" />
-                </a-form-item>
-              </a-col>
-            </a-row>
-          </a-collapse-panel>
-  
-          <a-collapse-panel key="advanced_more" header="进阶与其他">
-            <a-row :gutter="16" class="training-form-grid-row">
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item label="dataloader_num_workers">
-                  <a-input-number v-model:value="form.dataloader_num_workers" :min="0" :max="128" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item label="train_type">
-                  <a-select v-model:value="form.train_type" :options="trainTypeOptions" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item label="tuner_backend">
-                  <a-select v-model:value="form.tuner_backend" :options="tunerBackendOptions" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item label="use_dora">
-                  <a-switch v-model:checked="form.use_dora" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      lorap_lr_ratio
-                      <a-tooltip title="LoRA+：B 矩阵学习率倍率，常用约 10～16。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="lorap_lr_ratio 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-input-number v-model:value="form.lorap_lr_ratio" :min="0" :step="1" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item label="gradient_checkpointing">
-                  <a-switch v-model:checked="form.gradient_checkpointing" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      deepspeed
-                      <a-tooltip title="如 zero2、zero3 或自定义 json 路径。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="deepspeed 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-input v-model:value="form.deepspeed" placeholder="zero2 / 配置文件路径…" allow-clear />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      merge_lora
-                      <a-tooltip title="多用于 swift export；训练任务通常保持关闭。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="merge_lora 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-switch v-model:checked="form.merge_lora" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item label="freeze_vit">
-                  <a-switch v-model:checked="form.freeze_vit" />
-                </a-form-item>
-              </a-col>
-  
-  
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      packing
-                      <a-tooltip title="序列打包；需 flash_attn 等，CPU/eager 下请关闭。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="packing 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-switch v-model:checked="form.packing" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      image_max_token_num
-                      <a-tooltip title="视觉 token 上限（多模态）。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="image_max_token_num 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-input-number v-model:value="form.image_max_token_num" :min="64" :max="2048" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="6">
-                <a-form-item label="video_max_token_num">
-                  <a-input-number v-model:value="form.video_max_token_num" :min="16" :max="512" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-              <a-col :xs="24" :sm="12" :md="18">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      adapters
-                      <a-tooltip title="逗号分隔的 adapter 路径；仅加载权重时常用，与 resume_from_checkpoint 不同。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="adapters 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-input v-model:value="form.adapters" placeholder="path1,path2" allow-clear />
-                </a-form-item>
-              </a-col>
-              <a-col :span="18">
-                <a-form-item>
-                  <template #label>
-                    <span style="display: inline-flex; align-items: center; gap: 4px">
-                      resume_from_checkpoint
-                      <a-tooltip title="断点目录（工作区相对路径）。「继续训练」会自动填入最新 checkpoint。">
-                        <QuestionCircleOutlined
-                          style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                          aria-label="resume 说明"
-                          role="img"
-                        />
-                      </a-tooltip>
-                    </span>
-                  </template>
-                  <a-input v-model:value="form.resume_from_checkpoint" placeholder="可选" allow-clear />
-                </a-form-item>
-              </a-col>
-            </a-row>
-          </a-collapse-panel>
-        </a-collapse>
-  
-        <a-row :gutter="16">
-          <a-col :span="24" style="margin-top: 4px; margin-bottom: 4px">
-            <a-space wrap>
-              <a-button
-                type="primary"
-                :loading="savingFormParams"
-                :disabled="savingFormParams"
-                @click="saveTrainingFormParams"
-                >仅保存参数</a-button
-              >
-              <a-button
-                type="primary"
-                :loading="submitting"
-                :disabled="loadingHub || !readyHubModels.length || !form.model"
-                @click="startTraining"
-                >提交训练</a-button
-              >
-              <a-button :disabled="!currentJobId" @click="cancelJob">取消</a-button>
-              <a-button :disabled="!currentJobId" @click="continueTraining">继续训练</a-button>
-              <a-button @click="applyYaml">从 YAML 导入配置</a-button>
-              <a-button @click="downloadYaml">导出 YAML 配置</a-button>
-            </a-space>
-          </a-col>
-        </a-row>
-      </a-form>
-      <a-modal
-        v-model:open="datasetPathModalOpen"
-        :title="datasetPathModalTitle"
-        width="min(896px, 90vw)"
-        :footer="null"
-        destroy-on-close
-      >
-        <a-spin :spinning="datasetPathModalLoading">
-          <a-alert
-            v-if="datasetPathModalError && !datasetPathModalLoading"
-            type="error"
-            :message="datasetPathModalError"
-            show-icon
-            style="margin-bottom: 0"
-          />
-          <pre
-            v-else-if="!datasetPathModalLoading"
-            style="
-              margin: 0;
-              white-space: pre-wrap;
-              word-break: break-all;
-              max-height: 60vh;
-              overflow: auto;
-              font-size: 13px;
-              line-height: 1.5;
-              font-family: ui-monospace, monospace;
-            "
-            >{{ datasetPathModalText || "（无内容）" }}</pre
+  <a-modal
+    v-model:open="panelOpen"
+    :footer="null"
+    width="100%"
+    :centered="false"
+    :destroy-on-close="false"
+    :mask-closable="true"
+    wrap-class-name="training-fullscreen-modal-wrap"
+    :style="{ top: 0, paddingBottom: 0, maxWidth: '100vw' }"
+  >
+    <template #title>
+      <div class="training-modal-title-bar">
+        <span class="training-modal-title-text">训练</span>
+        <a-space wrap :size="8" class="training-modal-title-actions">
+          <a-button
+            type="primary"
+            size="small"
+            :loading="savingFormParams"
+            :disabled="savingFormParams"
+            @click="saveTrainingFormParams"
+            >仅保存参数</a-button
           >
-        </a-spin>
-      </a-modal>
-      <a-divider />
+          <a-button
+            type="primary"
+            size="small"
+            :loading="submitting"
+            :disabled="loadingHub || !readyHubModels.length || !form.model"
+            @click="startTraining"
+            >开始训练</a-button
+          >
+          <a-button size="small" :disabled="!currentJobId" @click="cancelJob">取消</a-button>
+          <a-button size="small" :disabled="!currentJobId" @click="continueTraining">继续训练</a-button>
+          <a-button size="small" @click="applyYaml">从 YAML 导入配置</a-button>
+          <a-button size="small" @click="downloadYaml">导出 YAML 配置</a-button>
+          <a-button size="small" @click="openResourceInfoModal">资源信息</a-button>
+        </a-space>
+      </div>
+    </template>
+    <div class="training-form-panel">
+    <a-alert type="info" show-icon style="margin-bottom: 12px">
+        <template #message>
+          默认按常用 LoRA 配置：rank=8、alpha=32、dropout=0.05、max_length=2048、3 epoch、梯度累积 4、cosine+10% warmup、日志/评估/保存步数 10/100/500。<br />
+          显存紧张时请降低 max_length、batch、视觉 token，或开启量化（QLoRA）。lora_alpha/lora_rank 比值建议在 2～8。
+        </template>
+      </a-alert>
+    <a-form layout="horizontal">
       <a-row :gutter="16">
         <a-col :span="24">
-          <a-typography-title :level="5">训练任务</a-typography-title>
-          <a-typography-paragraph>
-            <span style="margin-right: 10px;"><b>当前训练任务：</b><template v-if="currentJobNameDisplay">{{ currentJobNameDisplay }}</template></span>
-            <span><b>任务ID</b>：{{ currentJobId || "—" }}</span>
-            <a-tag v-if="jobStatus">{{ jobStatus }}</a-tag>
-          </a-typography-paragraph>
-          <div
-            style="display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; row-gap: 4px"
-          >
-            <a-typography-title :level="5" style="margin: 0">训练进度</a-typography-title>
-            <a-tag
-              v-if="currentJobId && overallJobStatusLabel"
-              :color="overallJobStatusTagColor"
-              style="margin: 0; line-height: 1.5"
-              >整体：{{ overallJobStatusLabel }}</a-tag
-            >
-          </div>
-          <div v-if="currentJobId" style="margin-bottom: 10px">
-            <div v-for="s in progressStages" :key="s.id" style="margin-bottom: 12px">
-              <div style="font-size: 12px; color: rgba(0, 0, 0, 0.65); margin-bottom: 4px">{{ s.name }}</div>
-              <a-progress
-                :percent="s.percent == null ? 0 : s.percent"
-                :status="stageRowStatus(s.percent)"
-                :show-info="s.percent != null"
-              />
-              <div style="font-size: 12px; color: #666; margin-top: 2px">{{ s.label || "—" }}</div>
-            </div>
-            <template v-if="!progressStages.length">
-              <a-progress
-                :percent="progressPercent === null ? 0 : progressPercent"
-                :status="progressStatus"
-                :show-info="progressPercent !== null"
-              />
-              <div style="font-size: 12px; color: #666; margin-top: 4px">{{ progressLabel || "—" }}</div>
+          <a-form-item label="训练名称">
+            <a-input
+              v-model:value="form.job_name"
+              placeholder="默认：YYYYMMDD-HHmmss + 5位短码；可清空后按数据集规则生成"
+              allow-clear
+              style="width: 100%"
+              autocomplete="off"
+            />
+          </a-form-item>
+        </a-col>
+        <a-col :span="8">
+          <a-form-item>
+            <template #label>
+              <span style="display: inline-flex; align-items: center; gap: 4px">
+                基于模型
+                <a-tooltip title="仅列出在模型管理中标记为下载完成的模型">
+                  <InfoCircleOutlined
+                    style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                    aria-label="仅下载完成的模型"
+                    role="img"
+                  />
+                </a-tooltip>
+              </span>
             </template>
+            <div style="display: flex; align-items: center; gap: 8px">
+              <a-select
+                v-model:value="form.model"
+                :options="modelSelectOptions"
+                :loading="loadingHub"
+                :disabled="loadingHub"
+                show-search
+                option-filter-prop="label"
+                placeholder="无下载完成模型时请先到设置中下载"
+                style="flex: 1; min-width: 0"
+              />
+              <a-tooltip title="刷新模型列表">
+                <a-button
+                  type="text"
+                  size="small"
+                  :loading="loadingHub"
+                  aria-label="刷新模型列表"
+                  @click="loadHubModels"
+                >
+                  <template #icon>
+                    <ReloadOutlined />
+                  </template>
+                </a-button>
+              </a-tooltip>
+            </div>
             <a-typography-text
-              v-if="jobError && (jobStatus === 'failed' || jobStatus === 'cancelled')"
-              type="danger"
-              style="display: block; margin-top: 8px; font-size: 12px"
-              >原因（任务）: {{ jobError }}</a-typography-text
+              v-if="!loadingHub && readyHubModels.length === 0 && hubModels.length === 0"
+              type="secondary"
+              style="display: block; margin-top: 6px"
+              >当前没有检测到魔搭本机模型目录。下载完成后点右侧刷新。</a-typography-text
             >
-          </div>
-          <a-typography-title :level="5">日志</a-typography-title>
-          <a-button v-if="!stick" type="dashed" size="small" style="margin-bottom: 8px" @click="scrollToBottom"
-            >跟随最新 / 回到底部</a-button
-          >
-          <pre
-            ref="logPre"
-            style="
-              font-family: ui-monospace, monospace;
-              font-size: 12px;
-              height: 200px;
-              overflow: auto;
-              background: #0d1117;
-              color: #e6edf3;
-              padding: 8px;
-              border-radius: 4px;
-              margin-top: 0;
-              white-space: pre-wrap;
-            "
-            @scroll="onLogScroll"
-            >{{ logText }}</pre
-          >
-          <a-typography-title :level="5" style="margin-top: 12px">曲线</a-typography-title>
-          <div ref="chartRef" style="height: 280px" />
+            <a-typography-text
+              v-else-if="!loadingHub && readyHubModels.length === 0 && hubModels.length > 0"
+              type="secondary"
+              style="display: block; margin-top: 6px"
+              >本机有模型目录，但尚无下载完成记录（可能仍在下载或上次失败/中断）。请到「设置 → 模型管理」确认状态，完成后点右侧刷新。</a-typography-text
+            >
+          </a-form-item>
+        </a-col>
+        <a-col :span="4">
+          <a-form-item label="项目名称">
+            <a-select
+              v-model:value="selectedProjectKey"
+              :options="projectSelectOptions"
+              :loading="loadingDatasetPaths"
+              :disabled="loadingDatasetPaths || !datasetVersionItems.length"
+              show-search
+              :filter-option="filterDatasetOption"
+              allow-clear
+              placeholder="选择项目"
+              :not-found-content="loadingDatasetPaths ? '加载中…' : '暂无项目，请去「数据集」构建'"
+              @update:value="onProjectKeyChange"
+            />
+          </a-form-item>
+        </a-col>
+        <a-col :span="4">
+          <a-form-item label="批次名称">
+            <a-select
+              v-model:value="selectedBatchKey"
+              :options="batchSelectOptions"
+              :loading="loadingDatasetPaths"
+              :disabled="loadingDatasetPaths || !selectedProjectKey"
+              show-search
+              :filter-option="filterDatasetOption"
+              allow-clear
+              placeholder="选择批次"
+              :not-found-content="loadingDatasetPaths ? '加载中…' : '当前项目下暂无批次'"
+              @update:value="onBatchKeyChange"
+            />
+          </a-form-item>
+        </a-col>
+        <a-col :span="8">
+          <a-form-item label="数据集名称">
+            <div style="display: flex; align-items: center; gap: 8px; width: 100%">
+              <a-select
+                v-model:value="selectedDatasetVersionId"
+                :options="versionSelectOptions"
+                :loading="loadingDatasetPaths"
+                :disabled="loadingDatasetPaths || !selectedBatchKey"
+                show-search
+                :filter-option="filterDatasetOption"
+                allow-clear
+                placeholder="选择数据版本"
+                style="flex: 1; min-width: 0"
+                :not-found-content="loadingDatasetPaths ? '加载中…' : '当前批次下暂无数据版本，请去「数据集」构建'"
+                @update:value="onDatasetVersionSelect"
+              />
+            </div>
+          </a-form-item>
+        </a-col>
+
+        <a-col :span="6">
+          <a-form-item label="输出目录">
+            <a-typography-text type="secondary" style="font-size: 13px; word-break: break-all">
+              {{
+                form.output_dir && workspaceRootAbs
+                  ? workspaceDatasetAbsDisplay(form.output_dir)
+                  : "—"
+              }}
+            </a-typography-text>
+          </a-form-item>
+        </a-col>
+        
+        <a-col :span="6">
+          <a-form-item label="训练集">
+            <div style="min-width: 0">
+              <a-tooltip v-if="form.train_dataset" :title="workspaceDatasetAbsDisplay(form.train_dataset)">
+                <a-typography-link
+                  style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap"
+                  @click.prevent="openDatasetPathModal('train')"
+                >
+                  {{ form.train_dataset }}
+                </a-typography-link>
+              </a-tooltip>
+              <a-typography-text v-else type="secondary">----</a-typography-text>
+            </div>
+          </a-form-item>
+        </a-col>
+        <a-col :span="6">
+          <a-form-item label="验证集">
+            <div style="min-width: 0">
+              <a-tooltip v-if="form.val_dataset" :title="workspaceDatasetAbsDisplay(form.val_dataset)">
+                <a-typography-link
+                  style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap"
+                  @click.prevent="openDatasetPathModal('val')"
+                >
+                  {{ form.val_dataset }}
+                </a-typography-link>
+              </a-tooltip>
+              <a-typography-text v-else type="secondary">----</a-typography-text>
+            </div>
+          </a-form-item>
         </a-col>
       </a-row>
-  </div>
+
+      <a-collapse
+        v-model:activeKey="advancedTrainParamsActiveKeys"
+        :bordered="false"
+        style="margin-bottom: 0; background: transparent"
+      >
+        <a-collapse-panel key="lora_quad" header="最常用 LoRA（四连）">
+          <a-typography-text type="secondary" style="display: block; margin-bottom: 12px">
+            核心关系：<code>lora_alpha / lora_rank</code> 影响实际缩放，建议比值约 2～8（如 rank=8、alpha=32 → 比值为 4）。
+          </a-typography-text>
+          <a-row :gutter="16">
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    lora_rank
+                    <a-tooltip title="低秩矩阵的秩，控制额外参数量。通用 8；任务复杂可 16～32。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="lora_rank 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input-number v-model:value="form.lora_rank" :min="1" :max="128" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    lora_alpha
+                    <a-tooltip title="缩放系数，控制 LoRA 影响强度。rank=8 时常用 32。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="lora_alpha 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input-number v-model:value="form.lora_alpha" :min="1" :max="256" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    lora_dropout
+                    <a-tooltip title="正则化丢弃概率，减轻过拟合。常用 0.05。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="lora_dropout 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input-number v-model:value="form.lora_dropout" :min="0" :max="0.9" :step="0.01" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    target_modules
+                    <a-tooltip title="施加 LoRA 的模块，如 q_proj,v_proj；常用 all-linear。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="target_modules 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input v-model:value="form.target_modules" placeholder="all-linear" />
+              </a-form-item>
+            </a-col>
+          </a-row>
+        </a-collapse-panel>
+
+        <a-collapse-panel key="core_model" header="核心与模型参数">
+          <a-typography-text type="secondary" style="display: block; margin-bottom: 12px">
+            模型 ID / 路径请在上方「基于模型」中选择；此处为架构、模板、精度与序列等 ms-swift 参数。
+          </a-typography-text>
+          <a-row :gutter="16" class="training-form-grid-row">
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    model_type
+                    <a-tooltip title="模型架构族（与 config 中 model_type 概念不同）。留空则 swift 自动推断。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="model_type 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input v-model:value="form.model_type" placeholder="留空自动" allow-clear />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    template
+                    <a-tooltip title="对话模板类型。留空则按模型自动匹配。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="template 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input v-model:value="form.template" placeholder="如 qwen，留空自动" allow-clear />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item label="torch_dtype">
+                <a-select v-model:value="form.torch_dtype" :options="torchDtypeOptions" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    bf16
+                    <a-tooltip title="与 torch_dtype 配合使用；GPU 上常用 bfloat16 + bf16 true。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="bf16 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-switch v-model:checked="form.bf16" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item label="attn_impl">
+                <a-select v-model:value="form.attn_impl" :options="attnImplOptions" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    max_length
+                    <a-tooltip title="最大 token 长度，越长越占显存 / 内存。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="max_length 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input-number v-model:value="form.max_length" :min="128" :max="8192" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :span="24">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    system
+                    <a-tooltip title="系统提示词，或工作区内 .txt 相对路径。数据集中 system 字段优先。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="system 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-textarea v-model:value="form.system" :rows="2" placeholder="可选，用于角色设定等" allow-clear />
+              </a-form-item>
+            </a-col>
+          </a-row>
+        </a-collapse-panel>
+
+        <a-collapse-panel key="data_train" header="数据与训练参数">
+          <a-typography-text type="secondary" style="display: block; margin-bottom: 12px">
+            训练 / 验证集路径见上方「训练集 / 验证集」（随「数据集选择」联动）。保存目录见「输出目录」。
+          </a-typography-text>
+          <a-row :gutter="16" class="training-form-grid-row">
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item label="num_train_epochs">
+                <a-input-number v-model:value="form.num_train_epochs" :min="1" :max="200" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    per_device_train_batch_size
+                    <a-tooltip title="单卡 batch，视显存 1～4。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="batch 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input-number v-model:value="form.per_device_train_batch_size" :min="1" :max="128" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item label="per_device_eval_batch_size">
+                <a-input-number v-model:value="form.per_device_eval_batch_size" :min="1" :max="128" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    gradient_accumulation_steps
+                    <a-tooltip title="梯度累积，模拟更大 batch。常用 4～8。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="梯度累积说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input-number v-model:value="form.gradient_accumulation_steps" :min="1" :max="128" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    learning_rate
+                    <a-tooltip title="LoRA 常用 1e-4；全参可更小如 1e-5。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="learning_rate 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input-number v-model:value="form.learning_rate" :min="1e-6" :max="1e-2" :step="0.00001" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item label="lr_scheduler_type">
+                <a-select v-model:value="form.lr_scheduler_type" :options="lrSchedulerOptions" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    warmup_ratio
+                    <a-tooltip title="预热占总步数比例，如 0.1 表示约 10%。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="warmup_ratio 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input-number v-model:value="form.warmup_ratio" :min="0" :max="1" :step="0.01" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item label="logging_steps">
+                <a-input-number v-model:value="form.logging_steps" :min="1" :max="10000000" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item label="eval_steps">
+                <a-input-number v-model:value="form.eval_steps" :min="10" :max="10000000" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item label="save_steps">
+                <a-input-number v-model:value="form.save_steps" :min="10" :max="10000000" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    save_total_limit
+                    <a-tooltip title="最多保留 checkpoint 数量。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="save_total_limit 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input-number v-model:value="form.save_total_limit" :min="1" :max="20" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+          </a-row>
+        </a-collapse-panel>
+
+        <a-collapse-panel key="qlora" header="QLoRA（量化 LoRA）">
+          <a-typography-text type="secondary" style="display: block; margin-bottom: 12px">
+            对应 ms-swift 的 <code>quant_method</code> / <code>quant_bits</code>（常见文档里的 4bit QLoRA）。不设位数则关闭量化加载。
+          </a-typography-text>
+          <a-row :gutter="16" class="training-form-grid-row training-form-grid-row--qlora">
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    quant_bits
+                    <a-tooltip title="如 4 表示 4bit QLoRA；留空表示不量化加载。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="quant_bits 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input-number v-model:value="form.quant_bits" :min="0" :max="8" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    quant_method
+                    <a-tooltip title="QLoRA 常用 bnb；留空则在启用 quant_bits 时默认 bnb。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="quant_method 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input v-model:value="form.quant_method" placeholder="bnb" allow-clear />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item label="bnb_4bit_compute_dtype">
+                <a-select v-model:value="form.bnb_4bit_compute_dtype" :options="bnbComputeDtypeOptions" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item label="bnb_4bit_quant_type">
+                <a-select v-model:value="form.bnb_4bit_quant_type" :options="bnbQuantTypeOptions" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item label="bnb_4bit_use_double_quant">
+                <a-switch v-model:checked="form.bnb_4bit_use_double_quant" />
+              </a-form-item>
+            </a-col>
+          </a-row>
+        </a-collapse-panel>
+
+        <a-collapse-panel key="advanced_more" header="进阶与其他">
+          <a-row :gutter="16" class="training-form-grid-row">
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item label="dataloader_num_workers">
+                <a-input-number v-model:value="form.dataloader_num_workers" :min="0" :max="128" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item label="train_type">
+                <a-select v-model:value="form.train_type" :options="trainTypeOptions" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item label="tuner_backend">
+                <a-select v-model:value="form.tuner_backend" :options="tunerBackendOptions" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item label="use_dora">
+                <a-switch v-model:checked="form.use_dora" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    lorap_lr_ratio
+                    <a-tooltip title="LoRA+：B 矩阵学习率倍率，常用约 10～16。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="lorap_lr_ratio 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input-number v-model:value="form.lorap_lr_ratio" :min="0" :step="1" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item label="gradient_checkpointing">
+                <a-switch v-model:checked="form.gradient_checkpointing" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    deepspeed
+                    <a-tooltip title="如 zero2、zero3 或自定义 json 路径。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="deepspeed 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input v-model:value="form.deepspeed" placeholder="zero2 / 配置文件路径…" allow-clear />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    merge_lora
+                    <a-tooltip title="多用于 swift export；训练任务通常保持关闭。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="merge_lora 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-switch v-model:checked="form.merge_lora" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item label="freeze_vit">
+                <a-switch v-model:checked="form.freeze_vit" />
+              </a-form-item>
+            </a-col>
+
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    packing
+                    <a-tooltip title="序列打包；需 flash_attn 等，CPU/eager 下请关闭。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="packing 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-switch v-model:checked="form.packing" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    image_max_token_num
+                    <a-tooltip title="视觉 token 上限（多模态）。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="image_max_token_num 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input-number v-model:value="form.image_max_token_num" :min="64" :max="2048" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="6">
+              <a-form-item label="video_max_token_num">
+                <a-input-number v-model:value="form.video_max_token_num" :min="16" :max="512" style="width: 100%" />
+              </a-form-item>
+            </a-col>
+            <a-col :xs="24" :sm="12" :md="18">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    adapters
+                    <a-tooltip title="逗号分隔的 adapter 路径；仅加载权重时常用，与 resume_from_checkpoint 不同。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="adapters 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input v-model:value="form.adapters" placeholder="path1,path2" allow-clear />
+              </a-form-item>
+            </a-col>
+            <a-col :span="18">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    resume_from_checkpoint
+                    <a-tooltip title="断点目录（工作区相对路径）。「继续训练」会自动填入最新 checkpoint。">
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="resume 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input v-model:value="form.resume_from_checkpoint" placeholder="可选" allow-clear />
+              </a-form-item>
+            </a-col>
+          </a-row>
+        </a-collapse-panel>
+      </a-collapse>
+    </a-form>
+    <a-modal
+      v-model:open="datasetPathModalOpen"
+      :title="datasetPathModalTitle"
+      width="min(896px, 90vw)"
+      :footer="null"
+      destroy-on-close
+    >
+      <a-spin :spinning="datasetPathModalLoading">
+        <a-alert
+          v-if="datasetPathModalError && !datasetPathModalLoading"
+          type="error"
+          :message="datasetPathModalError"
+          show-icon
+          style="margin-bottom: 0"
+        />
+        <pre
+          v-else-if="!datasetPathModalLoading"
+          style="
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 60vh;
+            overflow: auto;
+            font-size: 13px;
+            line-height: 1.5;
+            font-family: ui-monospace, monospace;
+          "
+          >{{ datasetPathModalText || "（无内容）" }}</pre
+        >
+      </a-spin>
+    </a-modal>
+    <a-divider />
+    <a-row :gutter="16">
+      <a-col :span="24">
+        <a-typography-paragraph>
+          <span><b>进度</b>：</span>
+          <a-tag
+            v-if="currentJobId && overallJobStatusLabel"
+            :color="overallJobStatusTagColor"
+            style="margin: 0; line-height: 1.5"
+            >
+            <span>整体：{{ overallJobStatusLabel }}</span>
+          </a-tag>
+          <span style="margin-right: 10px;">
+            <b>任务名称：</b>
+            <template v-if="currentJobNameDisplay">{{ currentJobNameDisplay }}</template>
+          </span>
+          <span><b>任务ID</b>：{{ currentJobId || "—" }}</span>
+        </a-typography-paragraph>
+        <div v-if="currentJobId" style="margin-bottom: 10px">
+          <div v-for="s in progressStages" :key="s.id" style="margin-bottom: 12px">
+            <div style="font-size: 12px; color: rgba(0, 0, 0, 0.65); margin-bottom: 4px">{{ s.name }}</div>
+            <a-progress
+              :percent="s.percent == null ? 0 : s.percent"
+              :status="stageRowStatus(s.percent)"
+              :show-info="s.percent != null"
+            />
+            <div style="font-size: 12px; color: #666; margin-top: 2px">{{ s.label || "—" }}</div>
+          </div>
+          <template v-if="!progressStages.length">
+            <a-progress
+              :percent="progressPercent === null ? 0 : progressPercent"
+              :status="progressStatus"
+              :show-info="progressPercent !== null"
+            />
+            <div style="font-size: 12px; color: #666; margin-top: 4px">{{ progressLabel || "—" }}</div>
+          </template>
+          <a-typography-text
+            v-if="jobError && (jobStatus === 'failed' || jobStatus === 'cancelled')"
+            type="danger"
+            style="display: block; margin-top: 8px; font-size: 12px"
+            >原因（任务）: {{ jobError }}</a-typography-text
+          >
+        </div>
+        <a-typography-title :level="5">日志</a-typography-title>
+        <a-button v-if="!stick" type="dashed" size="small" style="margin-bottom: 8px" @click="scrollToBottom"
+          >跟随最新 / 回到底部</a-button
+        >
+        <pre
+          ref="logPre"
+          style="
+            font-family: ui-monospace, monospace;
+            font-size: 12px;
+            height: 200px;
+            overflow: auto;
+            background: #0d1117;
+            color: #e6edf3;
+            padding: 8px;
+            border-radius: 4px;
+            margin-top: 0;
+            white-space: pre-wrap;
+          "
+          @scroll="onLogScroll"
+          >{{ logText }}</pre
+        >
+        <a-typography-title :level="5" style="margin-top: 12px">曲线</a-typography-title>
+        <div ref="chartRef" style="height: 280px" />
+      </a-col>
+    </a-row>
+    </div>
+  </a-modal>
 
 </template>
 
@@ -1811,5 +1869,30 @@ watch(
 .training-form-grid-row.training-form-grid-row--qlora :deep(.ant-form-item-label) {
   flex: 0 0 260px;
   max-width: 55%;
+}
+</style>
+<style>
+/* 与 Training.vue 中全屏 Modal 全局样式配套；标题栏放操作按钮 */
+.training-fullscreen-modal-wrap .training-modal-title-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  width: 100%;
+  padding-right: 36px;
+}
+.training-fullscreen-modal-wrap .training-modal-title-text {
+  font-size: 16px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.training-fullscreen-modal-wrap .training-modal-title-actions {
+  flex: 1;
+  min-width: 0;
+  justify-content: flex-end;
+}
+.training-fullscreen-modal-wrap .ant-modal-title {
+  width: 100%;
 }
 </style>

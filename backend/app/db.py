@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from pathlib import Path
 from typing import Any
 
+from backend.app.config import get_settings
+
 _lock = threading.Lock()
+_log = logging.getLogger("workshop.db")
 
 
 def get_db_path(workspace: Path) -> Path:
+    s = get_settings()
+    if s.db_path is not None:
+        p = s.db_path.expanduser().resolve()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
     state = workspace / "state"
     state.mkdir(parents=True, exist_ok=True)
     return state / "workshop.db"
@@ -17,9 +26,30 @@ def get_db_path(workspace: Path) -> Path:
 
 def connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=30.0)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
+    # 禁止内存映射；NFS/部分 Docker 卷上映射数据库文件会触发 disk I/O error
+    try:
+        conn.execute("PRAGMA mmap_size=0;")
+    except sqlite3.OperationalError:
+        pass
+    # WAL 在部分卷上不可用，回退为 DELETE
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+    except sqlite3.OperationalError as e:
+        _log.warning(
+            "SQLite 无法启用 WAL（%s），已改用 DELETE 日志；可设置 WORKSHOP_DB_PATH 指向容器本地盘。: %s",
+            db_path,
+            e,
+        )
+        try:
+            conn.execute("PRAGMA journal_mode=DELETE;")
+        except sqlite3.OperationalError:
+            pass
+    try:
+        conn.execute("PRAGMA synchronous=NORMAL;")
+    except sqlite3.OperationalError:
+        pass
     conn.execute("PRAGMA foreign_keys=ON;")
     return conn
 

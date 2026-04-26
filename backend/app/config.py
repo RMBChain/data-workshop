@@ -14,6 +14,8 @@ class Settings(BaseSettings):
 
     # 默认本机为仓库根；Docker Compose 中通过 WORKSHOP_WORKSPACE_ROOT=/workspace/project 覆盖
     workspace_root: Path = _DEFAULT_WORKSPACE
+    # 覆盖 <workspace>/state/workshop.db；工作区在 NFS/不兼容卷且 SQLite 报 I/O 时，设为容器内本地路径如 /var/lib/workshop/workshop.db
+    db_path: Path | None = None
     # 单独部署的 Label Studio；Docker 中 API 通过 host.docker.internal 访问宿主机端口（见 README）
     label_studio_url: str = "http://host.docker.internal:8080"
     # 本地开发前端（Vite 等）

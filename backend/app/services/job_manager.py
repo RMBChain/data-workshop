@@ -18,9 +18,7 @@ from pydantic import BaseModel, Field
 
 from backend.app.db import get_connection, json_dumps
 from backend.app.services import modelscope_manager as mscm
-
-# 「仅保存参数」专用：单条 training_jobs 记录，与真实任务相同 request_json 字段，不出现在任务列表
-WORKSHOP_SAVED_FORM_JOB_ID = "00000000-0000-4000-8000-00000000feed"
+from backend.app.services.paths import resolve_under_workspace
 
 
 class TrainJobCreate(BaseModel):
@@ -195,6 +193,28 @@ def _output_path_as_workspace_rel(workspace: Path, p: str) -> str:
         return p.replace("\\", "/")
 
 
+def _require_nonempty_train_jsonl(workspace: Path, train_relpath: str) -> None:
+    """避免 train.jsonl 为空时 ms-swift 在「Generating train split: 0 examples」处失败。"""
+    rel = (train_relpath or "").strip().replace("\\", "/")
+    if not rel:
+        raise ValueError("未指定训练集路径 train_dataset")
+    try:
+        p = resolve_under_workspace(workspace, rel)
+    except ValueError as e:
+        raise ValueError(f"训练集路径无效: {e}") from e
+    if not p.is_file():
+        raise ValueError(f"训练集文件不存在: {rel}")
+    n = 0
+    with p.open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if line.strip():
+                n += 1
+    if n == 0:
+        raise ValueError(
+            "训练集 JSONL 无有效样本（至少 1 条）。若曾用 0% 训练比例生成版本，请重新划分数据集或新建版本。"
+        )
+
+
 def _format_train_exit_message(code: int) -> str:
     """子进程非 0 退出时的人类可读说明（Unix 下负数多为 -signal）。"""
     if code == -9 or code == 137:
@@ -207,7 +227,7 @@ def _format_train_exit_message(code: int) -> str:
 @dataclass
 class TrainJob:
     id: str
-    status: str  # pending | running | succeeded | failed | cancelled
+    status: str  # parameters_saved | pending | running | succeeded | failed | cancelled
     created_at: float
     finished_at: float | None = None
     log_path: Path | None = None
@@ -363,11 +383,7 @@ class TrainingJobManager:
 
     def list_jobs(self) -> list[TrainJob]:
         with self._lock:
-            jobs = sorted(
-                (j for j in self._jobs.values() if j.id != WORKSHOP_SAVED_FORM_JOB_ID),
-                key=lambda j: j.created_at,
-                reverse=True,
-            )
+            jobs = sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
         for j in jobs:
             self._hydrate_swift_run_relpath_from_log(j)
         return jobs
@@ -379,36 +395,30 @@ class TrainingJobManager:
             self._hydrate_swift_run_relpath_from_log(j)
         return j
 
-    def get_saved_form_params(self) -> dict[str, Any] | None:
-        with self._lock:
-            j = self._jobs.get(WORKSHOP_SAVED_FORM_JOB_ID)
-        if not j or not isinstance(j.request, dict) or not j.request:
-            return None
-        return dict(j.request)
-
-    def upsert_saved_form_params(self, data: dict[str, Any]) -> dict[str, Any]:
-        """与 create_job 相同 request_json 存库逻辑，不启动训练；status=parameters_saved。"""
+    def update_job_request_params(self, job_id: str, data: dict[str, Any]) -> TrainJob | None:
+        """更新已有任务在库中的 request_json，经 TrainJobCreate 校验与 output_dir 展开，不启训练。"""
         body = TrainJobCreate.model_validate(data)
         rfc = body.resume_from_checkpoint
         if not (isinstance(rfc, str) and rfc.strip()):
             body = body.model_copy(update={"output_dir": "output/"})
-        body = _resolve_output_dir_for_new_job(body, WORKSHOP_SAVED_FORM_JOB_ID)
+        body = _resolve_output_dir_for_new_job(body, job_id)
+        to_save: TrainJob | None = None
         with self._lock:
-            existing = self._jobs.get(WORKSHOP_SAVED_FORM_JOB_ID)
-            created = existing.created_at if existing else time.time()
-            job = TrainJob(
-                id=WORKSHOP_SAVED_FORM_JOB_ID,
-                status="parameters_saved",
-                created_at=created,
-                finished_at=None,
-                log_path=None,
-                return_code=None,
-                error_message=None,
-                request=body.model_dump(),
-            )
-            self._jobs[WORKSHOP_SAVED_FORM_JOB_ID] = job
-        self._save_job_to_db(job)
-        return job.request or {}
+            j = self._jobs.get(job_id)
+            if not j:
+                return None
+            new_req = body.model_dump()
+            old = j.request
+            if isinstance(old, dict):
+                known = set(TrainJobCreate.model_fields.keys())
+                for k, v in old.items():
+                    if k not in known:
+                        new_req[k] = v
+            j.request = new_req
+            to_save = j
+        if to_save:
+            self._save_job_to_db(to_save)
+        return to_save
 
     def _hydrate_swift_run_relpath_from_log(self, job: TrainJob) -> None:
         """训练开始后日志会出现 on_train_begin 的实际 output_dir；解析后写入 request 并持久化。"""
@@ -430,6 +440,159 @@ class TrainingJobManager:
             to_save = j
         if to_save:
             self._save_job_to_db(to_save)
+
+    def _prepare_body_for_persisted_job(self, data: dict[str, Any], job_id: str) -> TrainJobCreate:
+        body = TrainJobCreate.model_validate(data)
+        rfc = body.resume_from_checkpoint
+        if not (isinstance(rfc, str) and rfc.strip()):
+            body = body.model_copy(update={"output_dir": "output/"})
+        return _resolve_output_dir_for_new_job(body, job_id)
+
+    def create_params_only_job(self, data: dict[str, Any]) -> TrainJob:
+        """仅写入 request_json（状态 parameters_saved），不启训练子进程。用于「仅保存参数」新建。"""
+        job_id = str(uuid.uuid4())
+        body = self._prepare_body_for_persisted_job(data, job_id)
+        job = TrainJob(
+            id=job_id,
+            status="parameters_saved",
+            created_at=time.time(),
+            log_path=None,
+            request=body.model_dump(),
+        )
+        with self._lock:
+            self._jobs[job_id] = job
+        self._save_job_to_db(job)
+        return job
+
+    def _spawn_train_worker(self, job_id: str, body: TrainJobCreate) -> TrainJob:
+        """任务已在 _jobs 中且已设 log_path、request。启动子进程并注册收尾线程。"""
+        job = self._jobs.get(job_id)
+        if not job or not job.log_path:
+            raise RuntimeError("internal: job missing for spawn")
+
+        try:
+            _require_nonempty_train_jsonl(self._workspace, body.train_dataset)
+        except ValueError as e:
+            with self._lock:
+                j = self._jobs.get(job_id)
+                if j:
+                    j.status = "failed"
+                    j.error_message = str(e)
+                    j.finished_at = time.time()
+            self._save_job_to_db(self._jobs[job_id])
+            return self._jobs[job_id]
+
+        train_py = self._workspace / "backend" / "scripts" / "train.py"
+        if not train_py.is_file():
+            with self._lock:
+                j = self._jobs.get(job_id)
+                if j:
+                    j.status = "failed"
+                    j.error_message = f"未找到训练脚本: {train_py}"
+                    j.finished_at = time.time()
+            self._save_job_to_db(self._jobs[job_id])
+            return self._jobs[job_id]
+
+        cmd = self._build_command(body)
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = ""
+        env.setdefault("PYTHONUNBUFFERED", "1")
+        # 降低多线程与 glibc arena 的内存尖峰，利于小内存 / 容器内训练
+        env.setdefault("MALLOC_ARENA_MAX", "2")
+        env.setdefault("OMP_NUM_THREADS", "1")
+        env.setdefault("MKL_NUM_THREADS", "1")
+
+        log_path = job.log_path
+        log_f = open(log_path, "w", encoding="utf-8")
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(self._workspace),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=env,
+            )
+        except OSError as e:
+            log_f.close()
+            with self._lock:
+                j = self._jobs.get(job_id)
+                if j:
+                    j.status = "failed"
+                    j.error_message = str(e)
+                    j.finished_at = time.time()
+            self._save_job_to_db(self._jobs[job_id])
+            return self._jobs[job_id]
+
+        with self._lock:
+            j = self._jobs.get(job_id)
+            if j:
+                j.process = proc
+                j.status = "running"
+        self._save_job_to_db(self._jobs[job_id])
+
+        def _pump() -> None:
+            assert proc.stdout is not None
+            try:
+                for raw in iter(proc.stdout.readline, b""):
+                    if not raw:
+                        break
+                    log_f.write(raw.decode("utf-8", errors="replace"))
+                    log_f.flush()
+            finally:
+                log_f.close()
+
+        def _wait() -> None:
+            threading.Thread(target=_pump, daemon=True).start()
+            code = proc.wait()
+            with self._lock:
+                j2 = self._jobs.get(job_id)
+                if not j2:
+                    return
+                j2.return_code = code
+                j2.finished_at = time.time()
+                if j2.status == "cancelled":
+                    self._save_job_to_db(j2)
+                    return
+                if code == 0:
+                    j2.status = "succeeded"
+                else:
+                    j2.status = "failed"
+                    j2.error_message = _format_train_exit_message(code)
+            j3 = self._jobs.get(job_id)
+            if j3:
+                _attach_swift_run_relpath(self._workspace, j3)
+                with self._lock:
+                    self._save_job_to_db(j3)
+
+        threading.Thread(target=_wait, daemon=True).start()
+        return self._jobs[job_id]
+
+    def start_params_saved_job(self, job_id: str) -> TrainJob | None:
+        """将 parameters_saved 任务启动为真实训练（同 create_job 子进程）。"""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job.status != "parameters_saved" or not isinstance(job.request, dict):
+                return None
+        try:
+            body = TrainJobCreate.model_validate(job.request)
+        except Exception:
+            return None
+        rfc = body.resume_from_checkpoint
+        if not (isinstance(rfc, str) and rfc.strip()):
+            body = body.model_copy(update={"output_dir": "output/"})
+        body = _resolve_output_dir_for_new_job(body, job_id)
+        jobs_dir = self._workspace / "output" / "workshop-jobs"
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        log_path = jobs_dir / f"{job_id}.log"
+        with self._lock:
+            j = self._jobs.get(job_id)
+            if not j or j.status != "parameters_saved":
+                return None
+            j.log_path = log_path
+            j.status = "pending"
+            j.request = body.model_dump()
+        self._save_job_to_db(self._jobs[job_id])
+        return self._spawn_train_worker(job_id, body)
 
     def create_job(self, body: TrainJobCreate) -> TrainJob:
         job_id = str(uuid.uuid4())
@@ -459,76 +622,10 @@ class TrainingJobManager:
             self._save_job_to_db(job)
             return job
 
-        cmd = self._build_command(body)
-        env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = ""
-        env.setdefault("PYTHONUNBUFFERED", "1")
-        # 降低多线程与 glibc arena 的内存尖峰，利于小内存 / 容器内训练
-        env.setdefault("MALLOC_ARENA_MAX", "2")
-        env.setdefault("OMP_NUM_THREADS", "1")
-        env.setdefault("MKL_NUM_THREADS", "1")
-
         with self._lock:
             self._jobs[job_id] = job
         self._save_job_to_db(job)
-
-        log_f = open(log_path, "w", encoding="utf-8")
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                cwd=str(self._workspace),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                env=env,
-            )
-        except OSError as e:
-            log_f.close()
-            job.status = "failed"
-            job.error_message = str(e)
-            job.finished_at = time.time()
-            self._save_job_to_db(job)
-            return job
-
-        job.process = proc
-        job.status = "running"
-        self._save_job_to_db(job)
-
-        def _pump() -> None:
-            assert proc.stdout is not None
-            try:
-                for raw in iter(proc.stdout.readline, b""):
-                    if not raw:
-                        break
-                    log_f.write(raw.decode("utf-8", errors="replace"))
-                    log_f.flush()
-            finally:
-                log_f.close()
-
-        def _wait() -> None:
-            threading.Thread(target=_pump, daemon=True).start()
-            code = proc.wait()
-            with self._lock:
-                j = self._jobs.get(job_id)
-                if not j:
-                    return
-                j.return_code = code
-                j.finished_at = time.time()
-                if j.status == "cancelled":
-                    self._save_job_to_db(j)
-                    return
-                if code == 0:
-                    j.status = "succeeded"
-                else:
-                    j.status = "failed"
-                    j.error_message = _format_train_exit_message(code)
-            j2 = self._jobs.get(job_id)
-            if j2:
-                _attach_swift_run_relpath(self._workspace, j2)
-                with self._lock:
-                    self._save_job_to_db(j2)
-
-        threading.Thread(target=_wait, daemon=True).start()
-        return job
+        return self._spawn_train_worker(job_id, body)
 
     def cancel_job(self, job_id: str) -> bool:
         with self._lock:
@@ -554,8 +651,6 @@ class TrainingJobManager:
         return text, truncated
 
     def delete_job(self, job_id: str) -> bool:
-        if job_id == WORKSHOP_SAVED_FORM_JOB_ID:
-            return False
         with self._lock:
             j = self._jobs.get(job_id)
             if not j:
@@ -588,8 +683,6 @@ class TrainingJobManager:
             return True
 
     def update_job_name(self, job_id: str, job_name: str) -> TrainJob | None:
-        if job_id == WORKSHOP_SAVED_FORM_JOB_ID:
-            return None
         name = (job_name or "").strip()
         if not name:
             return None

@@ -55,6 +55,13 @@ function formatJobEnd(finished: unknown, status: string | undefined): string {
   return "—";
 }
 
+/** 与后端 `TrainJob.status` 对齐，表格展示用中文 */
+function formatJobStatus(status: unknown): string {
+  const s = typeof status === "string" ? status.trim() : String(status ?? "").trim();
+  if (s === "parameters_saved") return "未训练";
+  return s || "—";
+}
+
 async function refreshJobs() {
   const r = await http.get("/api/training/jobs");
   jobs.value = r.data.items;
@@ -209,59 +216,62 @@ onMounted(() => {
       </div>
     </div>
 
-        <a-table
-          :columns="jobColumns"
-          :data-source="(jobs as Record<string, unknown>[]) as any"
-          :pagination="false"
-          size="small"
-          row-key="id"
-        >
-          <template #bodyCell="{ column, text, record }">
-            <template v-if="column.key === 'act' && record && typeof record === 'object' && 'id' in record">
-              <a-space :size="8" align="center">
-                <a @click="selectJob(String((record as { id: string }).id))">训练</a>
-                <a-popconfirm
-                  title="确定删除？将移除任务记录与日志；仅当无其它任务共用同一 output 目录时，才删除该目录下文件（如 checkpoint/LoRA）。"
-                  ok-text="确定"
-                  cancel-text="取消"
-                  @confirm="deleteJobById(String((record as { id: string }).id))"
-                >
-                  <a-button type="link" danger size="small" style="padding: 0; height: auto">删除</a-button>
-                </a-popconfirm>
-              </a-space>
-            </template>
-            <span v-else-if="column.key === 'created_at' && record && typeof record === 'object'">{{
-              formatJobTime((record as Record<string, unknown>).created_at)
-            }}</span>
-            <span v-else-if="column.key === 'finished_at' && record && typeof record === 'object'">{{
-              formatJobEnd((record as Record<string, unknown>).finished_at, (record as { status?: string }).status)
-            }}</span>
-            <span v-else-if="column.key === 'job_name' && record && typeof record === 'object'" class="training-job-name-cell" @click.stop>
-              <span class="training-job-name-text" :title="trainingJobNameTitle(record as { job_name?: string | null })">
-                {{ trainingJobNameText(record as { job_name?: string | null }) }}
-              </span>
-              <EditOutlined class="training-job-name-edit" @click="openTrainingJobNameEditor(record as { id?: string; job_name?: string | null })" />
-            </span>
-            <span
-              v-else-if="column.key === 'output_dir' && record && typeof record === 'object'"
-              :title="
-                trainingOutputDirRunTitle(
-                  record as { output_dir?: string | null; request?: { output_dir?: unknown; swift_run_relpath?: unknown } },
-                )
-              "
+    <a-table
+      :columns="jobColumns"
+      :data-source="(jobs as Record<string, unknown>[]) as any"
+      :pagination="false"
+      size="small"
+      row-key="id"
+    >
+      <template #bodyCell="{ column, text, record }">
+        <template v-if="column.key === 'act' && record && typeof record === 'object' && 'id' in record">
+          <a-space :size="8" align="center">
+            <a @click="selectJob(String((record as { id: string }).id))">训练</a>
+            <a-popconfirm
+              title="确定删除？将移除任务记录与日志；仅当无其它任务共用同一 output 目录时，才删除该目录下文件（如 checkpoint/LoRA）。"
+              ok-text="确定"
+              cancel-text="取消"
+              @confirm="deleteJobById(String((record as { id: string }).id))"
             >
-              {{
-                trainingOutputDirRunText(
-                  record as {
-                    output_dir?: string | null;
-                    request?: { output_dir?: unknown; swift_run_relpath?: unknown; dataset_version_id?: unknown };
-                  },
-                )
-              }}
-            </span>
-            <span v-else>{{ text }}</span>
-          </template>
-        </a-table>
+              <a-button type="link" danger size="small" style="padding: 0; height: auto">删除</a-button>
+            </a-popconfirm>
+          </a-space>
+        </template>
+        <span v-else-if="column.key === 'created_at' && record && typeof record === 'object'">{{
+          formatJobTime((record as Record<string, unknown>).created_at)
+        }}</span>
+        <span v-else-if="column.key === 'finished_at' && record && typeof record === 'object'">{{
+          formatJobEnd((record as Record<string, unknown>).finished_at, (record as { status?: string }).status)
+        }}</span>
+        <span v-else-if="column.key === 'status' && record && typeof record === 'object'">{{
+          formatJobStatus((record as Record<string, unknown>).status)
+        }}</span>
+        <span v-else-if="column.key === 'job_name' && record && typeof record === 'object'" class="training-job-name-cell" @click.stop>
+          <span class="training-job-name-text" :title="trainingJobNameTitle(record as { job_name?: string | null })">
+            {{ trainingJobNameText(record as { job_name?: string | null }) }}
+          </span>
+          <EditOutlined class="training-job-name-edit" @click="openTrainingJobNameEditor(record as { id?: string; job_name?: string | null })" />
+        </span>
+        <span
+          v-else-if="column.key === 'output_dir' && record && typeof record === 'object'"
+          :title="
+            trainingOutputDirRunTitle(
+              record as { output_dir?: string | null; request?: { output_dir?: unknown; swift_run_relpath?: unknown } },
+            )
+          "
+        >
+          {{
+            trainingOutputDirRunText(
+              record as {
+                output_dir?: string | null;
+                request?: { output_dir?: unknown; swift_run_relpath?: unknown; dataset_version_id?: unknown };
+              },
+            )
+          }}
+        </span>
+        <span v-else>{{ text }}</span>
+      </template>
+    </a-table>
 
     <a-modal
       v-model:open="jobNameEditOpen"
@@ -280,26 +290,14 @@ onMounted(() => {
       />
     </a-modal>
 
-    <a-modal
+    <TrainingFormPanel
       v-model:open="trainParamsModalOpen"
-      title="训练参数"
-      :footer="null"
-      width="100%"
-      :centered="false"
-      :destroy-on-close="false"
-      :mask-closable="true"
-      wrap-class-name="training-fullscreen-modal-wrap"
-      :style="{ top: 0, paddingBottom: 0, maxWidth: '100vw' }"
-    >
-      <TrainingFormPanel
-        v-model:current-job-id="currentJobId"
-        :jobs="(jobs as Record<string, unknown>[])"
-        :job-name-prefill="jobNamePrefillForForm"
-        :new-train-open-seq="newTrainOpenSeq"
-        :panel-visible="trainParamsModalOpen"
-        @refresh-jobs="refreshJobs"
-      />
-    </a-modal>
+      v-model:current-job-id="currentJobId"
+      :jobs="(jobs as Record<string, unknown>[])"
+      :job-name-prefill="jobNamePrefillForForm"
+      :new-train-open-seq="newTrainOpenSeq"
+      @refresh-jobs="refreshJobs"
+    />
   </div>
 </template>
 

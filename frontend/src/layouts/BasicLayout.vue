@@ -14,7 +14,7 @@ import {
   RocketOutlined,
   SettingOutlined,
 } from "@ant-design/icons-vue";
-import { computed, ref } from "vue";
+import { computed, provide, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import ResourceInfoFloating from "../components/ResourceInfoFloating.vue";
 
@@ -23,6 +23,8 @@ const route = useRoute();
 const router = useRouter();
 const menuCollapsed = ref(false);
 const resourceInfoOpen = ref(false);
+
+provide("workshop:resourceInfoFloatingOpen", resourceInfoOpen);
 
 function onMenuClick(info: { key: string | number }) {
   router.push(String(info.key));
