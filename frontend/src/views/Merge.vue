@@ -56,6 +56,23 @@ function tableCellText(record: SuccessTableRow, dataIndex: string | undefined | 
   return s || "—";
 }
 
+/** 工作区相对路径 → 后端工作区根下的绝对路径（用于 Tooltip）；无根信息时退回相对路径 */
+const workspaceRootAbs = ref<string | null>(null);
+
+function workspaceAbsoluteDisplayPath(relOrDash: string): string {
+  const raw = (relOrDash ?? "").trim();
+  if (!raw || raw === "—") return raw || "—";
+  const norm = raw.replace(/\\/g, "/");
+  if (norm.startsWith("/") || /^[A-Za-z]:\//.test(norm)) {
+    return norm;
+  }
+  const root = (workspaceRootAbs.value ?? "").trim();
+  if (!root) return norm;
+  const rn = root.replace(/\\/g, "/").replace(/\/+$/, "");
+  const pn = norm.replace(/^\/+/, "");
+  return `${rn}/${pn}`;
+}
+
 const router = useRouter();
 const base = ref("Qwen/Qwen3-VL-2B-Instruct");
 const output = ref("output/merged-workshop");
@@ -134,14 +151,21 @@ const selectedRow = computed((): SuccessTrainingRow | null => {
   return successRows.value.find((r) => r.job_id === id) ?? null;
 });
 
+type MergeCardMetaItem = {
+  title: string;
+  dataIndex: keyof SuccessTableRow | string;
+  /** 悬停时用 Tooltip 展示完整路径 */
+  fullPathTooltip?: boolean;
+};
+
 /** 卡片正文展示的字段（训练名称在卡片标题，合并状态在 extra 标签） */
-const mergeCardMetaItems: { title: string; dataIndex: keyof SuccessTableRow | string }[] = [
+const mergeCardMetaItems: MergeCardMetaItem[] = [
   { title: "项目名称", dataIndex: "project_title" },
   { title: "批次名称", dataIndex: "batch_name" },
   { title: "数据集名称", dataIndex: "dataset_name" },
   { title: "基座", dataIndex: "train_base_model" },
-  { title: "LoRA 路径", dataIndex: "path" },
-  { title: "合并后模型路径", dataIndex: "merge_output_path" },
+  { title: "LoRA 路径", dataIndex: "path", fullPathTooltip: true },
+  { title: "合并后模型路径", dataIndex: "merge_output_path", fullPathTooltip: true },
 ];
 
 function selectSuccessRow(jobId: string) {
@@ -170,7 +194,15 @@ async function loadMergeStatus() {
 async function loadSuccessList() {
   successLoading.value = true;
   try {
-    const [r] = await Promise.all([http.get("/api/inference/models"), loadMergeStatus()]);
+    const [r, , pathsR] = await Promise.all([
+      http.get("/api/inference/models"),
+      loadMergeStatus(),
+      http.get("/api/system/paths").catch(() => ({ data: {} })),
+    ]);
+    const wr = (pathsR as { data?: { workspace_root?: unknown } }).data?.workspace_root;
+    if (typeof wr === "string" && wr.trim()) {
+      workspaceRootAbs.value = wr.trim();
+    }
     const items = (r.data?.items ?? []) as SuccessTrainingRow[];
     successRows.value = items;
     const cur = selectedJobIds.value[0];
@@ -340,7 +372,22 @@ onUnmounted(() => {
               class="merge-success-card-meta-row"
             >
               <span class="merge-success-card-meta-label">{{ item.title }}</span>
+              <div
+                v-if="item.fullPathTooltip && tableCellText(record, item.dataIndex) !== '—'"
+                class="merge-success-card-meta-value-wrap"
+              >
+                <a-tooltip
+                  :title="workspaceAbsoluteDisplayPath(tableCellText(record, item.dataIndex))"
+                  placement="topLeft"
+                  :overlay-style="{ maxWidth: 'min(90vw, 560px)' }"
+                >
+                  <span class="merge-success-card-meta-value merge-success-card-meta-value--ellipsis">
+                    {{ tableCellText(record, item.dataIndex) }}
+                  </span>
+                </a-tooltip>
+              </div>
               <span
+                v-else
                 class="merge-success-card-meta-value"
                 :title="tableCellText(record, item.dataIndex)"
               >
@@ -554,5 +601,20 @@ onUnmounted(() => {
   line-height: 1.5;
   word-break: break-all;
   color: rgba(0, 0, 0, 0.85);
+}
+.merge-success-card-meta-value-wrap {
+  flex: 1;
+  min-width: 0;
+}
+.merge-success-card-meta-value-wrap :deep(.ant-tooltip-disabled-compatible-wrapper) {
+  display: block;
+  max-width: 100%;
+}
+.merge-success-card-meta-value--ellipsis {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: normal;
 }
 </style>
