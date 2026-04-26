@@ -33,6 +33,21 @@ def _default_question() -> str:
     return "请描述图片中的内容。"
 
 
+DEFAULT_SFT_SYSTEM = "You are a helpful assistant."
+
+
+def _user_text_with_image_token(user_text: str, add_image_token: bool) -> str:
+    """在 user 的纯文本中前置 ``<image>``，与 qwen-vl 等模板的图像占位指代一致；已含则不再重复添加。"""
+    t = (user_text or "").strip()
+    if not add_image_token:
+        return user_text
+    if "<image>" in t:
+        return user_text
+    if not t:
+        return "<image>"
+    return f"<image>{t}"
+
+
 def _default_dataset_version_name(project_title: str | None, batch_name: str | None) -> str:
     """新建数据集版本时的展示名：项目名 + 批次名 + 本地时间戳 YYYYMMdd-HHmmss。"""
     pt = (project_title or "").strip() or "未命名项目"
@@ -61,7 +76,7 @@ def _extract_answer_from_ls_task(task_row_json: str | None) -> str:
     return "（暂无标注，占位回答）"
 
 
-def _build_line_messages(
+def _build_dataset_line(
     workspace: Path,
     image_rel: str,
     user_text: str,
@@ -69,28 +84,15 @@ def _build_line_messages(
     *,
     prepend_image_token: bool = True,
 ) -> dict[str, Any] | None:
-    """单图 VLM 样本。user 的 content 已含 {type:image} 时，ms-swift / Qwen-VL
-    的模板会为图像插入占位，勿在 text 里再手动加 ``<image>``，否则会出现
-    num_media=1 而 num_media_tags=2 的告警并影响训练。prepend_image_token 保留入参以兼容旧 API，现不再使用。"""
-
-    _ = prepend_image_token  # 保持请求体字段兼容，逻辑见上文
+    """单图 VLM 行：ms-swift 等可用的 ``system`` / ``query`` / ``response`` / ``images`` 结构。"""
     u = (image_rel or "").strip()
+    query = _user_text_with_image_token(user_text, prepend_image_token)
     if u.startswith("http://") or u.startswith("https://"):
-        user_msg = user_text
         return {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "image": u},
-                        {"type": "text", "text": user_msg},
-                    ],
-                },
-                {
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": answer}],
-                },
-            ]
+            "system": DEFAULT_SFT_SYSTEM,
+            "query": query,
+            "response": answer,
+            "images": [u],
         }
     try:
         p = resolve_under_workspace(workspace, image_rel) if not image_rel.startswith("http") else None
@@ -108,21 +110,11 @@ def _build_line_messages(
                 return None
         else:
             return None
-    user_msg = user_text
     return {
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": img_abs},
-                    {"type": "text", "text": user_msg},
-                ],
-            },
-            {
-                "role": "assistant",
-                "content": [{"type": "text", "text": answer}],
-            },
-        ]
+        "system": DEFAULT_SFT_SYSTEM,
+        "query": query,
+        "response": answer,
+        "images": [img_abs],
     }
 
 
@@ -223,7 +215,7 @@ class DatasetBuildManager:
                     continue
             ans = _extract_answer_from_ls_task(raw)
             ut = _default_question()
-            obj = _build_line_messages(
+            obj = _build_dataset_line(
                 self._workspace, rel, ut, ans, prepend_image_token=add_image_token
             )
             if obj:

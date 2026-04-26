@@ -53,35 +53,31 @@ def _version_split_counts(workspace_root: Path, rel_dir: Any) -> tuple[int | Non
     return _n("train"), _n("val")
 
 
-def _read_jsonl_samples(workspace_root: Path, rel_path: Any, max_items: int) -> list[Any]:
-    """读取 JSONL 文件前若干条解析后的对象。"""
-    if rel_path is None or max_items <= 0:
-        return []
+def _read_jsonl_raw_preview(workspace_root: Path, rel_path: Any, max_lines: int) -> str:
+    """读取 JSONL 文件前若干条**原始行**（不解析合并），供界面按文件形态展示。"""
+    if rel_path is None or max_lines <= 0:
+        return ""
     s = str(rel_path).strip()
     if not s:
-        return []
+        return ""
     try:
         path = resolve_under_workspace(workspace_root, s)
     except ValueError:
-        return []
+        return ""
     if not path.is_file():
-        return []
+        return ""
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
-        return []
-    out: list[Any] = []
+        return ""
+    lines_out: list[str] = []
     for line in text.splitlines():
-        line_stripped = line.strip()
-        if not line_stripped:
+        if not line.strip():
             continue
-        if len(out) >= max_items:
+        if len(lines_out) >= max_lines:
             break
-        try:
-            out.append(json.loads(line_stripped))
-        except json.JSONDecodeError:
-            out.append({"_parse_error": True, "raw_preview": line_stripped[:2000]})
-    return out
+        lines_out.append(line)
+    return "\n".join(lines_out)
 
 
 class DatasetVersionNameBody(BaseModel):
@@ -229,7 +225,7 @@ async def get_version_dataset_data(
     version_id: str,
     per_split: int = Query(8, ge=1, le=50, description="训练/验证每个划分最多返回的样本条数"),
 ) -> dict[str, Any]:
-    """返回版本 meta.json 及 train/val JSONL 的前若干条样本，供界面查看。"""
+    """返回版本 meta.json 及 train/val JSONL 的前若干行原始内容，供界面按 jsonl 形态查看。"""
     settings = get_settings()
     root = settings.workspace_root.resolve()
     conn = get_connection(root)
@@ -253,8 +249,8 @@ async def get_version_dataset_data(
     return {
         "version_id": version_id,
         "meta": meta,
-        "train_samples": _read_jsonl_samples(root, d.get("train_relpath"), per_split),
-        "val_samples": _read_jsonl_samples(root, d.get("val_relpath"), per_split),
+        "train_jsonl_preview": _read_jsonl_raw_preview(root, d.get("train_relpath"), per_split),
+        "val_jsonl_preview": _read_jsonl_raw_preview(root, d.get("val_relpath"), per_split),
     }
 
 
