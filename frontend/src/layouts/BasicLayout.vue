@@ -103,7 +103,7 @@ function onMenuClick(info: { key: string | number }) {
             <template #icon><RocketOutlined /></template>
             LoRA 训练
           </a-menu-item>
-          <a-menu-item key="/playground">
+          <a-menu-item key="/verify">
             <template #icon><MessageOutlined /></template>
             LoRA 验证
           </a-menu-item>

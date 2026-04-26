@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ReloadOutlined } from "@ant-design/icons-vue";
 import { message } from "ant-design-vue";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
@@ -286,10 +287,22 @@ onUnmounted(() => {
       message="从已成功完成的训练任务中选择一条，再执行合并。合并子进程里多路 LoRA 时，当前实现仅对第一个有效路径做 merge（与后端约定一致）。"
       style="margin-bottom: 12px"
     />
-    <a-typography-title :level="5">训练成功（可合并）</a-typography-title>
-    <a-space style="margin-bottom: 8px">
-      <a-button size="small" :loading="successLoading" @click="loadSuccessList">刷新列表</a-button>
-    </a-space>
+    <div class="merge-section-title">
+      <a-typography-title :level="5">训练成功列表（可合并列表）</a-typography-title>
+      <a-tooltip title="刷新列表" placement="bottomRight" :auto-adjust-overflow="false">
+        <a-button
+          type="text"
+          size="small"
+          :loading="successLoading"
+          aria-label="刷新列表"
+          @click="loadSuccessList"
+        >
+          <template #icon>
+            <ReloadOutlined />
+          </template>
+        </a-button>
+      </a-tooltip>
+    </div>
     <a-spin :spinning="successLoading">
       <div v-if="successTableRows.length" class="merge-success-card-grid" >
         <a-card
@@ -340,10 +353,10 @@ onUnmounted(() => {
     </a-spin>
     <a-empty
       v-if="!successLoading && successRows.length === 0"
-      description="暂无已成功的训练任务（或磁盘上已找不到 LoRA/adapter）"
+      description="暂无已成功的训练任务。"
       style="margin-bottom: 16px"
     >
-      <a-button type="link" @click="() => router.push('/training')">去训练</a-button>
+      <a-button type="link" @click="() => router.push('/train')">去训练</a-button>
     </a-empty>
     <a-divider style="border-top: 2px solid rgba(0, 0, 0, 0.35)" />
     <a-typography-title :level="5">合并参数</a-typography-title>
@@ -455,6 +468,16 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.merge-section-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: 0 0 0.5em 0;
+}
+.merge-section-title :deep(.ant-typography) {
+  margin-bottom: 0;
+}
 .merge-success-card-grid {
   margin-top: 4px;
   margin-bottom: 16px;

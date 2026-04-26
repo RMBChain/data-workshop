@@ -242,7 +242,7 @@ async function send() {
           </a-space>
           <a-divider />
           <a-row :gutter="16" class="playground-image-token-row">
-            <a-col :span="16">
+            <a-col :span="12">
               <a-form-item label="图片（单张，可拖拽或点击选择）">
                 <input
                   ref="fileInputRef"

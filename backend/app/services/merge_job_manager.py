@@ -162,3 +162,16 @@ class MergeJobManager:
             j.status = "cancelled"
             j.finished_at = time.time()
             return True
+
+
+_merge_manager_singleton: MergeJobManager | None = None
+
+
+def get_merge_manager() -> MergeJobManager:
+    """与 HTTP 层共用的合并任务管理器单例（内存态 + 与 /api/merge 一致）。"""
+    global _merge_manager_singleton
+    if _merge_manager_singleton is None:
+        from backend.app.config import get_settings
+
+        _merge_manager_singleton = MergeJobManager(get_settings().workspace_root.resolve())
+    return _merge_manager_singleton
