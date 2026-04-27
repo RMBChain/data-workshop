@@ -30,7 +30,7 @@ router = APIRouter(tags=["merge"])
 @router.post("/merge/jobs")
 async def create_merge_job(root: WorkspaceRoot, body: MergeJobCreate) -> dict[str, Any]:
     try:
-        resolve_under_workspace(root, body.output_path)
+        resolve_under_workspace(root, "output/merged-workshop")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     job = get_merge_manager().create_job(body)

@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import warnings
 import shutil
 import sys
 import tempfile
@@ -70,6 +71,9 @@ def main() -> int:
     )
     ap.add_argument("--extra", default="[]", help="JSON 列表：多路时忽略除第一个以外的说明（预留）")
     args = ap.parse_args()
+
+    # 子进程不继承 FastAPI 进程的 filterwarnings；避免 torch.cuda 拉 pynvml 时的 FutureWarning 污染合并日志
+    warnings.filterwarnings("ignore", category=FutureWarning, module=r"torch\.cuda")
 
     from peft import PeftModel
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
