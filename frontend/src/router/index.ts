@@ -9,11 +9,11 @@ import Verify from "../views/Verify.vue";
 import Merge from "../views/Merge.vue";
 import Train from "../views/Train.vue";
 import SystemInfo from "../views/SystemInfo.vue";
-
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: "/", name: "home", component: Home, meta: { title: "设置" } },
+    { path: "/preview", redirect: "/import" },
     { path: "/import", name: "import", component: DataImport, meta: { title: "数据导入" } },
     { path: "/import-data", name: "importData", component: BatchDataView, meta: { title: "数据查看" } },
     { path: "/datasets", name: "datasets", component: Datasets, meta: { title: "数据集" } },
