@@ -105,6 +105,8 @@ def main() -> int:
             file=sys.stderr,
         )
     else:
+        if out.exists():
+            shutil.rmtree(out)
         out.mkdir(parents=True, exist_ok=True)
         work_dir = out
 

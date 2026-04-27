@@ -38,9 +38,33 @@ def _merge_label(mid: str, req: dict[str, Any]) -> str:
     return f"合并 {mid[:8]}"
 
 
+def _created_at_ts(raw: Any) -> float:
+    if raw is None:
+        return 0.0
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    s = str(raw).strip()
+    if not s:
+        return 0.0
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
+def _pick_single_merge_node(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """每个训练在全景树中只展示一个合并：优先成功态，否则取创建时间最新的一条（忽略内部排序字段）。"""
+    if not candidates:
+        return []
+    succ = [m for m in candidates if str(m.get("status") or "").strip().lower() == "succeeded"]
+    pool = succ if succ else candidates
+    best = max(pool, key=lambda m: float(m.get("_ts", 0) or 0.0))
+    return [{"id": best["id"], "label": best["label"], "status": best["status"]}]
+
+
 @router.get("/overview/pipeline")
 async def get_pipeline_tree(root: WorkspaceRoot) -> dict[str, Any]:
-    """五层：项目 → 批次 → 数据集（版本）→ 训练 → 合并。用于全局预览页横向树。"""
+    """五层：项目 → 批次 → 数据集（版本）→ 训练 → 合并（每训练仅一条合并，优先成功再按时间）。"""
     conn = get_connection(root.resolve())
 
     b_rows = conn.execute(
@@ -76,11 +100,11 @@ async def get_pipeline_tree(root: WorkspaceRoot) -> dict[str, Any]:
                 "id": mid,
                 "label": _merge_label(mid, reqm),
                 "status": str(r["status"] or "").strip() or "unknown",
+                "_ts": _created_at_ts(r["created_at"]),
             }
         )
 
-    for lst in merges_by_tid.values():
-        lst.sort(key=lambda x: str(x.get("id") or ""))
+    merges_by_tid = {tid: _pick_single_merge_node(lst) for tid, lst in merges_by_tid.items()}
 
     v_to_train: dict[str, list[dict[str, Any]]] = defaultdict(list)
     orphan_batch: dict[str, list[dict[str, Any]]] = defaultdict(list)
