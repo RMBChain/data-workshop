@@ -16,8 +16,8 @@ type ImportBatchRow = {
 };
 
 const imports = ref<ImportBatchRow[]>([]);
-const selectedProjectKey = ref<string | null>(null);
-const selectedBatch = ref<string | null>(null);
+/** 级联值：[项目 key, 导入批次 id]，与 a-cascader 一致 */
+const importCascaderValue = ref<string[] | null>(null);
 const buildNote = ref("");
 const trainRatio = ref(80);
 const valRatio = ref(20);
@@ -78,26 +78,28 @@ function buildProjectOptions(items: ImportBatchRow[]): { value: string; label: s
   return Array.from(map.entries()).map(([value, label]) => ({ value, label }));
 }
 
-const importProjectOptions = computed(() => buildProjectOptions(imports.value));
+type CascaderOption = { value: string; label: string; children?: CascaderOption[] };
 
-const createDatasetBatchOptions = computed(() => {
-  const pk = selectedProjectKey.value;
-  if (pk == null) return [];
-  return imports.value
-    .filter((i) => importProjectKey(i) === pk)
-    .map((i) => {
-      const batch = (i.batch_name != null && String(i.batch_name).trim()) || "—";
-      return { value: i.id, label: `${batch} · ${i.task_count} 条` };
-    });
+const importCascaderOptions = computed((): CascaderOption[] => {
+  const map = new Map<string, { value: string; label: string; children: { value: string; label: string }[] }>();
+  for (const row of imports.value) {
+    const pk = importProjectKey(row);
+    if (!map.has(pk)) {
+      map.set(pk, { value: pk, label: row.project_title?.trim() || "—", children: [] });
+    }
+    const batch = (row.batch_name != null && String(row.batch_name).trim()) || "—";
+    const label = `${batch} · ${row.task_count} 条`;
+    map.get(pk)!.children.push({ value: row.id, label });
+  }
+  return Array.from(map.values());
 });
 
-function onCreateDatasetProjectChange(val: string | null | undefined) {
-  if (val == null) {
-    selectedBatch.value = null;
-    return;
-  }
-  const list = imports.value.filter((i) => importProjectKey(i) === val);
-  selectedBatch.value = list[0]?.id ?? null;
+function importCascaderSearchFilter(
+  input: string,
+  path: { label: string; value?: string | number }[],
+): boolean {
+  const q = input.toLowerCase();
+  return path.some((o) => String(o.label).toLowerCase().includes(q));
 }
 
 function formatJson(v: unknown): string {
@@ -150,27 +152,41 @@ async function refreshImports() {
   const items = imports.value;
   const opts = buildProjectOptions(items);
   if (opts.length === 0) {
-    selectedProjectKey.value = null;
-    selectedBatch.value = null;
+    importCascaderValue.value = null;
     return;
   }
-  if (!selectedProjectKey.value || !opts.some((o) => o.value === selectedProjectKey.value)) {
-    selectedProjectKey.value = opts[0].value;
+  const cur = importCascaderValue.value;
+  let pk: string;
+  let bid: string;
+  if (!cur || cur.length < 2) {
+    pk = opts[0].value;
+    const list0 = items.filter((i) => importProjectKey(i) === pk);
+    importCascaderValue.value = [pk, list0[0]!.id];
+    return;
   }
-  const list = items.filter((i) => importProjectKey(i) === selectedProjectKey.value);
+  pk = cur[0]!;
+  bid = cur[1]!;
+  if (!opts.some((o) => o.value === pk)) {
+    pk = opts[0].value;
+  }
+  const list = items.filter((i) => importProjectKey(i) === pk);
   if (!list.length) {
-    selectedBatch.value = null;
-  } else if (!selectedBatch.value || !list.some((b) => b.id === selectedBatch.value)) {
-    selectedBatch.value = list[0].id;
+    const pk0 = opts[0].value;
+    const list0 = items.filter((i) => importProjectKey(i) === pk0);
+    importCascaderValue.value = [pk0, list0[0]!.id];
+  } else if (!list.some((b) => b.id === bid)) {
+    importCascaderValue.value = [pk, list[0]!.id];
+  } else {
+    importCascaderValue.value = [pk, bid];
   }
 }
 
 function deleteCurrentBatch() {
-  if (!selectedBatch.value) {
+  const id = importCascaderValue.value?.[1];
+  if (!id) {
     message.warning("请选择要删除的批次");
     return;
   }
-  const id = selectedBatch.value;
   Modal.confirm({
     title: "删除该源导入批次？",
     content:
@@ -271,14 +287,15 @@ function deleteVersion(versionId: string) {
 }
 
 async function startBuild() {
-  if (!selectedBatch.value) {
+  const batchId = importCascaderValue.value?.[1];
+  if (!batchId) {
     message.warning("请选择导入批次");
     return;
   }
   datasetBuildLoading.value = true;
   try {
     const r = await http.post("/api/datasets/build", {
-      import_batch_id: selectedBatch.value,
+      import_batch_id: batchId,
       add_image_token: addImageToken.value,
       train_ratio: trainRatio.value,
       val_ratio: valRatio.value,
@@ -386,23 +403,16 @@ function goTrain() {
         :label-col="createDatasetFormLabelCol"
         :wrapper-col="createDatasetFormWrapperCol"
       >
-        <a-form-item label="项目">
-          <a-select
-            v-model:value="selectedProjectKey"
-            :options="importProjectOptions"
+        <a-form-item label="项目 / 数据批次">
+          <a-cascader
+            v-model:value="importCascaderValue"
+            :options="importCascaderOptions"
+            expand-trigger="hover"
+            :show-search="{ filter: importCascaderSearchFilter }"
             style="width: 100%"
-            :disabled="!importProjectOptions.length"
-            placeholder="无导入时请到「数据导入」"
-            @change="onCreateDatasetProjectChange"
-          />
-        </a-form-item>
-        <a-form-item label="数据批次">
-          <a-select
-            v-model:value="selectedBatch"
-            :options="createDatasetBatchOptions"
-            style="width: 100%"
-            :disabled="!createDatasetBatchOptions.length"
-            placeholder="请先选择项目，或到「数据导入」创建批次"
+            :disabled="!importCascaderOptions.length"
+            :placeholder="importCascaderOptions.length ? '请选择项目与数据批次' : '无导入时请到「数据导入」'"
+            allow-clear
           />
         </a-form-item>
   
