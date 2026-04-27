@@ -167,6 +167,9 @@ def main() -> int:
     mj = (os.environ.get("WORKSHOP_MERGE_JOB_ID") or "").strip()
     if mj:
         meta["merge_job_id"] = mj
+    tj = (os.environ.get("WORKSHOP_TRAINING_JOB_ID") or "").strip()
+    if tj:
+        meta["training_job_id"] = tj
     (out / "workshop_merge_meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2),
         encoding="utf-8",

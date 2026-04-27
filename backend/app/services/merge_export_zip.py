@@ -59,6 +59,6 @@ def create_and_record_merged_zip(workspace: Path, training_job_id: str, output_r
         _log.error("合并 zip 落在工作区外: %s", zip_abs)
         return None
     conn = get_connection(workspace)
-    merge_export_zip_upsert(conn, tid, zip_rel)
+    merge_export_zip_upsert(conn, tid, zip_rel, rel_out)
     _log.info("合并 zip 已写入 training_job_id=%s path=%s", tid, zip_rel)
     return zip_rel

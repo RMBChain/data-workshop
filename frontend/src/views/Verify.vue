@@ -214,7 +214,7 @@ async function send() {
     <a-alert
       type="info"
       show-icon
-      message="LoRA 在基座之上推理。终端里「Loading weights」是把已缓存的基座从磁盘读入内存（首次约数十秒），不是重新联网下模型；同一进程内再次推理会快很多。"
+      message="LoRA 在基座之上推理。终端里「Loading weights」是把已缓存的基座从磁盘读入内存（首次约数十秒），不是重新联网下模型；同一进程内再次推理会快很多。下拉里每条训练成功任务使用「该次成功时步数最大的 checkpoint」对应路径，同目录下后续新 checkpoint 不会自动切换。"
       style="margin-bottom: 12px"
     />
     <a-row :gutter="16">

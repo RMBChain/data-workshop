@@ -14,7 +14,12 @@ from backend.app.deps import WorkspaceRoot, get_workspace_root
 from backend.app.db import get_connection
 from backend.app.routers.datasets import _version_split_counts
 from backend.app.services import modelscope_manager as mscm
-from backend.app.services.job_manager import TrainJobCreate, TrainingJobManager, _latest_checkpoint_relpath
+from backend.app.services.job_manager import (
+    TrainJobCreate,
+    TrainingJobManager,
+    _latest_checkpoint_relpath,
+    get_training_manager,
+)
 from backend.app.services.training_metrics import (
     build_training_stages,
     parse_training_log_metrics,
@@ -25,14 +30,8 @@ router = APIRouter(tags=["training"])
 
 _MAX_SAVED_FORM_PARAMS_BYTES = 400_000
 
-_manager: TrainingJobManager | None = None
-
-
 def _manager_singleton() -> TrainingJobManager:
-    global _manager
-    if _manager is None:
-        _manager = TrainingJobManager(get_workspace_root())
-    return _manager
+    return get_training_manager(get_workspace_root())
 
 
 def _display_names_for_job_request(workspace: Path, req: dict[str, Any]) -> tuple[str, str, str, int | None, int | None]:

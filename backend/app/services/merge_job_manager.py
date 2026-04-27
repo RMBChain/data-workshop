@@ -9,12 +9,33 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-from backend.app.db import json_dumps
+from backend.app.db import get_connection, json_dumps, merge_job_persist_upsert
+
+
+def _created_at_iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _finished_at_iso(ts: float | None) -> str | None:
+    if ts is None:
+        return None
+    return _created_at_iso(ts)
+
+
+def read_merge_log_file(path: Path, *, max_bytes: int = 800_000) -> tuple[str, bool]:
+    if not path.is_file():
+        return "", False
+    data = path.read_bytes()
+    truncated = len(data) > max_bytes
+    if truncated:
+        data = data[-max_bytes:]
+    return data.decode("utf-8", errors="replace"), truncated
 
 
 def _merge_jobs_log_dir() -> Path:
@@ -58,6 +79,22 @@ class MergeJobManager:
         self._jobs: dict[str, MergeJob] = {}
         self._lock = threading.Lock()
 
+    def _persist_merge_job(self, job: MergeJob) -> None:
+        try:
+            conn = get_connection(self._workspace)
+            merge_job_persist_upsert(
+                conn,
+                job_id=job.id,
+                status=job.status,
+                created_at_s=_created_at_iso(job.created_at),
+                finished_at_s=_finished_at_iso(job.finished_at),
+                log_path_s=str(job.log_path) if job.log_path else None,
+                error_message=job.error_message,
+                request=dict(job.request) if job.request else {},
+            )
+        except Exception:
+            logging.getLogger("workshop.merge").exception("合并任务写入 merge_jobs 失败")
+
     def get(self, job_id: str) -> MergeJob | None:
         with self._lock:
             return self._jobs.get(job_id)
@@ -85,6 +122,7 @@ class MergeJobManager:
             job.finished_at = time.time()
             with self._lock:
                 self._jobs[job_id] = job
+            self._persist_merge_job(job)
             return job
         out_rel = body.output_path.strip().replace("\\", "/")
         cmd = [sys.executable, "-u", str(script), "--base", body.base_model_path, "--output", out_rel]
@@ -97,6 +135,9 @@ class MergeJobManager:
         env["CUDA_VISIBLE_DEVICES"] = ""
         env.setdefault("PYTHONUNBUFFERED", "1")
         env["WORKSHOP_MERGE_JOB_ID"] = job_id
+        tid0 = (body.training_job_id or "").strip() if body.training_job_id else ""
+        if tid0:
+            env["WORKSHOP_TRAINING_JOB_ID"] = tid0
         with self._lock:
             self._jobs[job_id] = job
         log_f = open(log_path, "w", encoding="utf-8")
@@ -113,9 +154,11 @@ class MergeJobManager:
             job.status = "failed"
             job.error_message = str(e)
             job.finished_at = time.time()
+            self._persist_merge_job(job)
             return job
         job.process = proc
         job.status = "running"
+        self._persist_merge_job(job)
 
         def _pump() -> None:
             assert proc.stdout is not None
@@ -140,6 +183,7 @@ class MergeJobManager:
                 j.return_code = code
                 j.finished_at = time.time()
                 if j.status == "cancelled":
+                    self._persist_merge_job(j)
                     return
                 if code == 0:
                     j.status = "succeeded"
@@ -151,6 +195,7 @@ class MergeJobManager:
                 else:
                     j.status = "failed"
                     j.error_message = f"进程退出码 {code}"
+                self._persist_merge_job(j)
             if code == 0 and post_zip_tid and post_zip_out:
                 try:
                     from backend.app.services.merge_export_zip import create_and_record_merged_zip
@@ -164,12 +209,23 @@ class MergeJobManager:
 
     def read_log(self, job_id: str, *, max_bytes: int = 800_000) -> tuple[str, bool]:
         j = self.get(job_id)
-        if not j or not j.log_path or not j.log_path.is_file():
+        if not j or not j.log_path:
             return "", False
-        data = j.log_path.read_bytes()
-        truncated = len(data) > max_bytes
-        text = data[-max_bytes:].decode("utf-8", errors="replace") if truncated else data.decode("utf-8", errors="replace")
-        return text, truncated
+        return read_merge_log_file(j.log_path, max_bytes=max_bytes)
+
+    def latest_job_for_training_id(self, training_job_id: str) -> MergeJob | None:
+        tid = (training_job_id or "").strip()
+        if not tid:
+            return None
+        with self._lock:
+            candidates: list[MergeJob] = []
+            for j in self._jobs.values():
+                req = j.request or {}
+                if str(req.get("training_job_id") or "").strip() == tid:
+                    candidates.append(j)
+            if not candidates:
+                return None
+            return max(candidates, key=lambda x: x.created_at)
 
     def cancel(self, job_id: str) -> bool:
         with self._lock:
@@ -180,6 +236,7 @@ class MergeJobManager:
                 j.process.terminate()
             j.status = "cancelled"
             j.finished_at = time.time()
+            self._persist_merge_job(j)
             return True
 
 
