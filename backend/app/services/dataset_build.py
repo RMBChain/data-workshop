@@ -274,7 +274,7 @@ class DatasetBuildManager:
         b = lines[n_train:]
 
         version_id = uuid.uuid4().hex[:12]
-        rel_dir = f"versions/{version_id}"
+        rel_dir = f"dataset/{version_id}"
         # Path 与 / 拼接时接受正斜杠子路径，勿用 Path.sep（不存在于 pathlib.Path）
         vdir = self._workspace / rel_dir
         vdir.mkdir(parents=True, exist_ok=True)

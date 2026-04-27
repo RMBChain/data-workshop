@@ -16,6 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from backend.app.config import get_settings
 from backend.app.db import get_connection, json_dumps
 from backend.app.services import modelscope_manager as mscm
 from backend.app.services.paths import resolve_under_workspace
@@ -252,6 +253,7 @@ def _attach_swift_run_relpath(workspace: Path, job: TrainJob) -> None:
 class TrainingJobManager:
     def __init__(self, workspace_root: Path) -> None:
         self._workspace = workspace_root.resolve()
+        self._repo_root = get_settings().repo_root.resolve()
         self._jobs: dict[str, TrainJob] = {}
         self._lock = threading.Lock()
         self._hydrate_from_db()
@@ -482,7 +484,7 @@ class TrainingJobManager:
             self._save_job_to_db(self._jobs[job_id])
             return self._jobs[job_id]
 
-        train_py = self._workspace / "backend" / "scripts" / "train.py"
+        train_py = self._repo_root / "backend" / "scripts" / "train.py"
         if not train_py.is_file():
             with self._lock:
                 j = self._jobs.get(job_id)
@@ -616,7 +618,7 @@ class TrainingJobManager:
             request=body.model_dump(),
         )
 
-        train_py = self._workspace / "backend" / "scripts" / "train.py"
+        train_py = self._repo_root / "backend" / "scripts" / "train.py"
         if not train_py.is_file():
             job.status = "failed"
             job.error_message = f"未找到训练脚本: {train_py}"
@@ -720,7 +722,7 @@ class TrainingJobManager:
         cmd: list[str] = [
             exe,
             "-u",
-            str(self._workspace / "backend" / "scripts" / "train.py"),
+            str(self._repo_root / "backend" / "scripts" / "train.py"),
             "--model",
             model_arg,
             "--train_dataset",

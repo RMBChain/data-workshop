@@ -17,6 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from backend.app.config import get_settings
 from backend.app.db import (
     get_connection,
     json_dumps,
@@ -268,6 +269,7 @@ class MergeJob:
 class MergeJobManager:
     def __init__(self, workspace_root: Path) -> None:
         self._workspace = workspace_root.resolve()
+        self._repo_root = get_settings().repo_root.resolve()
         self._jobs: dict[str, MergeJob] = {}
         self._lock = threading.Lock()
 
@@ -417,7 +419,7 @@ class MergeJobManager:
             log_path=log_path,
             request=req_dict,
         )
-        script = self._workspace / "backend" / "scripts" / "workshop_merge.py"
+        script = self._repo_root / "backend" / "scripts" / "workshop_merge.py"
         if not script.is_file():
             job.status = "failed"
             job.error_message = f"未找到合并脚本: {script}"
@@ -555,7 +557,5 @@ def get_merge_manager() -> MergeJobManager:
     """与 HTTP 层共用的合并任务管理器单例（内存态 + 与 /api/merge 一致）。"""
     global _merge_manager_singleton
     if _merge_manager_singleton is None:
-        from backend.app.config import get_settings
-
         _merge_manager_singleton = MergeJobManager(get_settings().workspace_root.resolve())
     return _merge_manager_singleton

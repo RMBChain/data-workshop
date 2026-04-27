@@ -185,6 +185,8 @@ async def list_dataset_versions() -> dict[str, Any]:
         tr_n, va_n = _version_split_counts(root, it.get("rel_dir"))
         it["train_count"] = tr_n
         it["val_count"] = va_n
+        rd = it.get("rel_dir")
+        it["dataset"] = str(rd).strip().replace("\\", "/") if rd else None
     return {"active_version_id": active, "items": items}
 
 
@@ -246,8 +248,10 @@ async def get_version_dataset_data(
         except (ValueError, json.JSONDecodeError, OSError):
             meta = None
 
+    rel_dir_str = (str(rel_dir).strip().replace("\\", "/") if rel_dir and str(rel_dir).strip() else None)
     return {
         "version_id": version_id,
+        "dataset": rel_dir_str,
         "meta": meta,
         "train_jsonl_preview": _read_jsonl_raw_preview(root, d.get("train_relpath"), per_split),
         "val_jsonl_preview": _read_jsonl_raw_preview(root, d.get("val_relpath"), per_split),

@@ -19,6 +19,17 @@ def get_db_path(workspace: Path) -> Path:
         p = s.db_path.expanduser().resolve()
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
+    # 未设置 WORKSHOP_DB_PATH 且在 Docker 内时，默认用容器路径，避免 SQLite 落在 Windows 绑定挂载上（WAL/DDL 易 disk I/O error）
+    if Path("/.dockerenv").exists():
+        p = Path("/var/lib/workshop/workshop.db")
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            return p
+        except OSError:
+            _log.warning(
+                "无法在 /var/lib/workshop 创建目录，回退到工作区 state/workshop.db；"
+                "若 SQLite 报 disk I/O error，请设置 WORKSHOP_DB_PATH 或将命名卷挂载到 /var/lib/workshop。"
+            )
     state = workspace / "state"
     state.mkdir(parents=True, exist_ok=True)
     return state / "workshop.db"
