@@ -54,6 +54,10 @@ function trainingStatusTagColor(s: string | undefined): string {
   return "default";
 }
 
+function isTrainingSucceeded(r: SuccessTrainingRow): boolean {
+  return (r.training_status ?? "").trim().toLowerCase() === "succeeded";
+}
+
 function mergeStatusTagColor(s: MergeUiStatus): string {
   if (s === "none") return "default";
   if (s === "merging") return "processing";
@@ -70,9 +74,14 @@ function tableCellText(record: SuccessTableRow, dataIndex: string | undefined | 
   return s || "—";
 }
 
-/** 仅训练成功且存在可合并 LoRA 路径时可点「合并成全量模型」 */
+/** 合并状态为「未合并」时：有 LoRA 路径且训练已结束（非排队/进行中）即可点；其余合并态重试时仍要求训练成功 */
 function canMergeTrainingRecord(r: SuccessTableRow): boolean {
-  return r.training_status === "succeeded" && !!(r.path || "").trim();
+  const pathOk = !!(r.path || "").trim();
+  if (!pathOk) return false;
+  const st = (r.training_status ?? "").trim().toLowerCase();
+  if (st === "pending" || st === "running") return false;
+  if (r.merge_status === "none") return true;
+  return st === "succeeded";
 }
 
 /** 工作区相对路径 → 后端工作区根下的绝对路径（用于 Tooltip）；无根信息时退回相对路径 */
@@ -94,21 +103,13 @@ function workspaceAbsoluteDisplayPath(relOrDash: string): string {
 
 const router = useRouter();
 const base = ref("Qwen/Qwen3-VL-2B-Instruct");
-const output = ref("output/merged-workshop");
+const MERGE_OUTPUT_ROOT = "output/merged-workshop";
 
-/** 默认：output/merged-workshop/{数据 id}/{训练版本}，训练版本为 v0-…（无则 job_id）。 */
-function defaultMergeOutputPath(row: SuccessTrainingRow): string {
-  const dataId = (row.dataset_version_id ?? "").trim();
-  const trainVer =
-    (row.swift_train_version ?? "").trim() || (row.job_id ?? "").trim();
-  const root = "output/merged-workshop";
-  if (dataId && trainVer) {
-    return `${root}/${dataId}/${trainVer}`.replace(/\/+/g, "/");
-  }
-  if (trainVer) {
-    return `${root}/${trainVer}`.replace(/\/+/g, "/");
-  }
-  return root;
+/** 合并全量模型写入 `output/merged-workshop/{训练 job_id}`（与后端一致）。 */
+function mergeOutputRelForTrainingJob(trainingJobId: string): string {
+  const tid = trainingJobId.trim();
+  if (!tid) return MERGE_OUTPUT_ROOT;
+  return `${MERGE_OUTPUT_ROOT}/${tid}`.replace(/\\/g, "/");
 }
 const jobId = ref<string | null>(null);
 const runSubmitting = ref(false);
@@ -146,17 +147,19 @@ type SuccessTableRow = SuccessTrainingRow & {
 };
 
 const successTableRows = computed((): SuccessTableRow[] =>
-  successRows.value.map((r) => {
-    const merge_status = parseMergeUiStatus(mergeStatusByJobId.value[r.job_id]);
-    const fromApi = mergeOutputPathByJobId.value[r.job_id];
-    const p = fromApi == null || typeof fromApi !== "string" ? "" : fromApi.trim();
-    return {
-      ...r,
-      merge_output_path: merge_status === "success" ? p : "",
-      merge_status,
-      training_status_label: trainingStatusLabel(r.training_status),
-    };
-  }),
+  successRows.value
+    .filter(isTrainingSucceeded)
+    .map((r) => {
+      const merge_status = parseMergeUiStatus(mergeStatusByJobId.value[r.job_id]);
+      const fromApi = mergeOutputPathByJobId.value[r.job_id];
+      const p = fromApi == null || typeof fromApi !== "string" ? "" : fromApi.trim();
+      return {
+        ...r,
+        merge_output_path: merge_status === "success" ? p : "",
+        merge_status,
+        training_status_label: trainingStatusLabel(r.training_status),
+      };
+    }),
 );
 
 const selectedRow = computed((): SuccessTrainingRow | null => {
@@ -246,17 +249,17 @@ watch(
     if (m) {
       base.value = m;
     }
-    if (row) {
-      output.value = defaultMergeOutputPath(row);
-    } else {
-      output.value = "output/merged-workshop";
-    }
   },
 );
 
-/**
- * 使用 watch 同步的 `base` / `output` 与 `merge_lora_only` 发起合并（选中卡片后由 `defaultMergeOutputPath` 等决定输出目录）。
- */
+watch(successTableRows, (rows) => {
+  const cur = selectedJobIds.value[0];
+  if (cur && !rows.some((x) => x.job_id === cur)) {
+    selectedJobIds.value = [];
+  }
+});
+
+/** 使用 `base` 与 `merge_lora_only` 发起合并；产物目录为 output/merged-workshop/{训练 job_id}（与后端一致）。 */
 async function startMergeForRow(row: SuccessTrainingRow, loraOnly: boolean) {
   const paths = [row.path].map((s) => s.trim()).filter(Boolean);
   if (!paths.length) {
@@ -270,7 +273,7 @@ async function startMergeForRow(row: SuccessTrainingRow, loraOnly: boolean) {
     const r = await http.post("/api/merge/jobs", {
       base_model_path: base.value,
       lora_paths: paths,
-      output_path: output.value,
+      output_path: mergeOutputRelForTrainingJob(row.job_id),
       merge_lora_only: loraOnly,
       training_job_id: row.job_id,
     });
@@ -462,13 +465,6 @@ onUnmounted(() => {
     <div class="datasets-page-header">
       <div class="datasets-page-header__title-row">
         <a-typography-title :level="4">LoRA 合并</a-typography-title>
-        <a-tooltip title="新建合并" placement="bottom">
-          <a-button type="text" class="datasets-header-add-btn" aria-label="新建合并">
-            <template #icon>
-              <PlusOutlined />
-            </template>
-          </a-button>
-        </a-tooltip>
         <a-tooltip title="刷新列表" placement="bottom">
           <a-button
             type="text"
@@ -487,7 +483,7 @@ onUnmounted(() => {
     <a-alert
       type="info"
       show-icon
-      message="本页展示已落库的训练任务（含成功与失败）。仅训练成功且存在有效 LoRA 路径时可执行「合并成全量模型」。「训练日志」走合并域接口，与训练页拉取的日志相独立；「合并日志」为 LoRA 合并子进程输出。"
+      message="下方卡片仅展示训练成功的落库任务。"
       style="margin-bottom: 12px"
     />
     <a-spin :spinning="successLoading">
@@ -565,14 +561,13 @@ onUnmounted(() => {
             <div class="merge-success-card-meta-actions">
               <a-button
                 type="link"
-                :disabled="runSubmitting || record.merge_status === 'merging' || !canMergeTrainingRecord(record)"
                 :loading="runSubmitting"
                 @click.stop="runMergeForCard(record)"
               >
                 合并成全量模型
               </a-button>
               <a-button type="link" @click.stop="openTrainRunLogModal(record)">训练日志</a-button>
-              <a-button type="link" @click.stop="openMergeLogModal(record)">合并日志</a-button>
+              <a-button type="link" @click.stop="openMergeLogModal(record)">日志</a-button>
             </div>
           </div>
         </a-card>
@@ -581,6 +576,13 @@ onUnmounted(() => {
     <a-empty
       v-if="!successLoading && successRows.length === 0"
       description="暂无训练任务。"
+      style="margin-bottom: 16px"
+    >
+      <a-button type="link" @click="() => router.push('/train')">去训练</a-button>
+    </a-empty>
+    <a-empty
+      v-else-if="!successLoading && successTableRows.length === 0"
+      description="暂无训练成功的任务，请等待训练完成或重试训练。"
       style="margin-bottom: 16px"
     >
       <a-button type="link" @click="() => router.push('/train')">去训练</a-button>

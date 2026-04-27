@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -16,6 +17,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from backend.app.db import get_connection, json_dumps, merge_job_persist_upsert
+from backend.app.services.inference_models import _adapter_relpath_for_registered_training
+from backend.app.services.paths import resolve_under_workspace
 
 
 def _created_at_iso(ts: float) -> str:
@@ -46,10 +49,27 @@ def _merge_jobs_log_dir() -> Path:
     return (Path(tempfile.gettempdir()) / "workshop-merge-jobs").resolve()
 
 
+def _merge_output_relpath(body: MergeJobCreate, merge_job_id: str) -> tuple[str, str | None]:
+    """返回 (工作区相对输出目录, 错误信息)。
+    有 training_job_id 时为 output/merged-workshop/{该 id}；无 training_job_id 时为 output/merged-workshop/{merge_job_id}。"""
+    tid0 = (body.training_job_id or "").strip() if body.training_job_id else ""
+    if tid0:
+        seg = tid0.replace("\\", "/").strip()
+        if not seg or ".." in seg or "/" in seg:
+            return "", "training_job_id 无效（不允许含路径分隔符或 ..）"
+        rel = f"output/merged-workshop/{seg}".replace("\\", "/")
+        return rel, None
+    return f"output/merged-workshop/{merge_job_id}".replace("\\", "/"), None
+
+
 class MergeJobCreate(BaseModel):
     base_model_path: str = Field(..., description="基座：ModelScope id 或工作区内相对路径或绝对本地目录")
     lora_paths: list[str] = Field(..., min_length=1)
-    output_path: str = Field(..., min_length=1, description="工作区内相对路径")
+    output_path: str = Field(
+        "output/merged-workshop",
+        min_length=1,
+        description="忽略；合并产物目录为 output/merged-workshop/{training_job_id 或 merge_job_id}",
+    )
     merge_lora_only: bool = Field(
         True,
         description="与 workshop_merge --merge_lora_only 一致：为 True 时将 LoRA 合并进基座并保存全量；为 False 时仅导出 PEFT 适配器目录",
@@ -57,6 +77,81 @@ class MergeJobCreate(BaseModel):
     training_job_id: str | None = Field(
         None,
         description="可选。对应训练任务 job_id；合并成功后将 zip 路径写入 merge_export_zips",
+    )
+
+
+def _lora_dir_has_adapter_files(p: Path) -> bool:
+    return (
+        p.is_dir()
+        and (p / "adapter_config.json").is_file()
+        and (p / "adapter_model.safetensors").is_file()
+    )
+
+
+def _training_request_json(workspace: Path, training_job_id: str) -> dict[str, Any] | None:
+    tid = (training_job_id or "").strip()
+    if not tid:
+        return None
+    conn = get_connection(workspace)
+    row = conn.execute(
+        "SELECT request_json FROM training_jobs_persist WHERE id = ?",
+        (tid,),
+    ).fetchone()
+    if not row:
+        return None
+    raw = row["request_json"] or "{}"
+    try:
+        req = json.loads(raw) if isinstance(raw, str) else {}
+    except json.JSONDecodeError:
+        return None
+    return req if isinstance(req, dict) else None
+
+
+def _resolve_lora_paths_for_merge(
+    workspace: Path, body: MergeJobCreate
+) -> tuple[list[str], str | None]:
+    """请求体中的路径可能滞后于磁盘；用 training_job_id 从库内 request 再解析一次。返回 (paths, error_msg)。"""
+    ws = workspace.resolve()
+    cleaned = [str(p).strip().replace("\\", "/") for p in body.lora_paths if str(p).strip()]
+    if not cleaned:
+        return [], "未提供 LoRA 路径"
+
+    def abs_lora(rel: str) -> Path:
+        q = Path(rel)
+        if q.is_absolute():
+            return q.resolve()
+        return (ws / rel).resolve()
+
+    first = cleaned[0]
+    p0 = abs_lora(first)
+    try:
+        p0.relative_to(ws)
+    except ValueError:
+        return cleaned, f"LoRA 路径不允许超出工作区: {first}"
+
+    if _lora_dir_has_adapter_files(p0):
+        return cleaned, None
+
+    tid = (body.training_job_id or "").strip() if body.training_job_id else ""
+    if tid:
+        req = _training_request_json(ws, tid)
+        if req:
+            fixed = _adapter_relpath_for_registered_training(ws, req)
+            if fixed:
+                relf = fixed.strip().replace("\\", "/")
+                p1 = abs_lora(relf)
+                try:
+                    p1.relative_to(ws)
+                except ValueError:
+                    pass
+                else:
+                    if _lora_dir_has_adapter_files(p1):
+                        rest = cleaned[1:] if len(cleaned) > 1 else []
+                        return [relf, *rest], None
+
+    return cleaned, (
+        f"LoRA 目录不存在或缺少 adapter_config.json / adapter_model.safetensors: {first}。"
+        "请确认训练输出仍在当前工作区内，或刷新合并页后重试。"
     )
 
 
@@ -105,15 +200,80 @@ class MergeJobManager:
 
     def create_job(self, body: MergeJobCreate) -> MergeJob:
         job_id = str(uuid.uuid4())
+        out_rel, out_err = _merge_output_relpath(body, job_id)
+        if out_err:
+            log_dir = _merge_jobs_log_dir()
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / f"{job_id}.log"
+            req_dict = body.model_dump()
+            job = MergeJob(
+                id=job_id,
+                status="failed",
+                created_at=time.time(),
+                finished_at=time.time(),
+                log_path=log_path,
+                error_message=out_err,
+                request=req_dict,
+            )
+            with self._lock:
+                self._jobs[job_id] = job
+            self._persist_merge_job(job)
+            return job
+        lora_paths_eff, lora_err = _resolve_lora_paths_for_merge(self._workspace, body)
+        if lora_err:
+            log_dir = _merge_jobs_log_dir()
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / f"{job_id}.log"
+            req_dict = body.model_dump()
+            req_dict["output_path"] = out_rel
+            req_dict["lora_paths"] = lora_paths_eff
+            job = MergeJob(
+                id=job_id,
+                status="failed",
+                created_at=time.time(),
+                finished_at=time.time(),
+                log_path=log_path,
+                error_message=lora_err,
+                request=req_dict,
+            )
+            with self._lock:
+                self._jobs[job_id] = job
+            self._persist_merge_job(job)
+            return job
+        try:
+            resolve_under_workspace(self._workspace, out_rel)
+        except ValueError as e:
+            log_dir = _merge_jobs_log_dir()
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / f"{job_id}.log"
+            req_dict = body.model_dump()
+            req_dict["output_path"] = out_rel
+            req_dict["lora_paths"] = lora_paths_eff
+            job = MergeJob(
+                id=job_id,
+                status="failed",
+                created_at=time.time(),
+                finished_at=time.time(),
+                log_path=log_path,
+                error_message=str(e),
+                request=req_dict,
+            )
+            with self._lock:
+                self._jobs[job_id] = job
+            self._persist_merge_job(job)
+            return job
         log_dir = _merge_jobs_log_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / f"{job_id}.log"
+        req_dict = body.model_dump()
+        req_dict["output_path"] = out_rel
+        req_dict["lora_paths"] = lora_paths_eff
         job = MergeJob(
             id=job_id,
             status="pending",
             created_at=time.time(),
             log_path=log_path,
-            request=body.model_dump(),
+            request=req_dict,
         )
         script = self._workspace / "backend" / "scripts" / "workshop_merge.py"
         if not script.is_file():
@@ -124,13 +284,12 @@ class MergeJobManager:
                 self._jobs[job_id] = job
             self._persist_merge_job(job)
             return job
-        out_rel = body.output_path.strip().replace("\\", "/")
         cmd = [sys.executable, "-u", str(script), "--base", body.base_model_path, "--output", out_rel]
-        for p in body.lora_paths:
+        for p in lora_paths_eff:
             cmd.extend(["--lora", p.replace("\\", "/")])
         cmd.extend(["--merge_lora_only", "true" if body.merge_lora_only else "false"])
         cmd.append("--extra")
-        cmd.append(json_dumps([x for x in body.lora_paths[1:]]))
+        cmd.append(json_dumps([x for x in lora_paths_eff[1:]]))
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = ""
         env.setdefault("PYTHONUNBUFFERED", "1")

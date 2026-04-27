@@ -108,7 +108,7 @@ def adapter_relpath_by_max_checkpoint(workspace: Path, req: dict[str, Any]) -> s
     ws = workspace.resolve()
     out = ws / base
     if not out.is_dir():
-        return base
+        return None
     ckpt_rel = _latest_checkpoint_relpath(workspace, base)
     if ckpt_rel:
         ckpt = ws / ckpt_rel.replace("\\", "/")
