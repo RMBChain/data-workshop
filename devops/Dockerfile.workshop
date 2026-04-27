@@ -8,6 +8,9 @@ COPY devops/workshop-requirements.txt /tmp/workshop-requirements.txt
 ARG PYPI_INDEX=https://mirrors.aliyun.com/pypi/simple/
 RUN uv pip install -r /tmp/workshop-requirements.txt -i ${PYPI_INDEX}
 
+# SQLite 在 Windows→Docker 的绑定挂载上常出现 WAL/I/O 错误；默认把 DB 放容器可写层（Compose 中再挂命名卷以持久化）
+RUN mkdir -p /var/lib/workshop
+ENV WORKSHOP_DB_PATH=/var/lib/workshop/workshop.db
 ENV PYTHONPATH=/workspace/project
 EXPOSE 8000
 

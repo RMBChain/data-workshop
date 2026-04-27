@@ -16,7 +16,7 @@ alwaysApply: true
 
 # 环境变量（后端）
 
-- 使用 **`WORKSHOP_` 前缀**（见 `backend/app/config.py`）：如 `WORKSHOP_WORKSPACE_ROOT`、`WORKSHOP_CORS_ORIGINS`、`WORKSHOP_LOG_LEVEL`、`WORKSHOP_SWIFT_EXECUTABLE` 等；日志级别等见 `logutil.py`。
+- 使用 **`WORKSHOP_` 前缀**（见 `backend/app/config.py`）：如 `WORKSHOP_WORKSPACE_ROOT`（数据目录，默认可为仓库下 `working_data`）、`WORKSHOP_REPO_ROOT`（含 `backend/scripts`，默认与源码位置一致）、`WORKSHOP_CORS_ORIGINS`、`WORKSHOP_SWIFT_EXECUTABLE` 等；日志级别等见 `logutil.py`。
 
 # 与现有规则
 

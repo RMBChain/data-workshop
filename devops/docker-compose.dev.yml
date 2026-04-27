@@ -13,3 +13,6 @@ services:
       - --port
       - "8000"
       - --reload
+    # 确保热重载叠加后进程仍收到库路径（旧镜像或未继承根 compose 的 environment 时避免落到绑定挂载上的 state/workshop.db）
+    environment:
+      WORKSHOP_DB_PATH: /var/lib/workshop/workshop.db

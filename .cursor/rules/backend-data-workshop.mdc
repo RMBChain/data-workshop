@@ -11,7 +11,7 @@ alwaysApply: false
 
 # 配置
 
-- **`backend.app.config.get_settings()`**：`pydantic-settings`，环境变量前缀 **`WORKSHOP_`**，默认 `workspace_root` 指向**仓库根**（`Path(__file__).parents[2]`）；Docker/部署通过 `WORKSHOP_WORKSPACE_ROOT` 等覆盖。
+- **`backend.app.config.get_settings()`**：`pydantic-settings`，环境变量前缀 **`WORKSHOP_`**；默认 `workspace_root` 为仓库下 **`working_data`**（数据/产出），`repo_root` 为**仓库根**（`backend/scripts` 所在）；可用 `WORKSHOP_WORKSPACE_ROOT`、`WORKSHOP_REPO_ROOT` 覆盖。
 
 # 路径安全
 
