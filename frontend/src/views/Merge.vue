@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { LoadingOutlined, ReloadOutlined } from "@ant-design/icons-vue";
+import { LoadingOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons-vue";
 import { message } from "ant-design-vue";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
@@ -459,29 +459,37 @@ onUnmounted(() => {
 
 <template>
   <div>
-    <a-typography-title :level="4">LoRA 合并</a-typography-title>
+    <div class="datasets-page-header">
+      <div class="datasets-page-header__title-row">
+        <a-typography-title :level="4">LoRA 合并</a-typography-title>
+        <a-tooltip title="新建合并" placement="bottom">
+          <a-button type="text" class="datasets-header-add-btn" aria-label="新建合并">
+            <template #icon>
+              <PlusOutlined />
+            </template>
+          </a-button>
+        </a-tooltip>
+        <a-tooltip title="刷新列表" placement="bottom">
+          <a-button
+            type="text"
+            class="datasets-header-add-btn"
+            :loading="successLoading"
+            aria-label="刷新列表"
+            @click="loadSuccessList"
+          >
+            <template #icon>
+              <ReloadOutlined />
+            </template>
+          </a-button>
+        </a-tooltip>
+      </div>
+    </div>
     <a-alert
       type="info"
       show-icon
       message="本页展示已落库的训练任务（含成功与失败）。仅训练成功且存在有效 LoRA 路径时可执行「合并成全量模型」。「训练日志」走合并域接口，与训练页拉取的日志相独立；「合并日志」为 LoRA 合并子进程输出。"
       style="margin-bottom: 12px"
     />
-    <div class="merge-section-title">
-      <a-typography-title :level="5">训练任务</a-typography-title>
-      <a-tooltip title="刷新列表" placement="bottomRight" :auto-adjust-overflow="false">
-        <a-button
-          type="text"
-          size="small"
-          :loading="successLoading"
-          aria-label="刷新列表"
-          @click="loadSuccessList"
-        >
-          <template #icon>
-            <ReloadOutlined />
-          </template>
-        </a-button>
-      </a-tooltip>
-    </div>
     <a-spin :spinning="successLoading">
       <div v-if="successTableRows.length" class="merge-success-card-grid" >
         <a-card
@@ -608,15 +616,33 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.merge-section-title {
-  display: flex;
+.datasets-header-add-btn {
+  flex-shrink: 0;
+  display: inline-flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-  margin: 0 0 0.5em 0;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  font-size: 18px;
+  color: rgba(0, 0, 0, 0.45);
 }
-.merge-section-title :deep(.ant-typography) {
-  margin-bottom: 0;
+.datasets-header-add-btn:hover {
+  color: var(--ant-primary-color, #1677ff);
+}
+.datasets-page-header__title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  max-width: 100%;
+  min-width: 0;
+}
+.datasets-page-header__title-row :deep(h4) {
+  margin: 0;
+  padding: 0;
+  line-height: 1.35;
+}
+.datasets-page-header {
+  margin-bottom: 12px;
 }
 .merge-success-card-grid {
   margin-top: 4px;
