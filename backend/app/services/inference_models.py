@@ -221,8 +221,8 @@ def list_merge_page_training_rows(workspace: Path) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in rows or []:
         jid = str(row["id"])
-        db_status = str(row.get("status") or "").strip() or "unknown"
-        err_db = row.get("error_message")
+        db_status = str(row["status"] or "").strip() or "unknown"
+        err_db = row["error_message"]
         err_s = str(err_db).strip() if err_db is not None and str(err_db).strip() else None
         raw = row["request_json"] or "{}"
         try:
