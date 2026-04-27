@@ -86,11 +86,11 @@ function onMenuClick(info: { key: string | number }) {
             <template #icon><HomeOutlined /></template>
             HOME
           </a-menu-item>
-          <a-menu-item key="/import">
+          <a-menu-item key="/importData">
             <template #icon><CloudUploadOutlined /></template>
             数据导入
           </a-menu-item>
-          <a-menu-item key="/import-data">
+          <a-menu-item key="/batchDataView">
             <template #icon><FileSearchOutlined /></template>
             批次数据查看
           </a-menu-item>
