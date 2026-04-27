@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ReloadOutlined } from "@ant-design/icons-vue";
+import { LoadingOutlined, ReloadOutlined } from "@ant-design/icons-vue";
 import { message } from "ant-design-vue";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
@@ -504,7 +504,24 @@ onUnmounted(() => {
             </div>
           </template>
           <template #extra>
-            <a-tag :color="mergeStatusTagColor(record.merge_status)" @click.stop>
+            <a-tooltip
+              v-if="record.merge_status === 'merging'"
+              title="合并任务进行中，请稍候"
+            >
+              <a-tag
+                :color="mergeStatusTagColor(record.merge_status)"
+                class="merge-status-tag merge-status-tag--merging"
+                @click.stop
+              >
+                <LoadingOutlined spin class="merge-status-tag__spin" />
+                <span>{{ MERGE_STATUS_LABEL[record.merge_status] }}</span>
+              </a-tag>
+            </a-tooltip>
+            <a-tag
+              v-else
+              :color="mergeStatusTagColor(record.merge_status)"
+              @click.stop
+            >
               {{ MERGE_STATUS_LABEL[record.merge_status] }}
             </a-tag>
           </template>
@@ -716,5 +733,26 @@ onUnmounted(() => {
 }
 .merge-log-pre--modal {
   height: 600px;
+}
+.merge-status-tag--merging {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  animation: merge-status-tag-pulse 1.6s ease-in-out infinite;
+  cursor: default;
+}
+.merge-status-tag__spin {
+  font-size: 12px;
+}
+@keyframes merge-status-tag-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    filter: brightness(1);
+  }
+  50% {
+    opacity: 0.88;
+    filter: brightness(1.06);
+  }
 }
 </style>
