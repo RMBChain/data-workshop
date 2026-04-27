@@ -299,44 +299,60 @@ function batchKeyOf(v: DatasetVersionRow): string {
   if (bid) return `bid:${bid}`;
   return `orphan:${v.id}`;
 }
-const selectedProjectKey = ref<string | null>(null);
-const selectedBatchKey = ref<string | null>(null);
+/** 与 a-cascader 一致：项目 key → 批次 key → 数据集版本 id */
+const datasetCascaderValue = ref<string[] | null>(null);
 
-const projectSelectOptions = computed(() => {
-  const m = new Map<string, string>();
-  for (const v of datasetVersionItems.value) {
-    const k = projectKeyOf(v);
-    if (!m.has(k)) m.set(k, (v.project_title ?? "").trim() || "—");
-  }
-  return [...m.entries()]
-    .map(([value, label]) => ({ value, label }))
-    .sort((a, b) => a.label.localeCompare(b.label, "zh-CN"));
-});
+type DatasetCascaderOption = { value: string; label: string; children?: DatasetCascaderOption[] };
 
-const batchSelectOptions = computed(() => {
-  if (!selectedProjectKey.value) return [];
-  const m = new Map<string, { label: string }>();
-  for (const v of datasetVersionItems.value) {
-    if (projectKeyOf(v) !== selectedProjectKey.value) continue;
-    const bk = batchKeyOf(v);
-    if (!m.has(bk)) {
-      const rawBn = (v.batch_name ?? "").trim();
-      const hasBid = Boolean((v.import_batch_id ?? "").trim());
-      const label = rawBn || (hasBid ? "—" : `未关联批次 · ${v.id.slice(0, 8)}${v.id.length > 8 ? "…" : ""}`);
-      m.set(bk, { label });
+const datasetCascaderOptions = computed((): DatasetCascaderOption[] => {
+  const items = datasetVersionItems.value;
+  if (!items.length) return [];
+  const projectMap = new Map<string, string>();
+  for (const v of items) {
+    const pk = projectKeyOf(v);
+    if (!projectMap.has(pk)) {
+      projectMap.set(pk, (v.project_title ?? "").trim() || "—");
     }
   }
-  return [...m.entries()]
-    .map(([value, o]) => ({ value, label: o.label }))
-    .sort((a, b) => a.label.localeCompare(b.label, "zh-CN"));
+  const projectKeysSorted = [...projectMap.entries()]
+    .sort((a, b) => a[1].localeCompare(b[1], "zh-CN"))
+    .map((x) => x[0]);
+  const out: DatasetCascaderOption[] = [];
+  for (const pk of projectKeysSorted) {
+    const inProj = items.filter((x) => projectKeyOf(x) === pk);
+    const byBatch = new Map<string, { label: string; versions: DatasetVersionRow[] }>();
+    for (const v of inProj) {
+      const bk = batchKeyOf(v);
+      if (!byBatch.has(bk)) {
+        const rawBn = (v.batch_name ?? "").trim();
+        const hasBid = Boolean((v.import_batch_id ?? "").trim());
+        const label = rawBn || (hasBid ? "—" : `未关联批次 · ${v.id.slice(0, 8)}${v.id.length > 8 ? "…" : ""}`);
+        byBatch.set(bk, { label, versions: [] });
+      }
+      byBatch.get(bk)!.versions.push(v);
+    }
+    const batchSorted = [...byBatch.entries()].sort((a, b) => a[1].label.localeCompare(b[1].label, "zh-CN"));
+    const children: DatasetCascaderOption[] = batchSorted.map(([bk, o]) => ({
+      value: bk,
+      label: o.label,
+      children: o.versions.map((row) => ({ value: row.id, label: versionRowLabel(row) })),
+    }));
+    out.push({ value: pk, label: projectMap.get(pk)!, children });
+  }
+  return out;
 });
 
-const versionSelectOptions = computed(() => {
-  if (!selectedProjectKey.value || !selectedBatchKey.value) return [];
-  return datasetVersionItems.value
-    .filter((v) => projectKeyOf(v) === selectedProjectKey.value && batchKeyOf(v) === selectedBatchKey.value)
-    .map((v) => ({ value: v.id, label: versionRowLabel(v) }));
-});
+function datasetCascaderSearchFilter(
+  input: string,
+  path: { label: string; value?: string | number }[],
+): boolean {
+  const q = input.trim().toLowerCase();
+  if (!q) return true;
+  return path.some((o) => {
+    const t = String(o.label ?? o.value ?? "").toLowerCase();
+    return t.includes(q);
+  });
+}
 
 function versionRowLabel(v: DatasetVersionRow) {
   const name = (v.name ?? v.id).trim() || v.id;
@@ -364,26 +380,11 @@ function applyVersionToForm(row: DatasetVersionRow | null) {
   activeDatasetHint.value = `已选：${name} ${badge}`;
 }
 
-function filterDatasetOption(input: string, option: { label?: string; value?: string }) {
-  const q = input.trim().toLowerCase();
-  if (!q) return true;
-  const label = String(option?.label ?? "").toLowerCase();
-  const value = String(option?.value ?? "").toLowerCase();
-  if (label.includes(q) || value.includes(q)) return true;
-  const parts = q.split(/\s+/).filter(Boolean);
-  if (parts.length > 1) {
-    return parts.every((p) => !p || label.includes(p) || value.includes(p));
-  }
-  return false;
-}
-
 function syncCascadeFromVersionRow(row: DatasetVersionRow | null) {
   if (!row) {
-    selectedProjectKey.value = null;
-    selectedBatchKey.value = null;
+    datasetCascaderValue.value = null;
   } else {
-    selectedProjectKey.value = projectKeyOf(row);
-    selectedBatchKey.value = batchKeyOf(row);
+    datasetCascaderValue.value = [projectKeyOf(row), batchKeyOf(row), row.id];
   }
 }
 
@@ -401,44 +402,12 @@ function onDatasetVersionSelect(versionId: string | null | undefined) {
   syncOutputDirWithTaskOrDataset(vid);
 }
 
-function onProjectKeyChange(v: string | null | undefined) {
-  const pk = v ?? null;
-  selectedProjectKey.value = pk;
-  if (pk == null) {
-    selectedBatchKey.value = null;
+function onDatasetCascaderUpdate(v: string[] | null) {
+  if (v && v.length >= 3) {
+    onDatasetVersionSelect(v[2]!);
+  } else {
     onDatasetVersionSelect(null);
-    return;
   }
-  const inProj = datasetVersionItems.value.filter((x) => projectKeyOf(x) === pk);
-  if (!inProj.length) {
-    selectedBatchKey.value = null;
-    onDatasetVersionSelect(null);
-    return;
-  }
-  const batchKeys = [...new Set(inProj.map(batchKeyOf))].sort();
-  const bk0 = batchKeys[0]!;
-  selectedBatchKey.value = bk0;
-  const v0 = inProj.find((x) => batchKeyOf(x) === bk0) ?? inProj[0]!;
-  onDatasetVersionSelect(v0.id);
-}
-
-function onBatchKeyChange(bk: string | null | undefined) {
-  const key = bk ?? null;
-  selectedBatchKey.value = key;
-  if (key == null) {
-    onDatasetVersionSelect(null);
-    return;
-  }
-  const pk = selectedProjectKey.value;
-  if (!pk) return;
-  const list = datasetVersionItems.value.filter(
-    (x) => projectKeyOf(x) === pk && batchKeyOf(x) === key,
-  );
-  if (!list.length) {
-    onDatasetVersionSelect(null);
-    return;
-  }
-  onDatasetVersionSelect(list[0]!.id);
 }
 
 async function loadDatasetVersions(opts?: {
@@ -1126,55 +1095,26 @@ watch(
             >
           </a-form-item>
         </a-col>
-        <a-col :span="4">
-          <a-form-item label="项目名称">
-            <a-select
-              v-model:value="selectedProjectKey"
-              :options="projectSelectOptions"
+        <a-col :span="16">
+          <a-form-item label="项目 / 批次 / 数据集">
+            <a-cascader
+              :value="datasetCascaderValue"
+              :options="datasetCascaderOptions"
+              expand-trigger="hover"
+              :show-search="{ filter: datasetCascaderSearchFilter }"
+              style="width: 100%"
               :loading="loadingDatasetPaths"
               :disabled="loadingDatasetPaths || !datasetVersionItems.length"
-              show-search
-              :filter-option="filterDatasetOption"
+              :placeholder="
+                loadingDatasetPaths
+                  ? '加载中…'
+                  : datasetCascaderOptions.length
+                    ? '选择项目、批次与数据版本'
+                    : '暂无项目，请去「数据集」构建'
+              "
               allow-clear
-              placeholder="选择项目"
-              :not-found-content="loadingDatasetPaths ? '加载中…' : '暂无项目，请去「数据集」构建'"
-              @update:value="onProjectKeyChange"
+              @update:value="onDatasetCascaderUpdate"
             />
-          </a-form-item>
-        </a-col>
-        <a-col :span="4">
-          <a-form-item label="批次名称">
-            <a-select
-              v-model:value="selectedBatchKey"
-              :options="batchSelectOptions"
-              :loading="loadingDatasetPaths"
-              :disabled="loadingDatasetPaths || !selectedProjectKey"
-              show-search
-              :filter-option="filterDatasetOption"
-              allow-clear
-              placeholder="选择批次"
-              :not-found-content="loadingDatasetPaths ? '加载中…' : '当前项目下暂无批次'"
-              @update:value="onBatchKeyChange"
-            />
-          </a-form-item>
-        </a-col>
-        <a-col :span="8">
-          <a-form-item label="数据集名称">
-            <div style="display: flex; align-items: center; gap: 8px; width: 100%">
-              <a-select
-                v-model:value="selectedDatasetVersionId"
-                :options="versionSelectOptions"
-                :loading="loadingDatasetPaths"
-                :disabled="loadingDatasetPaths || !selectedBatchKey"
-                show-search
-                :filter-option="filterDatasetOption"
-                allow-clear
-                placeholder="选择数据版本"
-                style="flex: 1; min-width: 0"
-                :not-found-content="loadingDatasetPaths ? '加载中…' : '当前批次下暂无数据版本，请去「数据集」构建'"
-                @update:value="onDatasetVersionSelect"
-              />
-            </div>
           </a-form-item>
         </a-col>
 
