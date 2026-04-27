@@ -157,7 +157,22 @@ def init_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_import_tasks_batch ON import_tasks(batch_id);")
+    _migrate_merge_export_zips_merged_path(conn)
     conn.commit()
+
+
+def _migrate_merge_export_zips_merged_path(conn: sqlite3.Connection) -> None:
+    try:
+        cur = conn.execute("PRAGMA table_info(merge_export_zips);")
+        cols = {str(row[1]) for row in cur.fetchall()}
+    except sqlite3.OperationalError:
+        return
+    if "merged_model_relpath" in cols:
+        return
+    try:
+        conn.execute("ALTER TABLE merge_export_zips ADD COLUMN merged_model_relpath TEXT;")
+    except sqlite3.OperationalError:
+        pass
 
 
 _db_singleton: tuple[Path, sqlite3.Connection] | None = None
@@ -202,7 +217,12 @@ def json_dumps(v: Any) -> str:
     return json.dumps(v, ensure_ascii=False)
 
 
-def merge_export_zip_upsert(conn: sqlite3.Connection, training_job_id: str, zip_relpath: str) -> None:
+def merge_export_zip_upsert(
+    conn: sqlite3.Connection,
+    training_job_id: str,
+    zip_relpath: str,
+    merged_model_relpath: str | None = None,
+) -> None:
     from datetime import datetime, timezone
 
     tid = (training_job_id or "").strip()
@@ -211,16 +231,21 @@ def merge_export_zip_upsert(conn: sqlite3.Connection, training_job_id: str, zip_
     rel = (zip_relpath or "").strip().replace("\\", "/")
     if not rel:
         return
+    merged = (merged_model_relpath or "").strip().replace("\\", "/") or None
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     conn.execute(
         """
-        INSERT INTO merge_export_zips(training_job_id, zip_relpath, updated_at)
-        VALUES(?,?,?)
+        INSERT INTO merge_export_zips(
+          training_job_id, zip_relpath, updated_at, merged_model_relpath
+        ) VALUES(?,?,?,?)
         ON CONFLICT(training_job_id) DO UPDATE SET
           zip_relpath = excluded.zip_relpath,
-          updated_at = excluded.updated_at
+          updated_at = excluded.updated_at,
+          merged_model_relpath = COALESCE(
+            excluded.merged_model_relpath, merge_export_zips.merged_model_relpath
+          )
         """,
-        (tid, rel, now),
+        (tid, rel, now, merged),
     )
     conn.commit()
 
@@ -254,4 +279,94 @@ def merge_export_zip_map(conn: sqlite3.Connection, training_job_ids: list[str]) 
         z = str(row[1]).strip().replace("\\", "/") if row[1] else ""
         if jid and z:
             found[jid] = z
+    return {jid: found.get(jid) for jid in ids}
+
+
+def merge_job_persist_upsert(
+    conn: sqlite3.Connection,
+    job_id: str,
+    status: str,
+    created_at_s: str,
+    finished_at_s: str | None,
+    log_path_s: str | None,
+    error_message: str | None,
+    request: dict[str, Any] | None,
+) -> None:
+    """将合并任务写入 `merge_jobs`，便于按 `training_job_id` 查询历史日志（日志文件在 temp 下按 job id 落盘）。"""
+    jid = (job_id or "").strip()
+    if not jid:
+        return
+    req_json = json_dumps(request) if request is not None else "{}"
+    conn.execute(
+        """
+        INSERT INTO merge_jobs (id, status, created_at, finished_at, log_path, error_message, request_json)
+        VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET
+          status = excluded.status,
+          finished_at = excluded.finished_at,
+          log_path = COALESCE(excluded.log_path, merge_jobs.log_path),
+          error_message = excluded.error_message,
+          request_json = excluded.request_json
+        """,
+        (
+            jid,
+            (status or "").strip() or "unknown",
+            created_at_s,
+            finished_at_s,
+            (log_path_s or "").strip() or None,
+            (error_message or "").strip() or None,
+            req_json,
+        ),
+    )
+    conn.commit()
+
+
+def merge_job_get_latest_by_training_id(
+    conn: sqlite3.Connection, training_job_id: str
+) -> dict[str, Any] | None:
+    """取该 `training_job_id` 下最近一次合并任务（`request_json.training_job_id` 匹配）。"""
+    tid = (training_job_id or "").strip()
+    if not tid:
+        return None
+    try:
+        row = conn.execute(
+            """
+            SELECT id, status, created_at, finished_at, log_path, error_message, request_json
+            FROM merge_jobs
+            WHERE json_extract(request_json, '$.training_job_id') = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (tid,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if not row:
+        return None
+    return row_to_dict(row)  # type: ignore[arg-type]
+
+
+def merge_export_merged_path_map(
+    conn: sqlite3.Connection, training_job_ids: list[str]
+) -> dict[str, str | None]:
+    """已打包时记录的「合并后模型」工作区相对目录；新列缺失或旧行均为 NULL 时无值。"""
+    ids = list(dict.fromkeys([str(x).strip() for x in training_job_ids if str(x).strip()]))
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    try:
+        rows = conn.execute(
+            f"SELECT training_job_id, merged_model_relpath FROM merge_export_zips "
+            f"WHERE training_job_id IN ({placeholders})",
+            ids,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {jid: None for jid in ids}
+    found: dict[str, str] = {}
+    for row in rows or []:
+        jid = str(row[0]).strip()
+        r = row[1]
+        s = str(r).strip().replace("\\", "/") if r is not None else ""
+        if jid and s:
+            found[jid] = s
     return {jid: found.get(jid) for jid in ids}

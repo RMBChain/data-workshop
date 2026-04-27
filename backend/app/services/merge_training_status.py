@@ -43,13 +43,19 @@ def _output_relpath_from_request(req: dict[str, Any]) -> str | None:
     return s or None
 
 
-def _disk_lora_to_output_relpath(workspace: Path) -> dict[str, str]:
-    """已写入磁盘的合法合并：LoRA 工作区相对路径 -> 合并输出目录（工作区相对）。"""
+def _scan_disk_merge_outputs(
+    workspace: Path,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """扫描 workshop_merge_meta.json。
+    返回 (lora 相对路径 -> 合并输出目录, 训练 job_id -> 合并输出目录)。后者来自 meta 中的 training_job_id 字段，用于
+    当前列表中 LoRA 路径与合并时不一致时仍能识别成功状态。"""
     root = workspace.resolve()
-    out_map: dict[str, str] = {}
+    lora_to_out: dict[str, str] = {}
+    tid_to_out: dict[str, str] = {}
+    tid_mtimes: dict[str, float] = {}
     out_root = root / "output"
     if not out_root.is_dir():
-        return out_map
+        return lora_to_out, tid_to_out
     for meta_path in out_root.rglob("workshop_merge_meta.json"):
         if "merge-jobs" in meta_path.parts:
             continue
@@ -62,16 +68,25 @@ def _disk_lora_to_output_relpath(workspace: Path) -> dict[str, str]:
             continue
         if not isinstance(raw, dict):
             continue
-        rel = _lora_relpath_from_meta_lora_used(root, str(raw.get("lora_used") or ""))
-        if not rel:
-            continue
-        k = _norm_lora_relpath(rel)
         try:
             out_rel = parent.resolve().relative_to(root).as_posix()
         except (ValueError, OSError):
             continue
-        out_map[k] = out_rel
-    return out_map
+        tid = str(raw.get("training_job_id") or "").strip()
+        if tid:
+            try:
+                mtime = parent.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            if mtime > tid_mtimes.get(tid, -1.0):
+                tid_to_out[tid] = out_rel
+                tid_mtimes[tid] = mtime
+        rel = _lora_relpath_from_meta_lora_used(root, str(raw.get("lora_used") or ""))
+        if not rel:
+            continue
+        k = _norm_lora_relpath(rel)
+        lora_to_out[k] = out_rel
+    return lora_to_out, tid_to_out
 
 
 def _latest_job_per_lora(manager: MergeJobManager) -> dict[str, MergeJob]:
@@ -90,6 +105,21 @@ def _latest_job_per_lora(manager: MergeJobManager) -> dict[str, MergeJob]:
     for k, jobs in by_lora.items():
         latest = max(jobs, key=lambda x: x.created_at)
         out[k] = latest
+    return out
+
+
+def _latest_job_per_training_id(manager: MergeJobManager) -> dict[str, MergeJob]:
+    """按 request.training_job_id 索引最新 MergeJob。当列表中 LoRA 相对路径与合并请求中不一致时，仍能对上该训练任务。"""
+    by_id: dict[str, list[MergeJob]] = {}
+    for j in manager.list_jobs():
+        req: dict[str, Any] = j.request or {}
+        tid = str(req.get("training_job_id") or "").strip()
+        if not tid:
+            continue
+        by_id.setdefault(tid, []).append(j)
+    out: dict[str, MergeJob] = {}
+    for tid, jobs in by_id.items():
+        out[tid] = max(jobs, key=lambda x: x.created_at)
     return out
 
 
@@ -112,7 +142,12 @@ def _ui_status(mem: MergeJob | None, on_disk: bool) -> MergeUiStatus:
 
 
 def _merge_output_relpath_for_lora(
-    mem: MergeJob | None, on_disk: bool, lora_key: str, disk_map: dict[str, str]
+    mem: MergeJob | None,
+    on_disk: bool,
+    lora_key: str,
+    disk_map: dict[str, str],
+    training_job_id: str,
+    tid_to_out: dict[str, str],
 ) -> str | None:
     st = _ui_status(mem, on_disk)
     if st != "success":
@@ -121,7 +156,7 @@ def _merge_output_relpath_for_lora(
         o = _output_relpath_from_request(mem.request or {})
         if o:
             return o
-    return disk_map.get(lora_key)
+    return disk_map.get(lora_key) or tid_to_out.get(training_job_id)
 
 
 def training_merge_status_by_job_id(
@@ -129,19 +164,26 @@ def training_merge_status_by_job_id(
     training_rows: list[dict[str, Any]],
     manager: MergeJobManager,
 ) -> tuple[dict[str, MergeUiStatus], dict[str, str | None]]:
-    disk_map = _disk_lora_to_output_relpath(workspace)
+    disk_map, tid_to_out = _scan_disk_merge_outputs(workspace)
     disk = set(disk_map.keys())
     jmap = _latest_job_per_lora(manager)
+    jtid = _latest_job_per_training_id(manager)
     out: dict[str, MergeUiStatus] = {}
     paths: dict[str, str | None] = {}
     for row in training_rows:
         jid = str(row.get("job_id") or "").strip()
         path = str(row.get("path") or "").strip()
-        if not jid or not path:
+        if not jid:
+            continue
+        if not path:
+            out[jid] = "none"
+            paths[jid] = None
             continue
         k = _norm_lora_relpath(path)
-        on_disk = k in disk
-        mem = jmap.get(k)
+        on_disk = k in disk or bool(jid and jid in tid_to_out)
+        mem = jmap.get(k) if jmap.get(k) is not None else jtid.get(jid)
         out[jid] = _ui_status(mem, on_disk)
-        paths[jid] = _merge_output_relpath_for_lora(mem, on_disk, k, disk_map)
+        paths[jid] = _merge_output_relpath_for_lora(
+            mem, on_disk, k, disk_map, jid, tid_to_out
+        )
     return out, paths

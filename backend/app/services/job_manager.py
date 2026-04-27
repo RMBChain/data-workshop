@@ -561,6 +561,10 @@ class TrainingJobManager:
             j3 = self._jobs.get(job_id)
             if j3:
                 _attach_swift_run_relpath(self._workspace, j3)
+                if j3.status == "succeeded":
+                    from backend.app.services import inference_models as _inference_models
+
+                    _inference_models.apply_workshop_pinned_lora_relpath_on_success(self._workspace, j3)
                 with self._lock:
                     self._save_job_to_db(j3)
 
@@ -842,3 +846,17 @@ class TrainingJobManager:
             mscm.ensure_config_json_hf_model_type(model_arg, mt)
 
         return cmd
+
+
+_training_manager_singleton: TrainingJobManager | None = None
+_training_manager_workspace: Path | None = None
+
+
+def get_training_manager(workspace: Path) -> TrainingJobManager:
+    """与 `/api/training`、合并页等共用的 `TrainingJobManager` 单例（每个进程一个工作区）。"""
+    global _training_manager_singleton, _training_manager_workspace
+    root = workspace.resolve()
+    if _training_manager_singleton is None or _training_manager_workspace != root:
+        _training_manager_singleton = TrainingJobManager(root)
+        _training_manager_workspace = root
+    return _training_manager_singleton
