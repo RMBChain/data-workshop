@@ -255,7 +255,7 @@ onUnmounted(() => {
       </a-tooltip>
     </div>
     <a-typography-paragraph type="secondary" style="margin-bottom: 16px">
-      自左至右为：总览根「全部项目」、各项目、批次、数据集版本、训练、LoRA 合并。多项目时图高度会随项目数增加，请向下滚动查看。数据来自工作区库内记录与任务参数。
+      自左至右为：总览根「全部项目」、各项目、批次、数据集版本、训练、LoRA 合并（每个训练仅展示一条合并记录：有成功则取成功，否则取最近一条）。多项目时图高度会随项目数增加，请向下滚动查看。数据来自工作区库内记录与任务参数。
     </a-typography-paragraph>
     <a-alert v-if="pipelineErrorText" type="error" :message="pipelineErrorText" show-icon style="margin-bottom: 12px" />
     <a-spin :spinning="pipelineLoading" tip="加载中…">

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,9 +17,105 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from backend.app.db import get_connection, json_dumps, merge_job_persist_upsert
+from backend.app.db import (
+    get_connection,
+    json_dumps,
+    merge_job_persist_upsert,
+    merge_jobs_delete_all_for_training_id,
+)
 from backend.app.services.inference_models import _adapter_relpath_for_registered_training
 from backend.app.services.paths import resolve_under_workspace
+
+_merge_log = logging.getLogger("workshop.merge")
+
+
+def _mw_rel_norm(rel: str) -> str:
+    return (rel or "").strip().replace("\\", "/").lstrip("/")
+
+
+def _is_merged_workshop_relpath(rel: str) -> bool:
+    if not rel:
+        return False
+    p = rel.replace("\\", "/")
+    if ".." in Path(p).parts:
+        return False
+    return p == "output/merged-workshop" or p.startswith("output/merged-workshop/")
+
+
+def clear_merged_workshop_output_dir(workspace: Path, output_relpath: str) -> None:
+    """合并子进程启动前：整目录删除，不保留多版本/历史（仅 `output/merged-workshop/...`）。"""
+    rel = _mw_rel_norm(output_relpath)
+    if not _is_merged_workshop_relpath(rel):
+        return
+    try:
+        root = resolve_under_workspace(workspace, rel)
+    except ValueError:
+        return
+    if root.is_dir():
+        try:
+            shutil.rmtree(root)
+        except OSError as e:
+            _merge_log.warning("合并前清理输出目录失败 %s: %s", root, e)
+    root.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _remove_orphan_safetensor_shards(model_dir: Path) -> None:
+    index_path = model_dir / "model.safetensors.index.json"
+    if not index_path.is_file():
+        return
+    try:
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return
+    wmap = data.get("weight_map")
+    if not isinstance(wmap, dict):
+        return
+    expected: set[str] = set()
+    for v in wmap.values():
+        if isinstance(v, str) and v.strip():
+            expected.add(v.strip().split("/")[-1])
+    if not expected:
+        return
+    for p in model_dir.glob("*.safetensors"):
+        if p.name in expected or p.name in ("model.safetensors", "adapter_model.safetensors"):
+            continue
+        if p.name.startswith("model-") and p.name.endswith(".safetensors"):
+            try:
+                p.unlink()
+            except OSError as e:
+                _merge_log.debug("删除孤立分片 %s: %s", p, e)
+
+
+def _remove_history_subdirs_and_temp_files(model_dir: Path) -> None:
+    for name in ("backup", "backup_merge", "old", ".trash", "__pycache__", "tmp", "cache"):
+        p = model_dir / name
+        if p.is_dir():
+            try:
+                shutil.rmtree(p)
+            except OSError as e:
+                _merge_log.debug("删除历史子目录 %s: %s", p, e)
+    for pat in ("*.tmp", "*.bak", "*.old"):
+        for f in model_dir.glob(pat):
+            if f.is_file():
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+
+def cleanup_merged_workshop_dir_after_success(workspace: Path, output_relpath: str) -> None:
+    """合并成功后：在 `output/merged-workshop/{tid}` 内清理分片/备份残留（不删 index 中仍引用的分片）。"""
+    rel = _mw_rel_norm(output_relpath)
+    if not _is_merged_workshop_relpath(rel):
+        return
+    try:
+        model_dir = resolve_under_workspace(workspace, rel)
+    except ValueError:
+        return
+    if not model_dir.is_dir():
+        return
+    _remove_orphan_safetensor_shards(model_dir)
+    _remove_history_subdirs_and_temp_files(model_dir)
 
 
 def _created_at_iso(ts: float) -> str:
@@ -174,6 +271,31 @@ class MergeJobManager:
         self._jobs: dict[str, MergeJob] = {}
         self._lock = threading.Lock()
 
+    def _retire_merge_jobs_for_training(self, training_job_id: str) -> None:
+        """新建合并前：同一训练下结束进程、清内存并删库内旧记录，只保留即将创建的新任务。"""
+        tid = (training_job_id or "").strip()
+        if not tid:
+            return
+        with self._lock:
+            to_pop = [
+                k
+                for k, j in self._jobs.items()
+                if str((j.request or {}).get("training_job_id") or "").strip() == tid
+            ]
+            for k in to_pop:
+                j = self._jobs.pop(k, None)
+                if j and j.process and j.process.poll() is None:
+                    try:
+                        j.process.terminate()
+                    except Exception:
+                        pass
+        try:
+            conn = get_connection(self._workspace)
+            merge_jobs_delete_all_for_training_id(conn, tid)
+            conn.commit()
+        except Exception:
+            logging.getLogger("workshop.merge").exception("合并：按训练清理 merge_jobs 失败")
+
     def _persist_merge_job(self, job: MergeJob) -> None:
         try:
             conn = get_connection(self._workspace)
@@ -189,6 +311,23 @@ class MergeJobManager:
             )
         except Exception:
             logging.getLogger("workshop.merge").exception("合并任务写入 merge_jobs 失败")
+            return
+        tid = str((job.request or {}).get("training_job_id") or "").strip()
+        if not tid:
+            return
+        with self._lock:
+            to_remove = [
+                k
+                for k, j in self._jobs.items()
+                if k != job.id and str((j.request or {}).get("training_job_id") or "").strip() == tid
+            ]
+            for k in to_remove:
+                oj = self._jobs.pop(k, None)
+                if oj and oj.process and oj.process.poll() is None:
+                    try:
+                        oj.process.terminate()
+                    except Exception:
+                        pass
 
     def get(self, job_id: str) -> MergeJob | None:
         with self._lock:
@@ -199,6 +338,9 @@ class MergeJobManager:
             return sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
 
     def create_job(self, body: MergeJobCreate) -> MergeJob:
+        tid_in = (body.training_job_id or "").strip() if body.training_job_id else ""
+        if tid_in:
+            self._retire_merge_jobs_for_training(tid_in)
         job_id = str(uuid.uuid4())
         out_rel, out_err = _merge_output_relpath(body, job_id)
         if out_err:
@@ -299,6 +441,8 @@ class MergeJobManager:
             env["WORKSHOP_TRAINING_JOB_ID"] = tid0
         with self._lock:
             self._jobs[job_id] = job
+        if tid0:
+            clear_merged_workshop_output_dir(self._workspace, out_rel)
         log_f = open(log_path, "w", encoding="utf-8")
         try:
             proc = subprocess.Popen(
@@ -362,6 +506,11 @@ class MergeJobManager:
                     create_and_record_merged_zip(self._workspace, post_zip_tid, post_zip_out)
                 except Exception:
                     logging.getLogger("workshop.merge").exception("合并成功后打包 zip 失败")
+            if code == 0 and post_zip_out:
+                try:
+                    cleanup_merged_workshop_dir_after_success(self._workspace, post_zip_out)
+                except Exception:
+                    _merge_log.exception("合并成功后清理 output/merged-workshop 失败")
 
         threading.Thread(target=_wait, daemon=True).start()
         return job

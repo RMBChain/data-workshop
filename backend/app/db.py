@@ -282,6 +282,68 @@ def merge_export_zip_map(conn: sqlite3.Connection, training_job_ids: list[str]) 
     return {jid: found.get(jid) for jid in ids}
 
 
+def merge_jobs_delete_all_for_training_id(conn: sqlite3.Connection, training_job_id: str) -> None:
+    """删除该训练关联的全部 merge_jobs 行（request_json.training_job_id 匹配）。"""
+    tid = (training_job_id or "").strip()
+    if not tid:
+        return
+    try:
+        conn.execute(
+            "DELETE FROM merge_jobs WHERE json_extract(request_json, '$.training_job_id') = ?",
+            (tid,),
+        )
+    except sqlite3.OperationalError:
+        rows = conn.execute("SELECT id, request_json FROM merge_jobs").fetchall()
+        to_del: list[str] = []
+        for r in rows or []:
+            try:
+                raw = r["request_json"] or "{}"
+                o = json.loads(raw) if isinstance(raw, str) else {}
+            except json.JSONDecodeError:
+                o = {}
+            t = str((o or {}).get("training_job_id") or "").strip() if isinstance(o, dict) else ""
+            if t == tid:
+                to_del.append(str(r["id"]))
+        for old_id in to_del:
+            conn.execute("DELETE FROM merge_jobs WHERE id = ?", (old_id,))
+
+
+def merge_jobs_prune_others_for_training(
+    conn: sqlite3.Connection, training_job_id: str, keep_job_id: str
+) -> None:
+    """同一训练下仅保留 keep_job_id 一条 merge_jobs 记录（按 request_json.training_job_id 匹配）。"""
+    tid = (training_job_id or "").strip()
+    kid = (keep_job_id or "").strip()
+    if not tid or not kid:
+        return
+    try:
+        conn.execute(
+            """
+            DELETE FROM merge_jobs
+            WHERE id != ?
+              AND json_extract(request_json, '$.training_job_id') = ?
+            """,
+            (kid, tid),
+        )
+    except sqlite3.OperationalError:
+        rows = conn.execute("SELECT id, request_json FROM merge_jobs").fetchall()
+        to_del: list[str] = []
+        for r in rows or []:
+            rid = str(r["id"])
+            if rid == kid:
+                continue
+            try:
+                raw = r["request_json"] or "{}"
+                o = json.loads(raw) if isinstance(raw, str) else {}
+            except json.JSONDecodeError:
+                o = {}
+            t = str((o or {}).get("training_job_id") or "").strip() if isinstance(o, dict) else ""
+            if t == tid:
+                to_del.append(rid)
+        for old_id in to_del:
+            conn.execute("DELETE FROM merge_jobs WHERE id = ?", (old_id,))
+
+
 def merge_job_persist_upsert(
     conn: sqlite3.Connection,
     job_id: str,
@@ -292,7 +354,7 @@ def merge_job_persist_upsert(
     error_message: str | None,
     request: dict[str, Any] | None,
 ) -> None:
-    """将合并任务写入 `merge_jobs`，便于按 `training_job_id` 查询历史日志（日志文件在 temp 下按 job id 落盘）。"""
+    """将合并任务写入 `merge_jobs`；若带 training_job_id 则同训练下仅保留本条（旧记录删除）。"""
     jid = (job_id or "").strip()
     if not jid:
         return
@@ -318,6 +380,10 @@ def merge_job_persist_upsert(
             req_json,
         ),
     )
+    req_dict = request if isinstance(request, dict) else {}
+    t_train = str(req_dict.get("training_job_id") or "").strip()
+    if t_train:
+        merge_jobs_prune_others_for_training(conn, t_train, jid)
     conn.commit()
 
 
