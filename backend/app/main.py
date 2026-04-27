@@ -28,6 +28,7 @@ from backend.app.routers import (
     label_studio,
     merge_routes,
     models_routes,
+    overview,
     system_routes,
     training,
 )
@@ -86,6 +87,7 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(_RequestTimingMiddleware)
     app.include_router(health.router, prefix="/api")
+    app.include_router(overview.router, prefix="/api")
     app.include_router(label_studio.router, prefix="/api")
     app.include_router(imports.router, prefix="/api")
     app.include_router(datasets.router, prefix="/api")
