@@ -64,12 +64,12 @@
 - 常见键示例：
   - `WORKSHOP_WORKSPACE_ROOT`
   - `WORKSHOP_LABEL_STUDIO_URL`
-  - `WORKSHOP_DB_PATH`
+  - `WORKSHOP_REPO_ROOT`
   - `WORKSHOP_SWIFT_EXECUTABLE`
 
 ### 1.6 数据持久化（SQLite）
 
-- 默认库路径：`{workspace_root}/state/workshop.db`；可被 **`WORKSHOP_DB_PATH`** 覆盖（Docker 推荐容器内路径 + 命名卷）。
+- 库路径固定为 **`{workspace_root}/state/workshop.db`**（由 **`workspace_root`** 推导，不提供单独数据库路径的环境变量）。
 - 大文件、JSONL、权重、日志全文仍落盘工作区；库内为批次、版本、任务状态与索引。
 
 ### 1.7 调用 ms-swift（CLI 子进程）

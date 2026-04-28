@@ -144,7 +144,7 @@
 
 **路径说明**（每项独立展示即可）：
 - 模型缓存：`~/.cache/modelscope`（或挂载为容器内同路径）。
-- 业务根目录：由 **`WORKSHOP_WORKSPACE_ROOT`** 决定（默认仓库下 **`working_data`**，内含 `versions`、`imports`、`output` 等）。
+- 业务根目录：由 **`WORKSHOP_WORKSPACE_ROOT`** 决定（默认仓库下 **`working_data`**，内含 `versions`、`imports`、`output`、`state`（SQLite）等）。
 - 界面可展示 **`GET /api/system/paths`** 的返回结果。
 
 ## 九、技术栈
@@ -165,9 +165,8 @@
 
 **持久化**
 - **SQLite**（单文件）
-- **默认路径**：`{workspace}/state/workshop.db`
-- **Docker 可选**：用 **`WORKSHOP_DB_PATH`** 指向容器内路径并配合命名卷
-- **目的**：减轻 Windows 绑定挂载上的 DB I/O 问题（见 **`devops/docker-compose.yml`**）
+- **路径**：固定在 **`{workspace}/state/workshop.db`**，`{workspace}` 即 **`WORKSHOP_WORKSPACE_ROOT`**（默认仓库下 **`working_data`**）；无单独环境变量覆盖数据库路径。
+- **Docker**：见 **`devops/docker-compose.yml`**（示例中设置 **`WORKSHOP_WORKSPACE_ROOT=/workspace/project/working_data`**，库与同目录产出一并落在宿主 **`working_data/`**）。
 
 **运行**
 - Docker（API）

@@ -11,7 +11,7 @@ alwaysApply: false
 
 # 配置
 
-- **`backend.app.config.get_settings()`**：`pydantic-settings`，环境变量前缀 **`WORKSHOP_`**；默认 `workspace_root` 为仓库下 **`working_data`**（数据/产出），`repo_root` 为**仓库根**（`backend/scripts` 所在）；可用 `WORKSHOP_WORKSPACE_ROOT`、`WORKSHOP_REPO_ROOT` 覆盖。
+- **`backend.app.config.get_settings()`**：`pydantic-settings`，环境变量前缀 **`WORKSHOP_`**；默认 `workspace_root` 为仓库下 **`working_data`**（数据/产出），`repo_root` 为**仓库根**（`backend/scripts` 所在）；可用 `WORKSHOP_WORKSPACE_ROOT`、`WORKSHOP_REPO_ROOT` 覆盖。SQLite 固定在 **`<workspace_root>/state/workshop.db`**（`backend/app/db.py` 的 **`get_db_path`**），不提供 `WORKSHOP_DB_PATH`。
 
 # 路径安全
 
