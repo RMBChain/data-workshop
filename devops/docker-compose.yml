@@ -1,0 +1,44 @@
+# 在仓库根目录执行：docker compose -f devops/docker-compose.yml [选项]；或 devops/run-backend-dev.ps1
+# 本机开发：仅启动 API（uvicorn --reload）。前端在本机 npm run dev（默认 8701）。
+# Label Studio 需单独部署；宿主机与容器内 API 端口固定为 **8702**。
+#
+# API: http://127.0.0.1:8702/docs
+#
+# 项目名（Compose 资源前缀：网络、命名卷等）；避免默认使用目录名 devops 产生 devops_* 资源名。
+
+name: data-workshop
+
+services:
+  data-workshop-api:
+    build:
+      context: ..
+      dockerfile: devops/swift4.03-cpu.dockerfile
+    image: swift4.03-cpu:latest
+    container_name: data-workshop-api
+    working_dir: /workspace/project
+    shm_size: "4g"
+    command:
+      - uvicorn
+      - backend.app.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8702"
+      - --reload
+    ports:
+      - "127.0.0.1:8702:8702"
+    volumes:
+      - ..:/workspace/project
+      - workshop_state:/var/lib/workshop
+    environment:
+      - WORKSHOP_LABEL_STUDIO_URL=http://host.docker.internal:8080
+      - WORKSHOP_MERGE_USE_TMP_STAGING=1
+      - WORKSHOP_WORKSPACE_ROOT=/workspace/project
+      - WORKSHOP_DB_PATH=/var/lib/workshop/workshop.db
+      - WORKSHOP_LOG_LEVEL=INFO
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+volumes:
+  workshop_state:

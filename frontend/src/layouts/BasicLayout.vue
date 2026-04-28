@@ -13,11 +13,10 @@ import {
   RocketOutlined,
   SettingOutlined,
 } from "@ant-design/icons-vue";
-import { computed, provide, ref } from "vue";
+import { provide, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import ResourceInfoFloating from "../components/ResourceInfoFloating.vue";
 
-const isDev = computed(() => import.meta.env.DEV);
 const route = useRoute();
 const router = useRouter();
 const menuCollapsed = ref(false);
@@ -66,8 +65,7 @@ function onMenuClick(info: { key: string | number }) {
           >资源信息</a
         >
         <span style="font-size: 14px; opacity: 0.9">
-          <a-tag v-if="isDev" color="blue">环境：开发</a-tag>
-          <a-tag v-else color="green">环境：生产</a-tag>
+          <a-tag color="blue">开发</a-tag>
         </span>
       </div>
     </a-layout-header>

@@ -21,4 +21,4 @@ alwaysApply: false
 
 - 新模块使用 **`from __future__ import annotations`**；包内导入以 **`backend.app...`** 为根。
 - 子进程/长任务逻辑放在 **`services/`** 与**脚本**（`backend/scripts/`）中，路由层薄封装；业务 logger 多使用如 **`logging.getLogger("workshop")`** 或与模块名一致。
-- Torch 相关：入口已对 `torch.cuda` 的 **pynvml FutureWarning** 做过滤，勿随意移除；依赖以 **`requirements.txt`** 为准（含 `nvidia-ml-py` 说明，勿混用已弃用 PyPI 名 `pynvml`）。
+- Torch 相关：入口已对 `torch.cuda` 的 **pynvml FutureWarning** 做过滤，勿随意移除；Python 依赖版本以 **`devops/swift4.03-cpu.dockerfile`** 中 `uv pip install` 为准（含 `nvidia-ml-py`，勿混用已弃用 PyPI 名 `pynvml`）。

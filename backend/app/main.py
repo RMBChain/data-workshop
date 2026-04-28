@@ -3,7 +3,7 @@ from __future__ import annotations
 import warnings
 
 # 纯 CPU 也会在首次 import torch 时加载 torch.cuda → 可能 import pynvml（nvidia-smi 相关）。
-# 依赖里应装 nvidia-ml-py（见 backend/requirements.txt）；勿再单独装已弃用的 PyPI 包 pynvml。
+# 依赖里应装 nvidia-ml-py（见 devops/swift4.03-cpu.dockerfile）；勿再单独装已弃用的 PyPI 包 pynvml。
 # 若环境仍带旧 pynvml 触发 FutureWarning，按模块忽略（通常仅此一条与 pynvml 相关）。
 warnings.filterwarnings("ignore", category=FutureWarning, module=r"torch\.cuda$")
 

@@ -1,5 +1,5 @@
 ---
-description: 开发/排查时如何查看后端 API 容器日志（与 Design_3_Api §13 一致）
+description: 开发/排查时如何查看后端 API 容器日志（与 Design_3_Api §15 一致）
 alwaysApply: true
 ---
 
@@ -8,12 +8,12 @@ alwaysApply: true
 后端在 Docker 中运行时，可用以下命令跟踪 API 容器标准输出（含 uvicorn 与业务日志）：
 
 ```bash
-docker logs -f workshop-api-dev
+docker logs -f data-workshop-api
 ```
 
-若容器名因 compose 配置不同（例如 `workshop-api`），先用 `docker ps` 确认服务名后再替换上述名称。
+`devops/docker-compose.yml` 中 API 服务的 Compose 名为 **`data-workshop-api`**，`container_name` 亦为 **`data-workshop-api`**。若本地自行 `docker run` 起了别的名字，先用 `docker ps` 确认后再替换。
 
 # 重启api
 ```bash
-docker restart workshop-api-dev
+docker restart data-workshop-api
 ```
