@@ -212,19 +212,21 @@ async function refreshVersions() {
   activeVersion.value = r.data.active_version_id;
 }
 
-function datasetVersionNameText(record: { name?: string | null }): string {
-  if (record.name == null) return "-";
-  const s = String(record.name);
+function datasetVersionNameText(record: Record<string, unknown>): string {
+  const n = record.name;
+  if (n == null) return "-";
+  const s = String(n);
   return s !== "" ? s : "-";
 }
 
-function datasetVersionNameTitle(record: { name?: string | null }): string | undefined {
-  if (record.name == null) return undefined;
-  const s = String(record.name);
+function datasetVersionNameTitle(record: Record<string, unknown>): string | undefined {
+  const n = record.name;
+  if (n == null) return undefined;
+  const s = String(n);
   return s !== "" ? s : undefined;
 }
 
-function openVersionNameEditor(record: { id?: string; name?: string | null }) {
+function openVersionNameEditor(record: Record<string, unknown>) {
   if (!record?.id) return;
   versionNameEditId.value = String(record.id);
   versionNameEditValue.value = record.name != null ? String(record.name) : "";
@@ -362,6 +364,42 @@ async function loadPreview() {
 function goTrain() {
   void router.push("/train");
 }
+
+type DatasetCardMetaItem = {
+  title: string;
+  dataIndex: keyof Record<string, unknown> | string;
+};
+
+const datasetCardMetaItems: DatasetCardMetaItem[] = [
+  { title: "项目名称", dataIndex: "project_title" },
+  { title: "批次名称", dataIndex: "batch_name" },
+  { title: "训练", dataIndex: "train_count" },
+  { title: "验证", dataIndex: "val_count" },
+  { title: "备注", dataIndex: "note" },
+  { title: "时间", dataIndex: "created_at" },
+];
+
+function datasetCellText(record: Record<string, unknown>, dataIndex: string | unknown): string {
+  if (!dataIndex || typeof dataIndex !== "string") return "—";
+  const v = record[dataIndex];
+  if (v == null) return "—";
+  const s = String(v).trim();
+  return s || "—";
+}
+
+function versionIsActive(record: Record<string, unknown>): boolean {
+  const id = record.id != null ? String(record.id) : "";
+  return !!id && activeVersion.value === id;
+}
+
+const versionRows = computed(() => versions.value as Record<string, unknown>[]);
+
+const buildJobSummary = computed(() => {
+  const j = buildJob.value;
+  if (!j || typeof j !== "object") return "";
+  const o = j as { id?: string; status?: string };
+  return `${String(o.id ?? "")} · ${String(o.status ?? "")}`;
+});
 </script>
 
 <template>
@@ -444,56 +482,55 @@ function goTrain() {
         </a-form-item>
       </a-form>
     </a-modal>
-    <a-typography-paragraph v-if="buildJob"
-      >当前构建任务：{{ String((buildJob as { id?: string }).id) }} ·
-      {{ String((buildJob as { status?: string }).status) }}</a-typography-paragraph
-    >
-    <a-divider />
-    <a-table
-      :columns="[
-        { title: '数据集名称', dataIndex: 'name', key: 'name', ellipsis: true, width: 280 },
-        { title: '项目名称', dataIndex: 'project_title', key: 'project_title', ellipsis: true },
-        { title: '批次名称', dataIndex: 'batch_name', key: 'batch_name', ellipsis: true },
-        { title: '训练', dataIndex: 'train_count', key: 'train_count', width: 72 },
-        { title: '验证', dataIndex: 'val_count', key: 'val_count', width: 72 },
-        { title: '备注', dataIndex: 'note', key: 'note' },
-        { title: '时间', dataIndex: 'created_at', key: 'created_at' },
-        {
-          title: '操作',
-          key: 'action',
-          width: 200,
-        },
-      ]"
-      :data-source="versions as Record<string, unknown>[]"
-      :pagination="false"
-      size="small"
-      row-key="id"
-    >
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'is_active'">
-          <a-tag v-if="record && typeof record === 'object' && (record as any).is_active" color="success">活跃</a-tag>
-          <a v-else-if="record && typeof record === 'object'" @click="activateVersion((record as any).id)">设为活跃</a>
-        </template>
-        <template v-else-if="column.key === 'name' && record && typeof record === 'object'">
-          <span class="dataset-version-name-cell" @click.stop>
-            <span class="dataset-version-name-text" :title="datasetVersionNameTitle(record as { name?: string | null })">
-              {{ datasetVersionNameText(record as { name?: string | null }) }}
+    <a-typography-paragraph v-if="buildJob">当前构建任务：{{ buildJobSummary }}</a-typography-paragraph>
+    <div v-if="versionRows.length" class="dataset-version-card-grid">
+      <a-card
+        v-for="record in versionRows"
+        :key="String(record.id)"
+        class="dataset-version-card"
+        size="small"
+        hoverable
+      >
+        <template #title>
+          <div class="dataset-version-card-title">
+            <span
+              class="dataset-version-card-title-text"
+              :title="datasetVersionNameTitle(record)"
+            >
+              {{ datasetVersionNameText(record) }}
             </span>
+          </div>
+        </template>
+        <template #extra>
+          <span class="dataset-version-card-extra" @click.stop>
             <EditOutlined
               class="dataset-version-name-edit"
-              @click="openVersionNameEditor(record as { id?: string; name?: string | null })"
+              @click="openVersionNameEditor(record)"
             />
           </span>
         </template>
-        <template v-else-if="column.key === 'action' && record && typeof record === 'object'">
-          <a-space>
-            <a @click="openVersionDataView(String((record as any).id))">查看</a>
-            <a @click="deleteVersion((record as any).id)" style="color: #ff4d4f">删除</a>
-          </a-space>
-        </template>
-        <span v-else>{{ record?.[column.dataIndex as string] ?? '-' }}</span>
-      </template>
-    </a-table>
+        <div class="dataset-version-card-meta">
+          <div
+            v-for="item in datasetCardMetaItems"
+            :key="String(item.dataIndex)"
+            class="dataset-version-card-meta-row"
+          >
+            <span class="dataset-version-card-meta-label">{{ item.title }}</span>
+            <span
+              class="dataset-version-card-meta-value"
+              :title="datasetCellText(record, item.dataIndex)"
+            >
+              {{ datasetCellText(record, item.dataIndex) }}
+            </span>
+          </div>
+          <div class="dataset-version-card-meta-actions">
+            <a-button type="link" @click="openVersionDataView(String(record.id))">查看</a-button>
+            <a-button danger type="link" @click="deleteVersion(String(record.id))">删除</a-button>
+          </div>
+        </div>
+      </a-card>
+    </div>
+    <a-empty v-else description="暂无数据集版本。请通过「新增数据集」从导入批次生成。" style="margin-bottom: 16px" />
 
     <a-modal
       v-model:open="versionNameEditOpen"
@@ -580,19 +617,93 @@ function goTrain() {
 .datasets-header-add-btn:hover {
   color: var(--ant-primary-color, #1677ff);
 }
-.dataset-version-name-cell {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
+
+.dataset-version-card-grid {
+  margin-top: 4px;
+  margin-bottom: 16px;
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 350px), 1fr));
+  gap: 16px;
 }
-.dataset-version-name-text {
+.dataset-version-card {
+  border-radius: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.dataset-version-card :deep(.ant-card-head) {
+  min-height: 48px;
+  padding: 0 16px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+.dataset-version-card :deep(.ant-card-head-title) {
+  padding: 10px 0;
+  min-width: 0;
+}
+.dataset-version-card :deep(.ant-card-extra) {
+  padding: 10px 0;
+}
+.dataset-version-card :deep(.ant-card-body) {
+  padding: 12px 16px 14px;
+}
+.dataset-version-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.dataset-version-card-title-text {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 600;
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.88);
 }
+.dataset-version-card-extra {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.dataset-version-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+.dataset-version-card-meta-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  min-width: 0;
+}
+.dataset-version-card-meta-actions {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.dataset-version-card-meta-actions :deep(.ant-btn) {
+  padding-inline: 4px;
+}
+.dataset-version-card-meta-label {
+  flex-shrink: 0;
+  width: 96px;
+  color: rgba(0, 0, 0, 0.45);
+  line-height: 1.5;
+}
+.dataset-version-card-meta-value {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.5;
+  word-break: break-all;
+  color: rgba(0, 0, 0, 0.85);
+}
+
 .dataset-version-name-edit {
   flex-shrink: 0;
   color: rgba(0, 0, 0, 0.45);

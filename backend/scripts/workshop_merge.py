@@ -14,14 +14,47 @@ import tempfile
 import traceback
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_rp = str(_REPO_ROOT)
+if _rp not in sys.path:
+    sys.path.insert(0, _rp)
 
-def _resolve_base(p: str) -> str:
-    q = Path(p)
-    if q.is_dir():
-        return str(q.resolve())
+
+def _resolve_base(p: str, workspace: Path) -> str:
+    """与 inference_service._resolve_base_dir 一致：优先绝对路径、工作区相对路径、魔搭本机缓存，最后才 snapshot_download。"""
     from modelscope import snapshot_download
 
-    return snapshot_download(p)
+    from backend.app.services import modelscope_manager as mscm
+    from backend.app.services.paths import resolve_under_workspace
+
+    raw = (p or "").strip()
+    if not raw:
+        raise ValueError("empty --base")
+
+    path_obj = Path(raw)
+    if path_obj.is_absolute():
+        rp = path_obj.resolve()
+        if rp.is_dir():
+            return str(rp)
+        raise FileNotFoundError(f"本地模型目录不存在: {raw}")
+    try:
+        rel = resolve_under_workspace(workspace, raw)
+        if rel.is_dir():
+            return str(rel)
+    except ValueError:
+        pass
+    hub = mscm.hub_model_dir_if_cached(raw)
+    if hub is not None:
+        print(
+            f"合并基座：使用本机魔搭缓存（不再为此发起联网下载）: {hub}",
+            file=sys.stderr,
+        )
+        return str(hub)
+    print(
+        f"合并基座：未在 {mscm.modelscope_cache_dir()} 找到已缓存模型，将调用 snapshot_download: {raw}",
+        file=sys.stderr,
+    )
+    return snapshot_download(raw)
 
 
 def _parse_cli_bool(s: str) -> bool:
@@ -110,7 +143,8 @@ def main() -> int:
         out.mkdir(parents=True, exist_ok=True)
         work_dir = out
 
-    base = _resolve_base(args.base)
+    workspace = Path.cwd().resolve()
+    base = _resolve_base(args.base, workspace)
     print(f"加载基座: {base}（dtype={dtype}）")
     try:
         model = Qwen3VLForConditionalGeneration.from_pretrained(

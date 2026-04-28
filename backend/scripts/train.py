@@ -115,6 +115,37 @@ def _run_sft_main_api(argv: list[str], *, plugin_path: Path, callback_names: lis
     sft_main(argv)
 
 
+def _assert_local_hub_tokenizer_complete(model_dir: Path) -> None:
+    """
+    huggingface/tokenizers 在 BPE 上要求 vocab 与 merges 同来自文件或同来自内存；只缓存了其一
+    （或 tokenizer.json 损坏/过小）时会报 *vocab and merges must be both...*。
+    """
+    if not model_dir.is_dir():
+        return
+    tj = model_dir / "tokenizer.json"
+    vj = model_dir / "vocab.json"
+    mg = model_dir / "merges.txt"
+    ok_json = tj.is_file() and tj.stat().st_size > 64
+    has_v = vj.is_file() and vj.stat().st_size > 0
+    has_m = mg.is_file() and mg.stat().st_size > 0
+    if ok_json:
+        return
+    if has_v and has_m:
+        return
+    if has_v ^ has_m:
+        miss = "merges.txt" if has_v else "vocab.json"
+        raise RuntimeError(
+            "本机模型目录中 BPE 分词器文件不成对（缺 "
+            f"{miss}），无法加载分词器。若曾中断下载，请在「模型管理」中删除该模型并重新完整下载。\n"
+            f"目录: {model_dir}"
+        )
+    raise RuntimeError(
+        "本机模型目录中缺少可用的分词器文件：需要非空的 tokenizer.json，或同时存在 vocab.json 与 merges.txt。"
+        f"\n目录: {model_dir}\n"
+        "请在「模型管理」中重新完整下载该模型。"
+    )
+
+
 def train_with_swift(
     model_name="Qwen/Qwen3-VL-2B-Instruct",
     train_dataset="data/train.jsonl",
@@ -144,6 +175,9 @@ def train_with_swift(
             mscm.ensure_config_json_hf_model_type(model_name, mt_hf)
     except Exception:
         pass
+    mp = Path(str(model_name))
+    if mp.is_dir():
+        _assert_local_hub_tokenizer_complete(mp.resolve())
     kwargs.setdefault("torch_dtype", "float32")
     kwargs.setdefault("attn_impl", "eager")
     kwargs.setdefault("bf16", False)
@@ -321,7 +355,14 @@ def train_with_swift(
         print("\n训练被用户中断")
         sys.exit(1)
     except Exception as e:
-        print(f"\n训练失败: {e}")
+        err = str(e)
+        extra = ""
+        if "vocab" in err and "merges" in err and "both" in err.lower():
+            extra = (
+                "\n说明: 通常为本机 hub 模型目录不完整（例如仅有一部分 tokenizer 文件），"
+                "或 vocab.json / merges.txt 未成对下载。请在「模型管理」中删除对应模型目录后重新完整下载。\n"
+            )
+        print(f"\n训练失败: {e}{extra}")
         sys.exit(1)
 
 
