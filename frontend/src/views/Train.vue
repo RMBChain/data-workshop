@@ -141,18 +141,10 @@ function trainingOutputDirRunTitle(record: {
   return lines.length ? lines.join("\n") : undefined;
 }
 
-/** 数据集列 tooltip：同列展示项目、批次全名 */
-function trainingDatasetTooltipProjectText(record: { project_title?: string | null }): string {
-  const t = record.project_title;
-  if (t == null || t === "") return "—";
-  const s = String(t).trim();
-  return s || "—";
-}
-
-function trainingDatasetTooltipBatchText(record: { batch_name?: string | null }): string {
-  const t = record.batch_name;
-  if (t == null || t === "") return "—";
-  const s = String(t).trim();
+/** 数据集列 tooltip：项目 / 批次展示 */
+function trainingDatasetTooltipField(v: unknown): string {
+  if (v == null || v === "") return "—";
+  const s = String(v).trim();
   return s || "—";
 }
 
@@ -185,15 +177,11 @@ async function saveTrainingJobName() {
   }
 }
 
-function openTrainParamsModal() {
-  trainParamsModalOpen.value = true;
-}
-
 function openNewTrainModal() {
   currentJobId.value = null;
   jobNamePrefillForForm.value = "";
   newTrainOpenSeq.value += 1;
-  openTrainParamsModal();
+  trainParamsModalOpen.value = true;
 }
 
 function selectJob(id: string) {
@@ -201,7 +189,7 @@ function selectJob(id: string) {
   const row = jobs.value.find((j) => (j as { id?: string }).id === id) as { job_name?: string | null } | undefined;
   const t = row ? trainingJobNameText(row) : "—";
   jobNamePrefillForForm.value = t !== "—" ? t : "";
-  openTrainParamsModal();
+  trainParamsModalOpen.value = true;
 }
 
 async function deleteJobById(jobId: string) {
@@ -303,8 +291,16 @@ onMounted(() => {
           placement="topLeft"
         >
           <template #title>
-            <div>项目：{{ trainingDatasetTooltipProjectText(record as { project_title?: string | null }) }}</div>
-            <div>批次：{{ trainingDatasetTooltipBatchText(record as { batch_name?: string | null }) }}</div>
+            <div>
+              项目：{{
+                trainingDatasetTooltipField((record as Record<string, unknown>).project_title)
+              }}
+            </div>
+            <div>
+              批次：{{
+                trainingDatasetTooltipField((record as Record<string, unknown>).batch_name)
+              }}
+            </div>
           </template>
           <span class="training-dataset-name-cell">{{ text }}</span>
         </a-tooltip>
