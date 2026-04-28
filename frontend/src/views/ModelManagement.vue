@@ -62,15 +62,7 @@ type TableRow = JobRow | CachedRow;
 
 /** 魔搭 / HF 均为 Qwen/ 命名空间，与 snapshot_download 一致 */
 const QWEN3_VL_PRESETS = [
-  "Qwen/Qwen2.5-VL-2B-Instruct",
-  "mlx-community/Qwen2.5-VL-3B-Instruct-6bit",
   "Qwen/Qwen3-VL-2B-Instruct",
-  "mlx-community/Qwen3-VL-2B-Instruct-4bit",
-  "Qwen/Qwen2-VL-2B-Instruct-GPTQ-Int4",
-  "Qwen/Qwen3-VL-2B-Instruct-FP8",
-  "ggml-org/Qwen3-VL-2B-Instruct-GGUF",
-  "Qwen/Qwen3-VL-2B-Instruct-GGUF",
-  "Qwen/Qwen3VL-2B-Instruct-Q4_K_M.gguf",
   "Qwen/Qwen3-VL-2B-Thinking",
   "Qwen/Qwen3-VL-4B-Instruct",
   "Qwen/Qwen3-VL-4B-Thinking",
@@ -349,57 +341,20 @@ onUnmounted(() => {
 
 <template>
   <div>
-    <a-typography-paragraph type="secondary">
-      管理本机 hub 缓存（魔搭与 Hugging Face 均写入同一套
-      <code>models/作者/名称</code>
-      目录）。点击下载后将出现在列表首行并显示进度；完成后自动刷新。
-    </a-typography-paragraph>
-    <a-typography-paragraph v-if="hubRoot" copyable type="secondary" style="font-size: 12px"
-      >hub 根：{{ hubRoot }}</a-typography-paragraph
-    >
-    <a-tabs v-model:activeKey="downloadTab" style="margin-bottom: 12px" type="card">
-      <a-tab-pane key="huggingface" tab="Hugging Face">
-        <a-space direction="vertical" size="small" style="width: 100%; margin-bottom: 8px">
-          <div>
-            <a-checkbox v-model:checked="hfUseMirror">从 HF-Mirror（hf-mirror.com）下载</a-checkbox>
-            <a-typography-text type="secondary" style="margin-left: 8px; font-size: 12px"
-              >取消勾选则从 <a href="https://huggingface.co" target="_blank" rel="noopener noreferrer">huggingface.co</a>
-              官网拉取</a-typography-text
-            >
-          </div>
-          <a-typography-paragraph type="secondary" style="margin-bottom: 0; font-size: 12px; max-width: 720px">
-            本次任务以勾选项为准。服务端 <code>HF_ENDPOINT</code> 若已设置，其主机名（供参考）：
-            <code v-if="hfHubEndpointHost">{{ hfHubEndpointHost }}</code
-            ><span v-else>无</span>；企业网络可再设 <code>HTTPS_PROXY</code>。
-          </a-typography-paragraph>
-        </a-space>
-        <a-space wrap>
-          <a-auto-complete
-            v-model:value="downloadIdHf"
-            :options="modelHuggingFacePresetOptions"
-            placeholder="选择或输入 Hugging Face 模型 id（如 Qwen/Qwen3-VL-2B-Instruct）"
-            allow-clear
-            style="min-width: 360px"
-            option-filter-prop="value"
-          />
-          <a-button type="primary" :loading="downloading" @click="doDownloadHf">从 Hugging Face 下载</a-button>
-        </a-space>
-      </a-tab-pane>
-      <a-tab-pane key="modelscope" tab="ModelScope">
-        <a-space wrap>
-          <a-auto-complete
-            v-model:value="downloadIdMs"
-            :options="modelPresetOptions"
-            placeholder="选择或输入模型 id（预设为 Qwen3-VL 系列）"
-            allow-clear
-            style="min-width: 360px"
-            option-filter-prop="value"
-          />
-          <a-button type="primary" :loading="downloading" @click="doDownload">从 ModelScope 下载</a-button>
-        </a-space>
-      </a-tab-pane>
-    </a-tabs>
+    <a-typography-title :level="4">模型管理</a-typography-title>
+    <a-space wrap>
+      <a-auto-complete
+        v-model:value="downloadIdMs"
+        :options="modelPresetOptions"
+        placeholder="选择或输入模型 id（预设为 Qwen3-VL 系列）"
+        allow-clear
+        style="min-width: 360px"
+        option-filter-prop="value"
+      />
+      <a-button type="primary" :loading="downloading" @click="doDownload">从 ModelScope 下载</a-button>      
+    </a-space>
     <a-button :loading="loading" @click="refresh">刷新列表</a-button>
+   
     <a-table
       :loading="loading"
       :columns="columns"

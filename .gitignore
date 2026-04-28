@@ -12,3 +12,6 @@ __pycache__/
 /versions/
 /exports
 /working_data
+
+# Docker Compose 映射的宿主 ModelScope 缓存（仓库根 `.cache/docker-modelscope`）
+/.cache/docker-modelscope/

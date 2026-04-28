@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { message, Modal } from "ant-design-vue";
+import { message } from "ant-design-vue";
 import { InfoCircleOutlined, QuestionCircleOutlined, ReloadOutlined } from "@ant-design/icons-vue";
 import * as echarts from "echarts";
 import { computed, inject, nextTick, onMounted, onUnmounted, reactive, ref, toRaw, watch, type Ref } from "vue";
@@ -199,20 +199,9 @@ const currentJobNameDisplay = computed(() => {
   return "";
 });
 
-/** 与 GET /api/models/hub 一致：无 download_record 表示本目录非本应用记录的下载但仍在本机 hub 中存在，可选用。 */
-function isHubDownloadSuccess(rec: HubDownloadRecord | undefined): boolean {
-  if (!rec) return true;
-  if (rec.status === "failed" || rec.status === "downloading" || rec.status === "interrupted") {
-    return false;
-  }
-  if (rec.status === "completed") return true;
-  return Boolean(rec.completed_at);
-}
-
-const readyHubModels = computed(() => hubModels.value.filter((m) => isHubDownloadSuccess(m.download_record)));
-
+/** 下拉与起训校验均以 GET /api/models/hub 返回的目录为准（与「模型管理」同源），不按 download_record 再筛一层。 */
 const modelSelectOptions = computed(() =>
-  readyHubModels.value.map((m) => ({
+  hubModels.value.map((m) => ({
     value: m.model_id,
     label: `${m.model_id} · ${formatBytes(m.size_bytes)}`,
   })),
@@ -253,7 +242,7 @@ async function loadWorkspacePaths() {
 }
 
 function syncModelFromHub() {
-  const list = readyHubModels.value;
+  const list = hubModels.value;
   const ids = new Set(list.map((m) => m.model_id));
   if (form.model && ids.has(form.model)) return;
   form.model = list[0]?.model_id ?? "";
@@ -274,25 +263,6 @@ async function loadHubModels(): Promise<boolean> {
   } finally {
     loadingHub.value = false;
   }
-}
-
-/** 打开训练面板且 hub 已成功加载但仍无可选用模型时用 Modal 醒目提示（与「开始训练」前置校验一致）。 */
-function promptIfNoReadyHubModels() {
-  if (readyHubModels.value.length > 0) return;
-  Modal.confirm({
-    title: "暂无可用于训练的模型",
-    content:
-      "训练需要先在本机就绪至少一个基座模型。请打开侧边栏「设置 → 模型管理」完成下载；若仅有下载中、失败或中断条目，请先处理后再开始训练。",
-    okText: "前往模型管理",
-    cancelText: "稍后",
-    centered: true,
-    width: 520,
-    maskClosable: false,
-    zIndex: 1100,
-    onOk() {
-      void router.push("/models");
-    },
-  });
 }
 
 type DatasetVersionRow = {
@@ -604,10 +574,7 @@ async function applyYaml() {
     await loadDatasetVersions({ forceSelectActive: true });
     await loadHubModels();
     const m = (form as { model?: string }).model;
-    if (m && !readyHubModels.value.some((h) => h.model_id === m)) {
-      message.warning(
-        "YAML 中的模型未在本机「下载完成」列表中，已改为列表中第一项。请先在模型管理中成功下载该模型或重新选择。",
-      );
+    if (m && !hubModels.value.some((h) => h.model_id === m)) {
       syncModelFromHub();
     }
     message.success("已应用 YAML 到表单");
@@ -824,7 +791,7 @@ watch(
     try {
       if (jid) {
         await loadDatasetVersions();
-        if (await loadHubModels()) promptIfNoReadyHubModels();
+        await loadHubModels();
         await initCascadeFromExistingJob(jid);
         const row = props.jobs.find((j) => (j as { id?: string }).id === jid) as
           | { request?: Record<string, unknown> }
@@ -837,7 +804,7 @@ watch(
         syncModelFromHub();
       } else {
         await loadDatasetVersions();
-        if (await loadHubModels()) promptIfNoReadyHubModels();
+        await loadHubModels();
         syncModelFromHub();
       }
     } catch (e) {
@@ -848,12 +815,7 @@ watch(
 );
 
 async function startTraining() {
-  if (readyHubModels.value.length === 0) {
-    message.warning("请先在「设置 → 模型管理」中成功下载至少一个模型");
-    return;
-  }
-  if (!form.model || !readyHubModels.value.some((m) => m.model_id === form.model)) {
-    message.warning("请从列表中选择已下载完成的模型");
+  if (hubModels.value.length === 0 || !form.model || !hubModels.value.some((m) => m.model_id === form.model)) {
     return;
   }
   if (!form.train_dataset.trim() || !form.val_dataset.trim()) {
@@ -872,6 +834,10 @@ async function startTraining() {
   submitting.value = true;
   try {
     if (useStartFromSaved) {
+      // 后端 /start 只读库里已存的 request；表单里选的模型若不先写入，仍为旧任务里的空 model。
+      await http.post("/api/training/form-params", buildTrainJobRequestBody(), {
+        params: { job_id: cid },
+      });
       const r = await http.post<{
         id: string;
         status: string;
@@ -1033,7 +999,7 @@ watch(
             type="primary"
             size="small"
             :loading="submitting"
-            :disabled="loadingHub || !readyHubModels.length || !form.model"
+            :disabled="loadingHub || !hubModels.length || !form.model"
             @click="startTraining"
             >开始训练</a-button
           >
@@ -1070,10 +1036,10 @@ watch(
             <template #label>
               <span style="display: inline-flex; align-items: center; gap: 4px">
                 基于模型
-                <a-tooltip title="仅列出在模型管理中标记为下载完成的模型">
+                <a-tooltip title="与「设置 → 模型管理」同源，列出 hub/models 下已存在的目录">
                   <InfoCircleOutlined
                     style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
-                    aria-label="仅下载完成的模型"
+                    aria-label="关于本机模型列表"
                     role="img"
                   />
                 </a-tooltip>
@@ -1087,7 +1053,7 @@ watch(
                 :disabled="loadingHub"
                 show-search
                 option-filter-prop="label"
-                placeholder="无下载完成模型时请先到设置中下载"
+                placeholder="选择本机 hub 模型"
                 style="flex: 1; min-width: 0"
               />
               <a-tooltip title="刷新模型列表">
@@ -1104,18 +1070,6 @@ watch(
                 </a-button>
               </a-tooltip>
             </div>
-            <a-typography-text
-              v-if="!loadingHub && readyHubModels.length === 0 && hubModels.length === 0"
-              type="secondary"
-              style="display: block; margin-top: 6px"
-              >当前没有检测到魔搭本机模型目录。下载完成后点右侧刷新。</a-typography-text
-            >
-            <a-typography-text
-              v-else-if="!loadingHub && readyHubModels.length === 0 && hubModels.length > 0"
-              type="secondary"
-              style="display: block; margin-top: 6px"
-              >本机有模型目录，但尚无下载完成记录（可能仍在下载或上次失败/中断）。请到「设置 → 模型管理」确认状态，完成后点右侧刷新。</a-typography-text
-            >
           </a-form-item>
         </a-col>
         <a-col :span="16">
