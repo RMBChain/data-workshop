@@ -201,7 +201,8 @@ docker run -it -d --name label-studio -p 127.0.0.1:8080:8080 `
 - health：http://127.0.0.1:8702/api/health
 - 在**仓库根**中运行：
 ```powershell
-# 启动
+# 启动（MODELSCOPE_CACHE_HOST = 宿主机上 ModelScope 缓存根，即其中须含 `hub` 子目录；勿填到 `.../hub` 本身）
+$env:MODELSCOPE_CACHE_HOST = "C:/_llm_model/modelscope/hub"
 docker compose -f devops/docker-compose.yml up -d --build data-workshop-api
 
 # 查看日志

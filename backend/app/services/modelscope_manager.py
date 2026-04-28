@@ -154,6 +154,89 @@ def prune_stale_downloading_records(active_model_ids: set[str]) -> None:
             _atomic_write_json(_hub_records_path(), data)
 
 
+def _hub_model_dir_looks_complete(model_dir: Path) -> bool:
+    """
+    判断是否像已就绪的 Transformers/GGUF 本机缓存（用于修复「目录已有完整文件但持久化仍为失败/中断」）。
+    保守：略过体积极小的目录，且需存在常见入口文件之一。
+    """
+    try:
+        base = model_dir.resolve()
+    except OSError:
+        return False
+    if not base.is_dir():
+        return False
+    sz = _dir_size(base)
+    if sz < 256 * 1024:
+        return False
+    marker_names = (
+        "config.json",
+        "configuration.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "model_index.json",
+    )
+    for name in marker_names:
+        p = base / name
+        if p.is_file():
+            return True
+    for dirpath, _dirnames, filenames in os.walk(str(base), followlinks=True):
+        for fn in filenames:
+            lower = fn.lower()
+            if lower.endswith(".safetensors"):
+                return True
+            if lower.endswith(".gguf"):
+                return True
+            if lower.endswith(".bin") and "model" in lower:
+                return True
+            if fn == "pytorch_model.bin":
+                return True
+    return False
+
+
+def heal_hub_records_if_cached_model_complete(active_model_ids: set[str]) -> None:
+    """
+    本机 ``hub/models`` 目录已可用，但 JSON 仍为 failed/interrupted 时，
+    补写为 completed（避免训练页 ``readyHubModels`` 为空而误拦）。
+    """
+    mdir = modelscope_hub_root() / "models"
+    if not mdir.is_dir():
+        return
+    records = _load_hub_records()
+    to_heal: list[tuple[str, Path]] = []
+    for a in sorted(mdir.iterdir(), key=lambda x: x.name.lower()):
+        if not a.is_dir() or a.name.startswith("."):
+            continue
+        for b in sorted(a.iterdir(), key=lambda x: x.name.lower()):
+            if not (b.is_dir() and not b.name.startswith(".")):
+                continue
+            mid = f"{a.name}/{b.name}"
+            rec = records.get(mid)
+            if rec is None:
+                continue
+            if mid in active_model_ids:
+                continue
+            st = rec.get("status")
+            if st == "completed":
+                continue
+            if st not in ("failed", "interrupted", "downloading"):
+                continue
+            if _hub_model_dir_looks_complete(b):
+                try:
+                    to_heal.append((mid, b.resolve()))
+                except OSError:
+                    pass
+    for mid, path in to_heal:
+        try:
+            record_hub_download_success(
+                mid,
+                str(path),
+                files_completed=int((records.get(mid) or {}).get("files_total") or 0),
+                total_bytes_expected=int((records.get(mid) or {}).get("total_bytes_expected") or 0),
+            )
+        except Exception:
+            pass
+
+
 def _dir_size(p: Path) -> int:
     """
     统计目录下普通文件总字节数。

@@ -41,6 +41,7 @@ async def list_hub() -> dict[str, Any]:
     running = await asyncio.to_thread(hub_download_jobs.list_running_jobs)
     active_mids = {str(j.get("model_id", "")).strip() for j in running if j.get("model_id")}
     await asyncio.to_thread(mscm.prune_stale_downloading_records, active_mids)
+    await asyncio.to_thread(mscm.heal_hub_records_if_cached_model_complete, active_mids)
     return {
         "items": mscm.list_hub_models(),
         "hub_root": str(mscm.modelscope_hub_root()),
