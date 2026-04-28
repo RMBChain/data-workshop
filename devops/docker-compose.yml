@@ -29,16 +29,11 @@ services:
       - "127.0.0.1:8702:8702"
     volumes:
       - ..:/workspace/project
-      - workshop_state:/var/lib/workshop
     environment:
       - WORKSHOP_LABEL_STUDIO_URL=http://host.docker.internal:8080
       - WORKSHOP_MERGE_USE_TMP_STAGING=1
-      - WORKSHOP_WORKSPACE_ROOT=/workspace/project
-      - WORKSHOP_DB_PATH=/var/lib/workshop/workshop.db
+      - WORKSHOP_WORKSPACE_ROOT=/workspace/project/working_data
       - WORKSHOP_LOG_LEVEL=INFO
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
-
-volumes:
-  workshop_state:
