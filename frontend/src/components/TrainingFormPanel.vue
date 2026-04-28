@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { message } from "ant-design-vue";
+import { message, Modal } from "ant-design-vue";
 import { InfoCircleOutlined, QuestionCircleOutlined, ReloadOutlined } from "@ant-design/icons-vue";
 import * as echarts from "echarts";
 import { computed, inject, nextTick, onMounted, onUnmounted, reactive, ref, toRaw, watch, type Ref } from "vue";
@@ -199,8 +199,9 @@ const currentJobNameDisplay = computed(() => {
   return "";
 });
 
+/** 与 GET /api/models/hub 一致：无 download_record 表示本目录非本应用记录的下载但仍在本机 hub 中存在，可选用。 */
 function isHubDownloadSuccess(rec: HubDownloadRecord | undefined): boolean {
-  if (!rec) return false;
+  if (!rec) return true;
   if (rec.status === "failed" || rec.status === "downloading" || rec.status === "interrupted") {
     return false;
   }
@@ -258,18 +259,40 @@ function syncModelFromHub() {
   form.model = list[0]?.model_id ?? "";
 }
 
-async function loadHubModels() {
+/** @returns 是否成功拉到 hub 列表（失败时已 toast，勿再推断「可用模型数为 0」） */
+async function loadHubModels(): Promise<boolean> {
   loadingHub.value = true;
   try {
     const r = await http.get<{ items: HubModelRow[] }>("/api/models/hub");
     hubModels.value = r.data.items ?? [];
     syncModelFromHub();
+    return true;
   } catch {
     hubModels.value = [];
     message.error("无法加载已下载模型列表，请检查网络或稍后重试");
+    return false;
   } finally {
     loadingHub.value = false;
   }
+}
+
+/** 打开训练面板且 hub 已成功加载但仍无可选用模型时用 Modal 醒目提示（与「开始训练」前置校验一致）。 */
+function promptIfNoReadyHubModels() {
+  if (readyHubModels.value.length > 0) return;
+  Modal.confirm({
+    title: "暂无可用于训练的模型",
+    content:
+      "训练需要先在本机就绪至少一个基座模型。请打开侧边栏「设置 → 模型管理」完成下载；若仅有下载中、失败或中断条目，请先处理后再开始训练。",
+    okText: "前往模型管理",
+    cancelText: "稍后",
+    centered: true,
+    width: 520,
+    maskClosable: false,
+    zIndex: 1100,
+    onOk() {
+      void router.push("/models");
+    },
+  });
 }
 
 type DatasetVersionRow = {
@@ -801,7 +824,7 @@ watch(
     try {
       if (jid) {
         await loadDatasetVersions();
-        await loadHubModels();
+        if (await loadHubModels()) promptIfNoReadyHubModels();
         await initCascadeFromExistingJob(jid);
         const row = props.jobs.find((j) => (j as { id?: string }).id === jid) as
           | { request?: Record<string, unknown> }
@@ -814,7 +837,7 @@ watch(
         syncModelFromHub();
       } else {
         await loadDatasetVersions();
-        await loadHubModels();
+        if (await loadHubModels()) promptIfNoReadyHubModels();
         syncModelFromHub();
       }
     } catch (e) {
