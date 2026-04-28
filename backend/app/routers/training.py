@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 from typing import Any
 
 import yaml
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, ValidationError
 
 from backend.app.deps import WorkspaceRoot, get_workspace_root
@@ -330,32 +329,6 @@ async def get_training_metrics(job_id: str) -> dict:
     return {"job_id": job_id, "series": parse_training_log_metrics(text), "progress": prog}
 
 
-@router.get("/training/jobs/{job_id}/logs/stream")
-async def stream_training_logs(
-    job_id: str,
-    interval: float = Query(1.0, ge=0.2, le=5.0),
-) -> Any:
-    """简易 SSE：定期推送当前日志尾（与轮询等效，前端可二选一）。"""
-
-    async def _gen() -> Any:
-        last = ""
-        while True:
-            j = _manager_singleton().get_job(job_id)
-            if not j:
-                yield f"data: {json.dumps({'error': '任务不存在'})}\n\n"
-                return
-            text, truncated = _manager_singleton().read_log(job_id)
-            if text != last:
-                last = text
-                yield f"data: {json.dumps({'text': text, 'truncated': truncated, 'status': j.status}, ensure_ascii=False)}\n\n"
-            if j.status in ("succeeded", "failed", "cancelled"):
-                yield f"data: {json.dumps({'status': j.status, 'end': True}, ensure_ascii=False)}\n\n"
-                return
-            await asyncio.sleep(interval)
-
-    return StreamingResponse(_gen(), media_type="text/event-stream")
-
-
 class TrainJobRenameBody(BaseModel):
     job_name: str = Field(..., min_length=1, description="训练任务显示名称")
 
@@ -399,19 +372,6 @@ async def export_training_yaml(job_id: str | None = Query(None)) -> Response:
     )
 
 
-@router.get("/training/form-params")
-async def get_training_form_params(
-    job_id: str = Query(..., min_length=1, description="与 GET /api/training/jobs/{id} 中 request 为同一条数据"),
-) -> JSONResponse:
-    jid = job_id.strip()
-    job = _manager_singleton().get_job(jid)
-    if not job:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    req = job.request
-    p = dict(req) if isinstance(req, dict) else None
-    return JSONResponse(content={"params": p}, headers=_NO_CACHE_HEADERS)
-
-
 async def _persist_training_form_params(request: Request, job_id: str) -> JSONResponse:
     """将表单写入该任务在库中的 request_json，经 TrainJobCreate 校验，不启训练子进程（与仅查看的 request 同一条）。"""
     try:
@@ -438,14 +398,6 @@ async def _persist_training_form_params(request: Request, job_id: str) -> JSONRe
 
 @router.post("/training/form-params")
 async def post_training_form_params(
-    request: Request,
-    job_id: str = Query(..., min_length=1, description="要更新的训练任务 id"),
-) -> JSONResponse:
-    return await _persist_training_form_params(request, job_id)
-
-
-@router.put("/training/form-params")
-async def put_training_form_params(
     request: Request,
     job_id: str = Query(..., min_length=1, description="要更新的训练任务 id"),
 ) -> JSONResponse:

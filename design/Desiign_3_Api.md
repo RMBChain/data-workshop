@@ -150,16 +150,13 @@
 | PATCH | `/api/training/jobs/{job_id}` | 改名（`job_name`） | **已实现** |
 | GET | `/api/training/jobs/{job_id}` | 详情 | **已实现** |
 | GET | `/api/training/jobs/{job_id}/logs` | `text`、`truncated` | **已实现** |
-| GET | `/api/training/jobs/{job_id}/logs/stream` | SSE，定时推送当前日志尾 | **已实现** |
 | GET | `/api/training/jobs/{job_id}/metrics` | `series`（loss/lr 等）+ `progress` | **已实现** |
 | POST | `/api/training/jobs/{job_id}/cancel` | 取消 | **已实现** |
 | DELETE | `/api/training/jobs/{job_id}` | 删除（已结束任务等，见错误提示） | **已实现** |
 | POST | `/api/training/jobs/{job_id}/retry` | 同输出目录从最新 checkpoint **继续训练** | **已实现** |
 | POST | `/api/training/config/yaml/parse` | Body：`yaml` 文本 → 校验为 `TrainJobCreate` | **已实现** |
 | GET | `/api/training/config/yaml/export` | Query：可选 `job_id`；下载 YAML | **已实现** |
-| GET | `/api/training/form-params` | Query：`job_id` → 当前 `request` | **已实现** |
 | POST | `/api/training/form-params` | Query：`job_id`；Body：JSON 更新 `request_json` | **已实现** |
-| PUT | `/api/training/form-params` | 同上 | **已实现** |
 
 **状态机（含扩展）**
 

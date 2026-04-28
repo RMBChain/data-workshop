@@ -4,7 +4,7 @@ import { InfoCircleOutlined, QuestionCircleOutlined, ReloadOutlined } from "@ant
 import * as echarts from "echarts";
 import { computed, inject, nextTick, onMounted, onUnmounted, reactive, ref, toRaw, watch, type Ref } from "vue";
 import { useRouter } from "vue-router";
-import { apiErrorDetail, getApiErrorDetail, http } from "../api/http";
+import { apiErrorDetail, http } from "../api/http";
 
 type HubDownloadRecord = {
   status?: "downloading" | "completed" | "failed" | "interrupted";
@@ -476,11 +476,8 @@ async function openDatasetPathModal(kind: "train" | "val") {
     }
     datasetPathModalText.value = t;
   } catch (e: unknown) {
-    const detail = getApiErrorDetail(e);
     datasetPathModalError.value =
-      typeof detail === "string" && detail
-        ? detail
-        : "无法读取文件内容，请确认路径可访问或稍后重试";
+      apiErrorDetail(e) ?? "无法读取文件内容，请确认路径可访问或稍后重试";
   } finally {
     datasetPathModalLoading.value = false;
   }
@@ -1789,7 +1786,7 @@ watch(
 }
 </style>
 <style>
-/* 与 Training.vue 中全屏 Modal 全局样式配套；标题栏放操作按钮 */
+/* 与 Train.vue 中全屏 Modal 全局样式配套；标题栏放操作按钮 */
 .training-fullscreen-modal-wrap .training-modal-title-bar {
   display: flex;
   align-items: center;
