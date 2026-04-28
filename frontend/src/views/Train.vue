@@ -32,7 +32,7 @@ const jobColumns = [
   {
     title: "操作",
     key: "act",
-    width: 60,
+    width: 70,
   },
 ];
 

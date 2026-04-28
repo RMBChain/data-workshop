@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,7 @@ from backend.app.services.merge_training_status import training_merge_status_by_
 from backend.app.services.paths import resolve_under_workspace
 
 router = APIRouter(tags=["merge"])
+_merge_route_log = logging.getLogger("workshop.merge")
 
 
 @router.post("/merge/jobs")
@@ -33,7 +36,18 @@ async def create_merge_job(root: WorkspaceRoot, body: MergeJobCreate) -> dict[st
         resolve_under_workspace(root, "output/merged-workshop")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    t0 = time.perf_counter()
     job = get_merge_manager().create_job(body)
+    ms = (time.perf_counter() - t0) * 1000
+    tid = (body.training_job_id or "").strip() or None
+    _merge_route_log.info(
+        "POST /merge/jobs: merge_job_id=%s training_job_id=%s status=%s create_ms=%.1f workspace=%s",
+        job.id,
+        tid,
+        job.status,
+        ms,
+        root.resolve(),
+    )
     return {
         "id": job.id,
         "status": job.status,
@@ -45,22 +59,38 @@ async def create_merge_job(root: WorkspaceRoot, body: MergeJobCreate) -> dict[st
 @router.get("/merge/training-candidates")
 async def list_merge_training_candidates(root: WorkspaceRoot) -> dict[str, Any]:
     """合并页列表：训练成功/失败等任务（与训练页列表数据来源一致但范围更广，用于合并与只读回看的分流）。"""
-    return {"items": list_merge_page_training_rows(root)}
+    t0 = time.perf_counter()
+    items = list_merge_page_training_rows(root)
+    ms = (time.perf_counter() - t0) * 1000
+    _merge_route_log.info(
+        "GET /merge/training-candidates: count=%d ms=%.1f workspace=%s",
+        len(items),
+        ms,
+        root.resolve(),
+    )
+    return {"items": items}
 
 
 @router.get("/merge/training-status")
 async def get_merge_training_status(root: WorkspaceRoot) -> dict[str, Any]:
     """各训练 job_id 对应的 LoRA 合并态：未合并 / 合并中 / 已取消 / 失败 / 成功。
-    内存中最新 MergeJob 优先（避免磁盘成功掩盖后续失败尝试），无内存记录时回退到磁盘 workshop_merge_meta.json 检测。
-    output_path_by_job_id：仅合并且成功解析到输出目录时非 null（成功合并任务 request.output_path 或磁盘 meta 旁目录）。
+    内存中最新 MergeJob 优先；无内存记录时以 SQLite `merge_jobs` 持久化结果为准（不扫磁盘）。
+    output_path_by_job_id：成功时来自合并任务 request.output_path、打包表 merged_model_relpath 等。
     zip_path_by_job_id：合并成功且已打包入库时非 null（工作区相对路径）。"""
-    rows = list_merge_page_training_rows(root)
-    m = get_merge_manager()
-    by_jid, output_by_jid = training_merge_status_by_job_id(root, rows, m)
+    t_all = time.perf_counter()
     conn = get_connection(root.resolve())
+    t_rows = time.perf_counter()
+    rows = list_merge_page_training_rows(root)
+    ms_rows = (time.perf_counter() - t_rows) * 1000
+    t_status = time.perf_counter()
+    m = get_merge_manager()
+    by_jid, output_by_jid = training_merge_status_by_job_id(root, rows, m, conn)
+    ms_status = (time.perf_counter() - t_status) * 1000
+    t_db = time.perf_counter()
     jids = [str(r.get("job_id") or "").strip() for r in rows if str(r.get("job_id") or "").strip()]
     zip_by = merge_export_zip_map(conn, jids)
     merged_path_by = merge_export_merged_path_map(conn, jids)
+    ms_db = (time.perf_counter() - t_db) * 1000
     for jid in jids:
         if not jid:
             continue
@@ -75,6 +105,19 @@ async def get_merge_training_status(root: WorkspaceRoot) -> dict[str, Any]:
         mp = merged_path_by.get(jid)
         if mp and str(mp).strip():
             output_by_jid[jid] = str(mp).strip().replace("\\", "/")
+    ms_total = (time.perf_counter() - t_all) * 1000
+    merging_n = sum(1 for s in by_jid.values() if s == "merging")
+    _merge_route_log.info(
+        "GET /merge/training-status: rows=%d list_rows_ms=%.1f status_compute_ms=%.1f "
+        "sqlite_ms=%.1f total_ms=%.1f merging=%d workspace=%s",
+        len(rows),
+        ms_rows,
+        ms_status,
+        ms_db,
+        ms_total,
+        merging_n,
+        root.resolve(),
+    )
     return {
         "status_by_job_id": by_jid,
         "output_path_by_job_id": output_by_jid,
@@ -98,6 +141,7 @@ async def get_train_run_logs_on_merge_page(root: WorkspaceRoot, training_job_id:
 @router.get("/merge/training-jobs/{training_job_id}/logs")
 async def get_merge_logs_for_training_job(root: WorkspaceRoot, training_job_id: str) -> dict[str, Any]:
     """该训练 job 最近一次合并任务的日志（内存中最新任务或 SQLite `merge_jobs` + 磁盘 .log 文件）。"""
+    t0 = time.perf_counter()
     tid = (training_job_id or "").strip()
     if not tid:
         raise HTTPException(status_code=400, detail="缺少 training_job_id")
@@ -105,6 +149,13 @@ async def get_merge_logs_for_training_job(root: WorkspaceRoot, training_job_id: 
     mem = m.latest_job_for_training_id(tid)
     if mem and mem.log_path and mem.log_path.is_file():
         text, truncated = m.read_log(mem.id)
+        _merge_route_log.debug(
+            "GET /merge/training-jobs/.../logs: tid=%s source=memory merge_job_id=%s ms=%.1f chars=%d",
+            tid,
+            mem.id,
+            (time.perf_counter() - t0) * 1000,
+            len(text),
+        )
         return {
             "text": text,
             "truncated": truncated,
@@ -119,11 +170,23 @@ async def get_merge_logs_for_training_job(root: WorkspaceRoot, training_job_id: 
     p = Path(lp) if lp else Path()
     if p.is_file():
         text, truncated = read_merge_log_file(p)
+        _merge_route_log.debug(
+            "GET /merge/training-jobs/.../logs: tid=%s source=sqlite_file merge_job_id=%s ms=%.1f chars=%d",
+            tid,
+            mid,
+            (time.perf_counter() - t0) * 1000,
+            len(text),
+        )
         return {
             "text": text,
             "truncated": truncated,
             "merge_job_id": mid,
         }
+    _merge_route_log.debug(
+        "GET /merge/training-jobs/.../logs: tid=%s source=empty ms=%.1f",
+        tid,
+        (time.perf_counter() - t0) * 1000,
+    )
     return {"text": "", "truncated": False, "merge_job_id": mid}
 
 

@@ -271,7 +271,8 @@ class MergeJobManager:
         self._workspace = workspace_root.resolve()
         self._repo_root = get_settings().repo_root.resolve()
         self._jobs: dict[str, MergeJob] = {}
-        self._lock = threading.Lock()
+        # RLock：_wait、cancel 在持锁时调用 _persist_merge_job（其内再次 acquire）；用 Lock 会自死锁。
+        self._lock = threading.RLock()
 
     def _retire_merge_jobs_for_training(self, training_job_id: str) -> None:
         """新建合并前：同一训练下结束进程、清内存并删库内旧记录，只保留即将创建的新任务。"""
@@ -464,6 +465,14 @@ class MergeJobManager:
         job.process = proc
         job.status = "running"
         self._persist_merge_job(job)
+        _merge_log.info(
+            "合并子进程已启动: merge_job_id=%s training_job_id=%s pid=%s output=%s log=%s",
+            job_id,
+            tid0 or "—",
+            proc.pid,
+            out_rel,
+            log_path,
+        )
 
         def _pump() -> None:
             assert proc.stdout is not None
@@ -481,17 +490,31 @@ class MergeJobManager:
             code = proc.wait()
             post_zip_tid: str | None = None
             post_zip_out: str | None = None
+            final_status = "unknown"
             with self._lock:
                 j = self._jobs.get(job_id)
                 if not j:
+                    _merge_log.warning(
+                        "合并进程已退出但内存中无任务: merge_job_id=%s return_code=%s",
+                        job_id,
+                        code,
+                    )
                     return
                 j.return_code = code
                 j.finished_at = time.time()
+                dur_s = (j.finished_at or 0) - (j.created_at or 0)
                 if j.status == "cancelled":
                     self._persist_merge_job(j)
+                    _merge_log.info(
+                        "合并任务结束(已取消): merge_job_id=%s return_code=%s duration_s=%.1f",
+                        job_id,
+                        code,
+                        dur_s,
+                    )
                     return
                 if code == 0:
                     j.status = "succeeded"
+                    final_status = "succeeded"
                     req = j.request or {}
                     tid = req.get("training_job_id")
                     post_zip_tid = str(tid).strip() if tid else None
@@ -499,8 +522,16 @@ class MergeJobManager:
                     post_zip_out = str(op).strip() if op else None
                 else:
                     j.status = "failed"
+                    final_status = "failed"
                     j.error_message = f"进程退出码 {code}"
                 self._persist_merge_job(j)
+            _merge_log.info(
+                "合并任务结束: merge_job_id=%s status=%s return_code=%s duration_s=%.1f",
+                job_id,
+                final_status,
+                code,
+                dur_s,
+            )
             if code == 0 and post_zip_tid and post_zip_out:
                 try:
                     from backend.app.services.merge_export_zip import create_and_record_merged_zip

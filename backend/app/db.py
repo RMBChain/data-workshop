@@ -423,6 +423,51 @@ def merge_job_get_latest_by_training_id(
     return row_to_dict(row)  # type: ignore[arg-type]
 
 
+def merge_job_latest_row_per_training_id_map(
+    conn: sqlite3.Connection, training_job_ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    """每个 training_job_id 对应 `merge_jobs` 中最新一条（按 created_at），含任意 status。"""
+    ids = list(dict.fromkeys([str(x).strip() for x in training_job_ids if str(x).strip()]))
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT id, status, created_at, finished_at, log_path, error_message, request_json
+            FROM (
+              SELECT id, status, created_at, finished_at, log_path, error_message, request_json,
+                row_number() OVER (
+                  PARTITION BY json_extract(request_json, '$.training_job_id')
+                  ORDER BY created_at DESC
+                ) AS rn
+              FROM merge_jobs
+              WHERE json_extract(request_json, '$.training_job_id') IN ({placeholders})
+            ) AS sub
+            WHERE sub.rn = 1
+            """,
+            ids,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        for tid in ids:
+            row = merge_job_get_latest_by_training_id(conn, tid)
+            if row:
+                out[tid] = row
+        return out
+    for row in rows or []:
+        d = row_to_dict(row)  # type: ignore[arg-type]
+        raw = d.get("request_json") or "{}"
+        try:
+            obj = json.loads(raw) if isinstance(raw, str) else {}
+        except json.JSONDecodeError:
+            obj = {}
+        tid = str((obj or {}).get("training_job_id") or "").strip() if isinstance(obj, dict) else ""
+        if tid:
+            out[tid] = d
+    return out
+
+
 def merge_export_merged_path_map(
     conn: sqlite3.Connection, training_job_ids: list[str]
 ) -> dict[str, str | None]:
