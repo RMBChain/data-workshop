@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { message } from "ant-design-vue";
 import { EditOutlined, PlusOutlined } from "@ant-design/icons-vue";
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { apiErrorDetail, http } from "../api/http";
 import TrainingFormPanel from "../components/TrainingFormPanel.vue";
 
@@ -19,22 +19,6 @@ const trainParamsModalOpen = ref(false);
 const jobNamePrefillForForm = ref("");
 /** 每次点击「新建训练」递增，用于子组件重新生成默认训练名称 */
 const newTrainOpenSeq = ref(0);
-
-const jobColumns = [
-  { title: "训练名称", dataIndex: "job_name", key: "job_name", ellipsis: true, width: 200 },
-  { title: "数据集", dataIndex: "dataset_name", key: "dataset_name", ellipsis: true, width: 140 },
-  { title: "训练", dataIndex: "train_count", key: "train_count", width: 72 },
-  { title: "验证", dataIndex: "val_count", key: "val_count", width: 72 },
-  { title: "输出LoRA 路径", dataIndex: "output_dir", key: "output_dir", ellipsis: true, width: 220 },
-  { title: "开始时间", dataIndex: "created_at", key: "created_at", width: 100 },
-  { title: "结束时间", dataIndex: "finished_at", key: "finished_at", width: 100 },
-  { title: "状态", dataIndex: "status", key: "status", width: 60 },
-  {
-    title: "操作",
-    key: "act",
-    width: 70,
-  },
-];
 
 function formatJobTime(t: unknown): string {
   if (t == null || t === "") return "—";
@@ -75,31 +59,33 @@ async function refreshJobs() {
   jobs.value = r.data.items;
 }
 
-function trainingJobNameText(record: { job_name?: string | null }): string {
+function trainingJobNameText(record: Record<string, unknown>): string {
   const j = record.job_name;
   if (j == null || j === "") return "—";
   const s = String(j);
   return s !== "" && s !== "—" ? s : "—";
 }
 
-function trainingJobNameTitle(record: { job_name?: string | null }): string | undefined {
+function trainingJobNameTitle(record: Record<string, unknown>): string | undefined {
   const t = trainingJobNameText(record);
   return t !== "—" ? t : undefined;
 }
 
-function trainingOutputDirText(record: { output_dir?: string | null; request?: { output_dir?: unknown } }): string {
+function trainingRequest(record: Record<string, unknown>): Record<string, unknown> | undefined {
+  const r = record.request;
+  return r && typeof r === "object" ? (r as Record<string, unknown>) : undefined;
+}
+
+function trainingOutputDirText(record: Record<string, unknown>): string {
   const top = record.output_dir;
   if (typeof top === "string" && top.trim() && top !== "—") return top.trim();
-  const raw = record.request?.output_dir;
+  const raw = trainingRequest(record)?.output_dir;
   const s = typeof raw === "string" ? raw.trim() : "";
   return s || "—";
 }
 
-function trainingOutputDirVersionLevelText(record: {
-  output_dir?: string | null;
-  request?: { output_dir?: unknown; dataset_version_id?: unknown };
-}): string {
-  const reqVid = record.request?.dataset_version_id;
+function trainingOutputDirVersionLevelText(record: Record<string, unknown>): string {
+  const reqVid = trainingRequest(record)?.dataset_version_id;
   if (typeof reqVid === "string" && reqVid.trim()) {
     return `output/${reqVid.trim()}`;
   }
@@ -116,21 +102,15 @@ function trainingOutputDirVersionLevelText(record: {
   return full;
 }
 
-function trainingOutputDirRunText(record: {
-  output_dir?: string | null;
-  request?: { output_dir?: unknown; swift_run_relpath?: unknown; dataset_version_id?: unknown };
-}): string {
-  const run = record.request?.swift_run_relpath;
+function trainingOutputDirRunText(record: Record<string, unknown>): string {
+  const run = trainingRequest(record)?.swift_run_relpath;
   if (typeof run === "string" && run.trim()) return run.trim();
   return trainingOutputDirVersionLevelText(record);
 }
 
-function trainingOutputDirRunTitle(record: {
-  output_dir?: string | null;
-  request?: { output_dir?: unknown; swift_run_relpath?: unknown };
-}): string | undefined {
+function trainingOutputDirRunTitle(record: Record<string, unknown>): string | undefined {
   const lines: string[] = [];
-  const run = record.request?.swift_run_relpath;
+  const run = trainingRequest(record)?.swift_run_relpath;
   if (typeof run === "string" && run.trim()) {
     lines.push(`ms-swift 运行目录：${run.trim()}`);
   }
@@ -141,6 +121,43 @@ function trainingOutputDirRunTitle(record: {
   return lines.length ? lines.join("\n") : undefined;
 }
 
+type TrainJobMetaRow = {
+  label: string;
+  value: string;
+  /** 路径类：ellipsis + Tooltip 展示完整 tooltip */
+  pathTooltip?: string;
+};
+
+function trainingJobCardMeta(record: Record<string, unknown>): TrainJobMetaRow[] {
+  const status = typeof record.status === "string" ? record.status : String(record.status ?? "");
+  const outRun = trainingOutputDirRunText(record);
+  const outTooltip = trainingOutputDirRunTitle(record);
+  return [
+    { label: "数据集", value: trainingDatasetTooltipField(record.dataset_name) },
+    { label: "项目", value: trainingDatasetTooltipField(record.project_title) },
+    { label: "批次", value: trainingDatasetTooltipField(record.batch_name) },
+    { label: "训练", value: formatJobSplitCount(record.train_count) },
+    { label: "验证", value: formatJobSplitCount(record.val_count) },
+    {
+      label: "输出 LoRA 路径",
+      value: outRun,
+      pathTooltip: outRun !== "—" && outTooltip ? outTooltip : outRun !== "—" ? outRun : undefined,
+    },
+    { label: "开始时间", value: formatJobTime(record.created_at) },
+    { label: "结束时间", value: formatJobEnd(record.finished_at, status) },
+  ];
+}
+
+function trainingJobStatusTagColor(status: unknown): string {
+  const s = (typeof status === "string" ? status : String(status ?? "")).trim();
+  if (s === "succeeded") return "success";
+  if (s === "failed") return "error";
+  if (s === "cancelled") return "warning";
+  if (s === "running" || s === "pending") return "processing";
+  if (s === "parameters_saved") return "default";
+  return "default";
+}
+
 /** 数据集列 tooltip：项目 / 批次展示 */
 function trainingDatasetTooltipField(v: unknown): string {
   if (v == null || v === "") return "—";
@@ -148,7 +165,7 @@ function trainingDatasetTooltipField(v: unknown): string {
   return s || "—";
 }
 
-function openTrainingJobNameEditor(record: { id?: string; job_name?: string | null }) {
+function openTrainingJobNameEditor(record: Record<string, unknown>) {
   if (!record?.id) return;
   jobNameEditId.value = String(record.id);
   const j = record.job_name != null ? String(record.job_name) : "";
@@ -186,7 +203,9 @@ function openNewTrainModal() {
 
 function selectJob(id: string) {
   currentJobId.value = id;
-  const row = jobs.value.find((j) => (j as { id?: string }).id === id) as { job_name?: string | null } | undefined;
+  const row = jobs.value.find((j) => (j as Record<string, unknown>).id === id) as
+    | Record<string, unknown>
+    | undefined;
   const t = row ? trainingJobNameText(row) : "—";
   jobNamePrefillForForm.value = t !== "—" ? t : "";
   trainParamsModalOpen.value = true;
@@ -205,6 +224,8 @@ async function deleteJobById(jobId: string) {
 onMounted(() => {
   void refreshJobs();
 });
+
+const jobRows = computed(() => jobs.value as Record<string, unknown>[]);
 </script>
 
 <template>
@@ -227,86 +248,71 @@ onMounted(() => {
       </div>
     </div>
 
-    <a-table
-      :columns="jobColumns"
-      :data-source="(jobs as Record<string, unknown>[]) as any"
-      :pagination="false"
-      size="small"
-      row-key="id"
-    >
-      <template #bodyCell="{ column, text, record }">
-        <template v-if="column.key === 'act' && record && typeof record === 'object' && 'id' in record">
-          <a-space :size="8" align="center">
-            <a @click="selectJob(String((record as { id: string }).id))">训练</a>
+    <div v-if="jobRows.length" class="train-job-card-grid">
+      <a-card
+        v-for="record in jobRows"
+        :key="String(record.id)"
+        class="train-job-card"
+        size="small"
+        hoverable
+      >
+        <template #title>
+          <div class="train-job-card-title">
+            <span class="train-job-card-title-text" :title="trainingJobNameTitle(record)">
+              {{ trainingJobNameText(record) }}
+            </span>
+          </div>
+        </template>
+        <template #extra>
+          <span class="train-job-card-extra" @click.stop>
+            <EditOutlined class="training-job-name-edit" @click="openTrainingJobNameEditor(record)" />
+            <a-tag :color="trainingJobStatusTagColor(record.status)">{{ formatJobStatus(record.status) }}</a-tag>
+          </span>
+        </template>
+        <div class="train-job-card-meta">
+          <div
+            v-for="row in trainingJobCardMeta(record)"
+            :key="row.label"
+            class="train-job-card-meta-row"
+          >
+            <span class="train-job-card-meta-label">{{ row.label }}</span>
+            <div
+              v-if="row.pathTooltip && row.value !== '—'"
+              class="train-job-card-meta-value-wrap"
+            >
+              <a-tooltip
+                :title="row.pathTooltip"
+                placement="topLeft"
+                :overlay-style="{ maxWidth: 'min(90vw, 560px)' }"
+              >
+                <span class="train-job-card-meta-value train-job-card-meta-value--ellipsis">
+                  {{ row.value }}
+                </span>
+              </a-tooltip>
+            </div>
+            <span
+              v-else
+              class="train-job-card-meta-value"
+              :title="row.value"
+            >
+              {{ row.value }}
+            </span>
+          </div>
+          <div class="train-job-card-meta-actions">
+            <a-button type="link" @click="selectJob(String(record.id))">训练</a-button>
             <a-popconfirm
               title="确定删除？将移除任务记录与日志；仅当无其它任务共用同一 output 目录时，才删除该目录下文件（如 checkpoint/LoRA）。"
               ok-text="确定"
               cancel-text="取消"
-              @confirm="deleteJobById(String((record as { id: string }).id))"
+              @confirm="deleteJobById(String(record.id))"
             >
-              <a-button type="link" danger size="small" style="padding: 0; height: auto">删除</a-button>
+              <a-button type="link" danger>删除</a-button>
             </a-popconfirm>
-          </a-space>
-        </template>
-        <span v-else-if="column.key === 'created_at' && record && typeof record === 'object'">{{
-          formatJobTime((record as Record<string, unknown>).created_at)
-        }}</span>
-        <span v-else-if="column.key === 'finished_at' && record && typeof record === 'object'">{{
-          formatJobEnd((record as Record<string, unknown>).finished_at, (record as { status?: string }).status)
-        }}</span>
-        <span v-else-if="column.key === 'status' && record && typeof record === 'object'">{{
-          formatJobStatus((record as Record<string, unknown>).status)
-        }}</span>
-        <span v-else-if="column.key === 'train_count' && record && typeof record === 'object'">{{
-          formatJobSplitCount((record as Record<string, unknown>).train_count)
-        }}</span>
-        <span v-else-if="column.key === 'val_count' && record && typeof record === 'object'">{{
-          formatJobSplitCount((record as Record<string, unknown>).val_count)
-        }}</span>
-        <span v-else-if="column.key === 'job_name' && record && typeof record === 'object'" class="training-job-name-cell" @click.stop>
-          <span class="training-job-name-text" :title="trainingJobNameTitle(record as { job_name?: string | null })">
-            {{ trainingJobNameText(record as { job_name?: string | null }) }}
-          </span>
-          <EditOutlined class="training-job-name-edit" @click="openTrainingJobNameEditor(record as { id?: string; job_name?: string | null })" />
-        </span>
-        <span
-          v-else-if="column.key === 'output_dir' && record && typeof record === 'object'"
-          :title="
-            trainingOutputDirRunTitle(
-              record as { output_dir?: string | null; request?: { output_dir?: unknown; swift_run_relpath?: unknown } },
-            )
-          "
-        >
-          {{
-            trainingOutputDirRunText(
-              record as {
-                output_dir?: string | null;
-                request?: { output_dir?: unknown; swift_run_relpath?: unknown; dataset_version_id?: unknown };
-              },
-            )
-          }}
-        </span>
-        <a-tooltip
-          v-else-if="column.key === 'dataset_name' && record && typeof record === 'object'"
-          placement="topLeft"
-        >
-          <template #title>
-            <div>
-              项目：{{
-                trainingDatasetTooltipField((record as Record<string, unknown>).project_title)
-              }}
-            </div>
-            <div>
-              批次：{{
-                trainingDatasetTooltipField((record as Record<string, unknown>).batch_name)
-              }}
-            </div>
-          </template>
-          <span class="training-dataset-name-cell">{{ text }}</span>
-        </a-tooltip>
-        <span v-else>{{ text }}</span>
-      </template>
-    </a-table>
+          </div>
+        </div>
+      </a-card>
+    </div>
+    <a-empty v-else description="暂无训练任务。请点击右上角「+」新建训练。" style="margin-bottom: 16px" />
 
     <a-modal
       v-model:open="jobNameEditOpen"
@@ -337,18 +343,105 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.training-job-name-cell {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
+.train-job-card-grid {
+  margin-top: 4px;
+  margin-bottom: 16px;
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 350px), 1fr));
+  gap: 16px;
 }
-.training-job-name-text {
+.train-job-card {
+  border-radius: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.train-job-card :deep(.ant-card-head) {
+  min-height: 48px;
+  padding: 0 16px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+.train-job-card :deep(.ant-card-head-title) {
+  padding: 10px 0;
+  min-width: 0;
+}
+.train-job-card :deep(.ant-card-extra) {
+  padding: 10px 0;
+}
+.train-job-card :deep(.ant-card-body) {
+  padding: 12px 16px 14px;
+}
+.train-job-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.train-job-card-title-text {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 600;
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.88);
+}
+.train-job-card-extra {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.train-job-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+.train-job-card-meta-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  min-width: 0;
+}
+.train-job-card-meta-actions {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.train-job-card-meta-actions :deep(.ant-btn) {
+  padding-inline: 4px;
+}
+.train-job-card-meta-label {
+  flex-shrink: 0;
+  width: 96px;
+  color: rgba(0, 0, 0, 0.45);
+  line-height: 1.5;
+}
+.train-job-card-meta-value {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.5;
+  word-break: break-all;
+  color: rgba(0, 0, 0, 0.85);
+}
+.train-job-card-meta-value-wrap {
+  flex: 1;
+  min-width: 0;
+}
+.train-job-card-meta-value-wrap :deep(.ant-tooltip-disabled-compatible-wrapper) {
+  display: block;
+  max-width: 100%;
+}
+.train-job-card-meta-value--ellipsis {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: normal;
 }
 .training-job-name-edit {
   flex-shrink: 0;
@@ -358,15 +451,6 @@ onMounted(() => {
 }
 .training-job-name-edit:hover {
   color: var(--ant-primary-color, #1677ff);
-}
-.training-dataset-name-cell {
-  display: inline-block;
-  max-width: 100%;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: bottom;
 }
 .datasets-header-add-btn {
   flex-shrink: 0;
