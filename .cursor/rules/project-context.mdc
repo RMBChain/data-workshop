@@ -12,7 +12,7 @@ alwaysApply: true
 
 - 本地前端默认 **8701**（`vite.config.ts`），Vite 将 **`/api` 代理到 127.0.0.1:8702**。
 - 后端路由在 `main.py` 中**统一** `include_router(..., prefix="/api")`，故前端请求形如 **`/api/...`**（相对根路径，由代理转发）。
-- 生产构建时通常由 **nginx 同域反代 `/api`**；前端 axios（`frontend/src/api/http.ts`）**`baseURL` 为空字符串**，与上述约定一致。
+- 前端 axios（`frontend/src/api/http.ts`）**`baseURL` 为空字符串**，与上述约定一致。
 
 # 环境变量（后端）
 

@@ -51,19 +51,33 @@ ENV PATH="/workspace/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr
 # PyTorch 官方 whl/cpu 是 PEP503 索引，可用 -i；阿里云 pytorch-wheels/cpu 是目录页，须用 --find-links（-f），不能用 -i
 # 官方备用：--build-arg PYTORCH_CPU_FIND_LINKS=https://download.pytorch.org/whl/cpu
 ARG PYTORCH_CPU_FIND_LINKS=https://mirrors.aliyun.com/pytorch-wheels/cpu
-RUN uv pip install torch==2.6.0+cpu torchvision==0.21.0+cpu torchaudio==2.6.0+cpu \
+RUN uv pip install \
+  torch==2.6.0+cpu torchvision==0.21.0+cpu torchaudio==2.6.0+cpu \
   -f ${PYTORCH_CPU_FIND_LINKS} \
   -i ${PYPI_INDEX}
-RUN uv pip install "ms-swift[all]==4.0.3"            -i ${PYPI_INDEX}
-RUN uv pip install opencv-python-headless==4.13.0.92 -i ${PYPI_INDEX}
-RUN uv pip install transformers==5.3.0               -i ${PYPI_INDEX}
-RUN uv pip install qwen_vl_utils==0.0.14             -i ${PYPI_INDEX}
-RUN uv pip install tensorboard==2.20.0               -i ${PYPI_INDEX}
-RUN uv pip install decord==0.6.0                     -i ${PYPI_INDEX}
-RUN uv pip install cleanvision==0.3.7                -i ${PYPI_INDEX}
-RUN uv pip install jinja2==3.1.6                     -i ${PYPI_INDEX}
-# 与 data-workshop workshop-requirements 一致；即使纯 CPU 也会 import torch.cuda，用官方 nvidia-ml-py 替代弃用的 pynvml 包，避免 FutureWarning
-RUN uv pip install "nvidia-ml-py>=12.560.0"         -i ${PYPI_INDEX}
+RUN uv pip install "ms-swift[all]==4.0.3"   -i ${PYPI_INDEX}
+# 以下在 ms-swift 之后固定版本，覆盖其传递依赖（与文档 pip 快照一致）
+RUN uv pip install opencv-python-headless==4.13.0.92   -i ${PYPI_INDEX}
+# 分层安装：改某一版本时 Docker 可复用上方缓存（hub 在 transformers 之后可单独调下限）
+RUN uv pip install transformers==5.3.0   -i ${PYPI_INDEX}
+RUN uv pip install "huggingface_hub>=0.20"   -i ${PYPI_INDEX}
+RUN uv pip install qwen_vl_utils==0.0.14   -i ${PYPI_INDEX}
+RUN uv pip install tensorboard==2.20.0   -i ${PYPI_INDEX}
+RUN uv pip install decord==0.6.0   -i ${PYPI_INDEX}
+RUN uv pip install cleanvision==0.3.7   -i ${PYPI_INDEX}
+RUN uv pip install jinja2==3.1.6   -i ${PYPI_INDEX}
+# swift/量化栈常用；与 ms-swift 可能重复装，此行保证下限版本
+RUN uv pip install "bitsandbytes>=0.43.0"   -i ${PYPI_INDEX}
+# 即使纯 CPU 也会 import torch.cuda，用官方 nvidia-ml-py 替代弃用的 pynvml 包，避免 FutureWarning
+RUN uv pip install "nvidia-ml-py>=12.560.0"   -i ${PYPI_INDEX}
+# data-workshop FastAPI：每项独立一层，改单个依赖时不重跑其余 pip
+RUN uv pip install "fastapi>=0.115"   -i ${PYPI_INDEX}
+RUN uv pip install "uvicorn[standard]>=0.32"   -i ${PYPI_INDEX}
+RUN uv pip install python-multipart   -i ${PYPI_INDEX}
+RUN uv pip install pyyaml   -i ${PYPI_INDEX}
+RUN uv pip install httpx   -i ${PYPI_INDEX}
+RUN uv pip install "pydantic-settings>=2.0"   -i ${PYPI_INDEX}
+RUN uv pip install "psutil>=5.9"   -i ${PYPI_INDEX}
 # RUN uv cache clean
 
 RUN printf '%s\n' \
@@ -89,8 +103,11 @@ RUN REAL_PY="$(readlink -f /workspace/.venv/bin/python)" && \
     ln -sf /workspace/.venv/bin/pip /usr/local/bin/pip3
 
 # 4. 暴露端口
-# 远程调试 SSH 5622，SWIFT Web UI 常用 7860
-EXPOSE 5622 7860
+# 远程调试 SSH 5622，SWIFT Web UI 常用 7860，data-workshop API 与 compose 一致 8702
+EXPOSE 5622 7860 8702
+
+# data-workshop：挂载代码到 /workspace/project 后 import backend.app
+ENV PYTHONPATH=/workspace/project
 
 # 5. 启动脚本 (关键：同时启动 SSH 和保持容器运行)
 RUN echo '#!/bin/bash\n\

@@ -31,7 +31,6 @@ class Settings(BaseSettings):
     # 本地开发前端（Vite 等）
     cors_origins: str = (
         "http://127.0.0.1:5173,http://localhost:5173,"
-        "http://127.0.0.1:8601,http://localhost:8601,"
         "http://127.0.0.1:8701,http://localhost:8701"
     )
     # ms-swift 可执行文件（或 `python -m swift` 由实现侧切分），Docker 中通常为 PATH 内 `swift`

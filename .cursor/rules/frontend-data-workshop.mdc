@@ -11,7 +11,7 @@ alwaysApply: false
 
 # HTTP 与 API
 
-- 统一使用 `frontend/src/api/http.ts` 导出的 **`http`**（`baseURL: ""`），请求路径以 **`/api/...`** 开头，与 Vite 代理及生产反代一致。
+- 统一使用 `frontend/src/api/http.ts` 导出的 **`http`**（`baseURL: ""`），请求路径以 **`/api/...`** 开头，与 Vite 开发代理一致。
 - 在视图中常见：`import { http } from "../api/http"` 或按深度 `../../api/http`。
 - 复杂列表/任务页常见：**轮询**（`setInterval` + 离场 `onUnmounted` 清理）、`message` 反馈（`ant-design-vue`）。
 
