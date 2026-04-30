@@ -3,6 +3,16 @@ import { message } from "ant-design-vue";
 import { computed, onMounted, ref, watch } from "vue";
 import { http } from "../api/http";
 
+const props = withDefaults(
+  defineProps<{
+    /** 在 Modal 等场景中嵌入时为 true，不显示页面级标题 */
+    embedded?: boolean;
+    /** 与训练任务 id 一致时，优先选中 `output/merged-workshop/{id}` 对应的合并产物 */
+    prefillJobId?: string | null;
+  }>(),
+  { embedded: false, prefillJobId: null },
+);
+
 type MergedModelRow = {
   id: string;
   path: string;
@@ -35,11 +45,28 @@ function filterMergedOption(input: string, option: { value?: string | null }) {
   return `${m.label} ${m.path} ${extra}`.toLowerCase().includes(q);
 }
 
+/** 合并产物目录末段与训练任务 id 一致（见 mergeOutputRelForTrainingJob） */
+function mergedPathMatchesTrainingJob(pathRaw: string, trainingJobId: string): boolean {
+  const p = pathRaw.replace(/\\/g, "/").replace(/\/+$/, "");
+  const tid = trainingJobId.trim();
+  if (!tid) return false;
+  const suffix = `/merged-workshop/${tid}`;
+  return p.endsWith(suffix) || p === `output${suffix}`;
+}
+
+function applyPrefillJobId() {
+  const tid = (props.prefillJobId ?? "").trim();
+  if (!tid || !mergedModels.value.length) return;
+  const hit = mergedModels.value.find((m) => mergedPathMatchesTrainingJob(m.path, tid));
+  if (hit) selectedMergedPath.value = hit.path;
+}
+
 async function loadMergedModels() {
   mergedModelsLoading.value = true;
   try {
     const r = await http.get("/api/eval/merged-models");
     mergedModels.value = (r.data.items ?? []) as MergedModelRow[];
+    applyPrefillJobId();
   } catch {
     mergedModels.value = [];
   } finally {
@@ -91,6 +118,11 @@ onMounted(() => {
   void loadMergedModels();
 });
 
+watch(
+  () => props.prefillJobId,
+  () => applyPrefillJobId(),
+);
+
 watch(selectedMergedPath, (p) => {
   if (!p) {
     dataPath.value = DEFAULT_VAL;
@@ -125,7 +157,7 @@ async function start() {
 
 <template>
   <div>
-    <a-typography-title :level="4">评测</a-typography-title>
+    <a-typography-title v-if="!embedded" :level="4">评测</a-typography-title>
     <a-alert
       type="info"
       show-icon

@@ -4,6 +4,16 @@ import { message } from "ant-design-vue";
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { apiErrorDetail, http } from "../api/http";
 
+const props = withDefaults(
+  defineProps<{
+    /** 在 Modal 等场景中嵌入时为 true，不显示页面级标题（由外层 Modal 标题承担） */
+    embedded?: boolean;
+    /** 打开时优先选中与该训练任务 id 匹配的已登记模型 */
+    prefillJobId?: string | null;
+  }>(),
+  { embedded: false, prefillJobId: null },
+);
+
 const DEFAULT_BASE = "Qwen/Qwen3-VL-2B-Instruct";
 
 const models = ref<
@@ -110,6 +120,18 @@ onBeforeUnmount(() => {
   revokeImageObjectUrl();
 });
 
+function applyPrefillJobId() {
+  const jid = (props.prefillJobId ?? "").trim();
+  if (!jid || !models.value.length) return;
+  const match = models.value.find((m) => m.job_id === jid);
+  if (match) modelId.value = match.id;
+}
+
+watch(
+  () => props.prefillJobId,
+  () => applyPrefillJobId(),
+);
+
 watch(modelId, () => {
   const id = modelId.value;
   if (!id) {
@@ -143,12 +165,15 @@ watch(modelId, () => {
 async function loadModels() {
   const r = await http.get("/api/inference/models");
   models.value = r.data.items;
-  if (models.value.length) modelId.value = models.value[0].id;
-  else {
+  if (!models.value.length) {
     modelId.value = null;
     base.value = DEFAULT_BASE;
     adapter.value = "";
+    return;
   }
+  const jid = (props.prefillJobId ?? "").trim();
+  const match = jid ? models.value.find((m) => m.job_id === jid) : undefined;
+  modelId.value = match?.id ?? models.value[0].id;
 }
 
 async function loadSelectedModel() {
@@ -210,7 +235,7 @@ async function send() {
 
 <template>
   <div>
-    <a-typography-title :level="4">LoRA 验证</a-typography-title>
+    <a-typography-title v-if="!embedded" :level="4">LoRA 验证</a-typography-title>
     <a-alert
       type="info"
       show-icon

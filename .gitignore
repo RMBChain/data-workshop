@@ -1,17 +1,8 @@
-/output/
 /.idea/
-/label-studio-data
 # 单独部署 Label Studio 时若把数据目录放在仓库根目录
 __pycache__/
 /.env
 /frontend/node_modules/
 /frontend/dist/
-/uploads/
-/imports/
-/state/
-/versions/
-/exports
-/working_data
-
-# Docker Compose 映射的宿主 ModelScope 缓存（仓库根 `.cache/docker-modelscope`）
-/.cache/docker-modelscope/
+/working_dir
+/.cache
