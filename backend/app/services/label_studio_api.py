@@ -173,6 +173,48 @@ def safe_import_filename(suggested: str, fallback_stem: str) -> str:
     return cleaned[:160]
 
 
+async def resolve_task_image_for_import(
+    client: httpx.AsyncClient,
+    workspace_root: Path,
+    base: str,
+    token: str,
+    staging_root: Path,
+    ls_task_id: int | None,
+    img: str,
+    note: str | None,
+) -> tuple[str | None, int, str | None]:
+    """
+    解析 LS 任务中的图片引用为工作区相对路径：优先已有本地文件，否则下载到 ``staging_root/files/``。
+    返回 (image_rel, resolved 0/1, thumb_note)。
+    """
+    s = (img or "").strip()
+    if not s:
+        return None, 0, note
+    b = base.rstrip("/")
+    root = workspace_root.resolve()
+    if not s.startswith("http://") and not s.startswith("https://"):
+        try:
+            p = (root / s.replace("\\", "/").lstrip("/")).resolve()
+            p.relative_to(root)
+            if p.is_file():
+                return str(p.relative_to(root)).replace("\\", "/"), 1, note
+        except Exception:
+            pass
+
+    fetch_url = source_to_fetch_url(b, s)
+    raw_name = Path(urlparse(fetch_url).path).name
+    base_fn = safe_import_filename(raw_name, f"task{ls_task_id or 0}")
+    if "." not in base_fn:
+        base_fn = f"{base_fn}.jpg"
+    dest = staging_root / "files" / f"{int(ls_task_id) if ls_task_id is not None else 0}_{base_fn}"
+    ok = await fetch_image_to_path(client, b, token, s, dest)
+    if ok:
+        return str(dest.resolve().relative_to(root)).replace("\\", "/"), 1, note
+    if s.startswith("http://") or s.startswith("https://"):
+        return s, 0, ((note or "") + "（未下载到工作区，保留 URL）").strip() or "（未下载到工作区，保留 URL）"
+    return s, 0, ((note or "") + "（图片下载失败，请检查基址与网络）").strip() or "（图片下载失败）"
+
+
 async def test_connection(base_url: str, token: str) -> dict[str, Any]:
     """验证 Token（Legacy 或 PAT）并拉取项目列表第一页摘要。"""
     base = base_url.rstrip("/")

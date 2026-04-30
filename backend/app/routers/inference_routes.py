@@ -60,26 +60,11 @@ async def _save_playground_upload(root: Path, upload: UploadFile) -> Path:
     return dest
 
 
-def _resolve_image_from_db_or_path(
+def _resolve_image_from_workspace_path(
     root: Path,
     *,
-    import_task_id: str | None,
     image_workspace_path: str | None,
 ) -> Path | None:
-    if import_task_id:
-        row = get_connection(root).execute(
-            "SELECT image_rel FROM import_tasks WHERE id = ?",
-            (import_task_id,),
-        ).fetchone()
-        if not row or not row[0]:
-            raise HTTPException(status_code=400, detail="未找到导入任务或缺少图片路径")
-        ir = str(row[0])
-        if ir.startswith("http://") or ir.startswith("https://"):
-            raise HTTPException(
-                status_code=400,
-                detail="该任务为远程图片 URL，按需求需使用工作区已解析的本地相对路径。",
-            )
-        return resolve_under_workspace(root, ir)
     if image_workspace_path:
         p = image_workspace_path.strip().replace("\\", "/")
         return resolve_under_workspace(root, p)
@@ -171,14 +156,13 @@ class InferenceChatBody(BaseModel):
     prompt: str
     max_new_tokens: int = 256
     image_workspace_path: str | None = None
-    import_task_id: str | None = None
     messages: list[ChatMessage] | None = None
 
 
 @router.post("/inference/chat")
 async def inference_chat(request: Request, root: WorkspaceRoot) -> dict[str, Any]:
     """
-    JSON：沿用工作区内 `image_workspace_path` / `import_task_id`（均可省略，则仅文本多轮指令）。
+    JSON：可传工作区内 `image_workspace_path`（省略则仅文本/多轮）。
     multipart：字段同上，另可提供 `image` 文件；无图片时作纯文本推理。文件会保存到工作区 `uploads/playground/` 再推理。
     """
     ctype = (request.headers.get("content-type") or "").lower()
@@ -189,7 +173,6 @@ async def inference_chat(request: Request, root: WorkspaceRoot) -> dict[str, Any
         adapter: str | None = (str(form.get("adapter_path") or "").strip() or None)
         model_id = str(form.get("model_id") or "").strip() or None
         prompt = str(form.get("prompt") or "")
-        import_task_id = str(form.get("import_task_id") or "").strip() or None
         image_workspace_path = str(form.get("image_workspace_path") or "").strip() or None
         try:
             max_new_tokens = int(str(form.get("max_new_tokens") or "256"))
@@ -202,9 +185,8 @@ async def inference_chat(request: Request, root: WorkspaceRoot) -> dict[str, Any
         if isinstance(raw_upload, UploadFile) and (raw_upload.filename or "").strip():
             img_path = await _save_playground_upload(root, raw_upload)
         if img_path is None:
-            img_path = _resolve_image_from_db_or_path(
+            img_path = _resolve_image_from_workspace_path(
                 root,
-                import_task_id=import_task_id,
                 image_workspace_path=image_workspace_path,
             )
         return _run_infer(
@@ -221,9 +203,8 @@ async def inference_chat(request: Request, root: WorkspaceRoot) -> dict[str, Any
     adapter = (body.adapter_path or "").strip() or None
     base, adapter = _apply_model_id(base, adapter, body.model_id)
 
-    img_path = _resolve_image_from_db_or_path(
+    img_path = _resolve_image_from_workspace_path(
         root,
-        import_task_id=(body.import_task_id or "").strip() or None,
         image_workspace_path=(body.image_workspace_path or "").strip() or None,
     )
 

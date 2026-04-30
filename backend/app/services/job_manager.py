@@ -84,8 +84,6 @@ class TrainJobCreate(BaseModel):
     # 仅用于列表/展示，不参与 train.py 命令行
     job_name: str = Field(default="", description="展示用：训练任务名称")
     project_title: str = Field(default="", description="展示用：Label Studio 项目名")
-    import_label: str = Field(default="", description="展示用：对应 ls_imports.import_label（可选）")
-    ls_import_id: str = Field(default="", description="展示用：关联的 Label Studio 导入记录 id")
     dataset_version_id: str = Field(
         default="",
         description="仅用于展开默认 output 目录（output/<version_id>）；不参与 train 命令行。",

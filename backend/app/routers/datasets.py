@@ -80,41 +80,17 @@ def _read_jsonl_raw_preview(workspace_root: Path, rel_path: Any, max_lines: int)
     return "\n".join(lines_out)
 
 
-def _label_studio_raw_tasks_preview(conn: Any, ls_import_id: str | None, max_tasks: int) -> tuple[str, int, bool]:
-    """从 import_tasks 读取写入库内的 Label Studio 任务 JSON，拼接为可读预览文本。"""
-    if ls_import_id is None or not str(ls_import_id).strip() or max_tasks <= 0:
-        return "", 0, False
-    lid = str(ls_import_id).strip()
-    total_row = conn.execute("SELECT COUNT(*) FROM import_tasks WHERE ls_import_id = ?", (lid,)).fetchone()
-    total = int(total_row[0]) if total_row and total_row[0] is not None else 0
-    rows = conn.execute(
-        "SELECT ls_task_id, raw_json FROM import_tasks WHERE ls_import_id = ? ORDER BY ls_task_id LIMIT ?",
-        (lid, max_tasks),
-    ).fetchall()
-    chunks: list[str] = []
-    for r in rows:
-        tid = r["ls_task_id"]
-        raw = r["raw_json"]
-        header = f"// Label Studio task_id={tid}\n"
-        if not raw:
-            chunks.append(f"{header}（无 raw_json）")
-            continue
-        try:
-            obj = json.loads(raw)
-            chunks.append(header + json.dumps(obj, ensure_ascii=False, indent=2))
-        except json.JSONDecodeError:
-            chunks.append(header + str(raw))
-    text = "\n\n".join(chunks)
-    truncated = total > len(rows)
-    return text, total, truncated
-
-
 class DatasetVersionNameBody(BaseModel):
     name: str = Field(..., min_length=1, max_length=500)
 
 
-class DatasetBuildBody(BaseModel):
-    ls_import_id: str
+class DatasetBuildFromLabelStudioBody(BaseModel):
+    project_id: int = Field(..., description="Label Studio 项目 ID")
+    base_url: str | None = Field(None, description="LS 根 URL；空则用配置默认")
+    token: str = Field(..., min_length=1, description="LS API Token")
+    project_title: str | None = Field(
+        None, max_length=500, description="项目名称（可选，用于默认数据集名称）"
+    )
     add_image_token: bool = True
     train_ratio: int = Field(80, ge=1, le=100, description="至少 1%，否则训练集为空会导致 ms-swift 报错")
     val_ratio: int = Field(20, ge=0, le=100)
@@ -123,22 +99,33 @@ class DatasetBuildBody(BaseModel):
     version_name: str | None = Field(None, max_length=500, description="数据集展示名；留空则使用「项目名-时间戳」")
 
 
-@router.post("/datasets/build")
-async def dataset_build(body: DatasetBuildBody) -> dict[str, Any]:
+@router.post("/datasets/build-from-label-studio")
+async def dataset_build_from_label_studio(body: DatasetBuildFromLabelStudioBody) -> dict[str, Any]:
+    """从 Label Studio 拉取任务并生成数据集。"""
     if body.train_ratio + body.val_ratio != 100:
         raise HTTPException(status_code=400, detail="训练/验证比例之和须为 100")
     vn = body.version_name.strip() if body.version_name else ""
     version_name_out: str | None = vn if vn else None
     settings = get_settings()
     root = settings.workspace_root.resolve()
-    conn = get_connection(root)
-    b = conn.execute("SELECT 1 FROM ls_imports WHERE id = ?", (body.ls_import_id,)).fetchone()
-    if not b:
-        raise HTTPException(status_code=404, detail="导入记录不存在，无法构建数据集")
+    base = (body.base_url or settings.label_studio_url).rstrip("/")
+    from backend.app.services import label_studio_api as ls
+
+    try:
+        projects = await ls.list_projects(base, body.token)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"无法访问 Label Studio：{e}") from e
+    proj = next((p for p in projects if int(p.get("id") or 0) == int(body.project_id)), None)
+    if not proj:
+        raise HTTPException(status_code=404, detail="未找到该 project_id 对应项目")
+    title = (body.project_title or "").strip() or str(proj.get("title") or "").strip() or None
     try:
         mgr = get_dataset_manager(root)
-        job = mgr.start_build(
-            ls_import_id=body.ls_import_id,
+        job = mgr.start_build_from_label_studio(
+            label_studio_project_id=int(body.project_id),
+            label_studio_base=base,
+            label_studio_token=body.token,
+            label_studio_project_title=title,
             add_image_token=body.add_image_token,
             train_ratio=body.train_ratio,
             val_ratio=body.val_ratio,
@@ -149,11 +136,9 @@ async def dataset_build(body: DatasetBuildBody) -> dict[str, Any]:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     log.info(
-        "已提交数据集构建: job_id=%s ls_import_id=%s 比例 train/val=%d/%d",
+        "已提交 LS 直连数据集构建: job_id=%s project_id=%s",
         job.id,
-        body.ls_import_id,
-        body.train_ratio,
-        body.val_ratio,
+        body.project_id,
     )
     return {"job_id": job.id, "status": job.status}
 
@@ -167,13 +152,12 @@ async def get_dataset_job(job_id: str) -> dict[str, Any]:
         return {
             "id": j.id,
             "status": j.status,
-            "ls_import_id": j.ls_import_id,
             "progress": j.progress,
             "error_message": j.error_message,
             "result_version_id": j.result_version_id,
         }
     row = get_connection(root).execute(
-        "SELECT id, status, ls_import_id, created_at, finished_at, error_message, progress, result_version_id "
+        "SELECT id, status, created_at, finished_at, error_message, progress, result_version_id "
         "FROM dataset_build_jobs WHERE id = ?",
         (job_id,),
     ).fetchone()
@@ -183,7 +167,6 @@ async def get_dataset_job(job_id: str) -> dict[str, Any]:
     return {
         "id": d["id"],
         "status": d["status"],
-        "ls_import_id": d["ls_import_id"],
         "progress": d["progress"] or 0,
         "error_message": d["error_message"],
         "result_version_id": d["result_version_id"],
@@ -206,10 +189,9 @@ async def list_dataset_versions() -> dict[str, Any]:
     root = settings.workspace_root.resolve()
     active = app_kv_get(get_connection(root), "active_dataset_version")
     rows = get_connection(root).execute(
-        "SELECT v.id, v.ls_import_id, v.note, v.name, v.rel_dir, v.train_relpath, v.val_relpath, "
-        "v.created_at, b.project_id AS label_studio_project_id, b.project_title, b.import_label "
+        "SELECT v.id, v.note, v.name, v.rel_dir, v.train_relpath, v.val_relpath, v.created_at, "
+        "v.label_studio_project_id, v.label_studio_project_title AS project_title "
         "FROM dw_dataset v "
-        "LEFT JOIN ls_imports b ON b.id = v.ls_import_id "
         "ORDER BY v.created_at DESC"
     ).fetchall()
     items = [row_to_dict(r) for r in rows]
@@ -259,19 +241,13 @@ async def update_dataset_version(version_id: str, body: DatasetVersionNameBody) 
 async def get_version_dataset_data(
     version_id: str,
     per_split: int = Query(8, ge=1, le=50, description="训练/验证每个划分最多返回的样本条数"),
-    ls_raw_tasks: int = Query(
-        8,
-        ge=0,
-        le=50,
-        description="Label Studio 导入任务原始 JSON 最多返回条数；0 表示不返回该段预览",
-    ),
 ) -> dict[str, Any]:
-    """返回版本 meta.json、train/val JSONL 预览，以及关联 LS 导入任务中保存的原始任务 JSON 预览。"""
+    """返回版本 meta.json 与 train/val JSONL 预览。"""
     settings = get_settings()
     root = settings.workspace_root.resolve()
     conn = get_connection(root)
     row = conn.execute(
-        "SELECT id, rel_dir, train_relpath, val_relpath, ls_import_id FROM dw_dataset WHERE id = ?",
+        "SELECT id, rel_dir, train_relpath, val_relpath FROM dw_dataset WHERE id = ?",
         (version_id,),
     ).fetchone()
     if not row:
@@ -288,16 +264,12 @@ async def get_version_dataset_data(
             meta = None
 
     rel_dir_str = (str(rel_dir).strip().replace("\\", "/") if rel_dir and str(rel_dir).strip() else None)
-    ls_preview, ls_total, ls_truncated = _label_studio_raw_tasks_preview(conn, d.get("ls_import_id"), ls_raw_tasks)
     return {
         "version_id": version_id,
         "dataset": rel_dir_str,
         "meta": meta,
         "train_jsonl_preview": _read_jsonl_raw_preview(root, d.get("train_relpath"), per_split),
         "val_jsonl_preview": _read_jsonl_raw_preview(root, d.get("val_relpath"), per_split),
-        "label_studio_raw_preview": ls_preview,
-        "label_studio_raw_task_count": ls_total,
-        "label_studio_raw_truncated": ls_truncated,
     }
 
 

@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { message, Modal } from "ant-design-vue";
-import { QuestionCircleOutlined, SettingOutlined } from "@ant-design/icons-vue";
-import { computed, nextTick, onMounted, ref } from "vue";
-import DataImportGlobalPreview from "../components/DataImportGlobalPreview.vue";
+import { QuestionCircleOutlined, ReloadOutlined, SettingOutlined } from "@ant-design/icons-vue";
+import { computed, nextTick, onMounted, ref, unref, type Ref } from "vue";
 import DataImportProjectList from "../components/DataImportProjectList.vue";
 import { apiErrorDetail, formatApiDetail, getApiErrorDetail, http } from "../api/http";
 
@@ -10,6 +9,8 @@ type LsStatus = { url?: string; reachable?: boolean };
 
 type DataImportProjectListExposed = {
   refreshAfterConnectionLoaded: () => Promise<void>;
+  loadProjects: () => Promise<void>;
+  loadingProjects: Ref<boolean>;
 };
 
 type DatasetVersionRow = {
@@ -28,9 +29,6 @@ type VersionDataPayload = {
   meta: unknown;
   train_jsonl_preview: string;
   val_jsonl_preview: string;
-  label_studio_raw_preview?: string;
-  label_studio_raw_task_count?: number;
-  label_studio_raw_truncated?: boolean;
 };
 
 function jsonlPreviewLineCount(text: string): number {
@@ -59,6 +57,12 @@ const versions = ref<DatasetVersionRow[]>([]);
 const activeVersionId = ref<string | null>(null);
 
 const lsUnreachable = computed(() => status.value.reachable === false);
+
+const loadingLsProjects = computed(() => unref(projectListRef.value?.loadingProjects) ?? false);
+
+function refreshProjectList() {
+  void projectListRef.value?.loadProjects();
+}
 
 const versionNameEditOpen = ref(false);
 const versionNameEditId = ref<string | null>(null);
@@ -105,7 +109,7 @@ async function openVersionDataView(versionId: string) {
   versionViewPayload.value = null;
   try {
     const r = await http.get(`/api/datasets/versions/${encodeURIComponent(versionId)}/data`, {
-      params: { per_split: 8, ls_raw_tasks: 8 },
+      params: { per_split: 8 },
     });
     versionViewPayload.value = r.data as VersionDataPayload;
   } catch (e: unknown) {
@@ -231,6 +235,19 @@ async function testConnection() {
         <div class="data-import__title-refresh">
           <a-typography-title :level="4" class="data-import__title">数据集</a-typography-title>
         </div>
+        <a-tooltip title="刷新项目列表" placement="bottomRight" :auto-adjust-overflow="false">
+          <a-button
+            type="text"
+            class="data-import__refresh-btn"
+            :loading="loadingLsProjects"
+            aria-label="刷新项目列表"
+            @click="refreshProjectList"
+          >
+            <template #icon>
+              <ReloadOutlined />
+            </template>
+          </a-button>
+        </a-tooltip>
         <a-tooltip title="Label Studio 连接设置" placement="bottomRight" :auto-adjust-overflow="false">
           <a-button
             type="text"
@@ -262,7 +279,6 @@ async function testConnection() {
       @open-version-name-edit="openVersionNameEditor"
       @delete-version="promptDeleteVersion"
     />
-    <DataImportGlobalPreview />
 
     <a-modal
       v-model:open="versionNameEditOpen"
@@ -292,21 +308,6 @@ async function testConnection() {
           <a-tab-pane key="meta" tab="元数据">
             <pre class="dataset-version-view-pre">{{
               versionViewPayload.meta != null ? formatJson(versionViewPayload.meta) : "（无 meta.json 或无法解析）"
-            }}</pre>
-          </a-tab-pane>
-          <a-tab-pane
-            key="ls_raw"
-            :tab="`Label Studio 原始 (${versionViewPayload.label_studio_raw_task_count ?? 0})`"
-          >
-            <a-typography-paragraph v-if="versionViewPayload.label_studio_raw_truncated" type="secondary" style="margin-bottom: 8px">
-              共 {{ versionViewPayload.label_studio_raw_task_count }} 条导入任务，此处仅展示前若干条预览。
-            </a-typography-paragraph>
-            <pre class="dataset-version-view-pre">{{
-              (versionViewPayload.label_studio_raw_preview ?? "").trim()
-                ? versionViewPayload.label_studio_raw_preview
-                : versionViewPayload.label_studio_raw_task_count === 0
-                  ? "（无 Label Studio 导入任务或未关联 ls_import_id）"
-                  : "（尚无原始 JSON，请确认导入时已写入 raw_json）"
             }}</pre>
           </a-tab-pane>
           <a-tab-pane key="train" :tab="`训练样本 (${jsonlPreviewLineCount(versionViewPayload.train_jsonl_preview)})`">
@@ -405,11 +406,13 @@ async function testConnection() {
   min-width: 0;
   flex: 1;
 }
+.data-import__refresh-btn,
 .data-import__settings-btn {
   flex-shrink: 0;
   font-size: 18px;
   color: rgba(0, 0, 0, 0.45);
 }
+.data-import__refresh-btn:hover,
 .data-import__settings-btn:hover {
   color: var(--ant-primary-color, #1677ff);
 }

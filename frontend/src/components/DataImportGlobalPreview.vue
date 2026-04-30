@@ -9,7 +9,6 @@ type PipeTrainN = { id: string; label: string; status: string; merges: PipeMerge
 type PipeDatasetN = {
   id: string;
   label: string;
-  ls_import_id: string;
   virtual?: boolean;
   trainings: PipeTrainN[];
 };

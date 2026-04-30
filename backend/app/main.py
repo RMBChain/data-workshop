@@ -23,7 +23,6 @@ from backend.app.routers import (
     datasets,
     eval_routes,
     health,
-    imports,
     inference_routes,
     label_studio,
     merge_routes,
@@ -89,7 +88,6 @@ def create_app() -> FastAPI:
     app.include_router(health.router, prefix="/api")
     app.include_router(overview.router, prefix="/api")
     app.include_router(label_studio.router, prefix="/api")
-    app.include_router(imports.router, prefix="/api")
     app.include_router(datasets.router, prefix="/api")
     app.include_router(training.router, prefix="/api")
     app.include_router(inference_routes.router, prefix="/api")

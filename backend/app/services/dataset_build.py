@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import random
@@ -11,10 +12,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 # 构建数据集时最长边上限（像素），避免过大原图；仅缩小、不放大
 _DATASET_IMAGE_MAX_EDGE = 2048
 
 from backend.app.db import get_connection, json_dumps
+from backend.app.services import label_studio_api as ls_api
 from backend.app.services.paths import resolve_under_workspace
 
 log = logging.getLogger(__name__)
@@ -24,13 +28,17 @@ log = logging.getLogger(__name__)
 class DatasetBuildJob:
     id: str
     status: str
-    ls_import_id: str
     created_at: float
     finished_at: float | None = None
     error_message: str | None = None
     progress: float = 0.0
     result_version_id: str | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event)
+    # 从 Label Studio 拉取；token 仅内存、不入库
+    ls_project_id: int | None = None
+    label_studio_base: str | None = None
+    label_studio_token: str | None = field(default=None, repr=False)
+    label_studio_project_title: str | None = None
 
 
 def _default_question() -> str:
@@ -254,6 +262,105 @@ def _build_dataset_line(
     }
 
 
+async def _async_collect_lines_from_label_studio(
+    workspace: Path,
+    job: DatasetBuildJob,
+    vdir: Path,
+    img_dir: Path,
+    add_image_token: bool,
+) -> tuple[list[dict[str, Any]], int, int, int, str | None]:
+    """从 Label Studio API 拉取任务并生成 JSONL 行；临时文件在 vdir/_ls_staging，结束后删除。"""
+    pid = job.ls_project_id
+    if pid is None:
+        return [], 0, 0, 0, None
+    base = (job.label_studio_base or "").rstrip("/")
+    token = job.label_studio_token or ""
+    staging = vdir / "_ls_staging"
+    staging.mkdir(parents=True, exist_ok=True)
+    (staging / "files").mkdir(parents=True, exist_ok=True)
+
+    tasks = await ls_api.iter_project_tasks(base, token, int(pid))
+    n = len(tasks)
+    lines: list[dict[str, Any]] = []
+    skipped_resolve = 0
+    skipped_build = 0
+
+    resolved_title: str | None = (job.label_studio_project_title or "").strip() or None
+    if not resolved_title:
+        try:
+            projects = await ls_api.list_projects(base, token)
+            for p in projects:
+                if int(p.get("id") or 0) == int(pid):
+                    resolved_title = str(p.get("title") or "").strip() or None
+                    break
+        except Exception:
+            pass
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        for t in tasks:
+            if job.cancel_event.is_set():
+                break
+            tid = t.get("id")
+            data = t.get("data") or {}
+            if not isinstance(data, dict):
+                data = {}
+            img, thumb_note = ls_api.pick_image_from_task_data(data)
+            raw = json_dumps(t)
+            if not img:
+                skipped_build += 1
+                continue
+            rel, _resolved, _tn = await ls_api.resolve_task_image_for_import(
+                client,
+                workspace,
+                base,
+                token,
+                staging,
+                int(tid) if tid is not None else None,
+                img,
+                thumb_note,
+            )
+            if not rel:
+                skipped_build += 1
+                continue
+            is_url = rel.startswith("http://") or rel.startswith("https://")
+            if not is_url:
+                try:
+                    resolve_under_workspace(workspace, rel)
+                except Exception:
+                    skipped_resolve += 1
+                    continue
+            image_rel_for_line = rel
+            if not is_url:
+                try:
+                    src_p = resolve_under_workspace(workspace, rel)
+                except Exception:
+                    src_p = None
+                if src_p is not None and src_p.is_file():
+                    try:
+                        tid_int = int(tid) if tid is not None else 0
+                    except (TypeError, ValueError):
+                        tid_int = 0
+                    out_abs = _prepare_image_for_dataset(src_p, img_dir, f"task_{tid_int}")
+                    if out_abs is not None:
+                        image_rel_for_line = str(out_abs.relative_to(workspace)).replace("\\", "/")
+            ans = _extract_answer_from_ls_task(raw)
+            ut = _default_question()
+            obj = _build_dataset_line(
+                workspace, image_rel_for_line, ut, ans, prepend_image_token=add_image_token
+            )
+            if obj:
+                lines.append(obj)
+            else:
+                skipped_build += 1
+
+    try:
+        shutil.rmtree(staging, ignore_errors=True)
+    except OSError:
+        pass
+
+    return lines, skipped_resolve, skipped_build, n, resolved_title
+
+
 class DatasetBuildManager:
     def __init__(self, workspace: Path) -> None:
         self._workspace = workspace.resolve()
@@ -264,10 +371,13 @@ class DatasetBuildManager:
         with self._lock:
             return self._jobs.get(job_id)
 
-    def start_build(
+    def start_build_from_label_studio(
         self,
         *,
-        ls_import_id: str,
+        label_studio_project_id: int,
+        label_studio_base: str,
+        label_studio_token: str,
+        label_studio_project_title: str | None,
         add_image_token: bool,
         train_ratio: int,
         val_ratio: int,
@@ -282,8 +392,11 @@ class DatasetBuildManager:
         job = DatasetBuildJob(
             id=job_id,
             status="pending",
-            ls_import_id=ls_import_id,
             created_at=now,
+            ls_project_id=int(label_studio_project_id),
+            label_studio_base=label_studio_base.rstrip("/"),
+            label_studio_token=label_studio_token,
+            label_studio_project_title=(label_studio_project_title or "").strip() or None,
         )
         with self._lock:
             self._jobs[job_id] = job
@@ -292,19 +405,18 @@ class DatasetBuildManager:
         conn.execute(
             """
             INSERT INTO dataset_build_jobs (id, status, ls_import_id, created_at, progress)
-            VALUES (?, ?, ?, ?, 0)
+            VALUES (?, ?, NULL, ?, 0)
             """,
-            (job_id, "pending", ls_import_id, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),),
+            (job_id, "pending", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),),
         )
         conn.commit()
 
         log.info(
-            "数据集构建任务已入队: job_id=%s ls_import_id=%s train/val=%d/%d seed=%s",
+            "数据集构建任务已入队(LS 直连): job_id=%s project_id=%s train/val=%d/%d",
             job_id,
-            ls_import_id,
+            label_studio_project_id,
             train_ratio,
             val_ratio,
-            seed,
         )
         t = threading.Thread(
             target=self._run,
@@ -329,7 +441,7 @@ class DatasetBuildManager:
             return
         job.status = "running"
         _db_update_job(self._workspace, job_id, "running", None, 0.05, None)
-        log.info("数据集构建开始: job_id=%s ls_import_id=%s", job_id, job.ls_import_id)
+        log.info("数据集构建开始: job_id=%s (Label Studio 直连)", job_id)
 
         version_id = uuid.uuid4().hex[:12]
         rel_dir = f"dataset/{version_id}"
@@ -337,52 +449,25 @@ class DatasetBuildManager:
         vdir.mkdir(parents=True, exist_ok=True)
         img_dir = vdir / "images"
 
-        conn = get_connection(self._workspace)
-        rows = conn.execute(
-            "SELECT ls_task_id, image_rel, raw_json FROM import_tasks WHERE ls_import_id = ? AND image_rel IS NOT NULL",
-            (job.ls_import_id,),
-        ).fetchall()
-        log.info("数据集构建: 待处理 import 行数=%d (有 image_rel)", len(rows))
         lines: list[dict[str, Any]] = []
         skipped_resolve = 0
         skipped_build = 0
-        for row in rows:
-            try:
-                ls_task_id = int(row[0])
-            except (TypeError, ValueError):
-                ls_task_id = 0
-            rel, raw = row[1], row[2]
-            if not rel:
-                continue
-            is_url = rel.startswith("http://") or rel.startswith("https://")
-            if not is_url:
-                try:
-                    resolve_under_workspace(self._workspace, rel)
-                except Exception:
-                    skipped_resolve += 1
-                    continue
-            image_rel_for_line = rel
-            if not is_url:
-                try:
-                    src_p = resolve_under_workspace(self._workspace, rel)
-                except Exception:
-                    src_p = None
-                if src_p is not None and src_p.is_file():
-                    out_abs = _prepare_image_for_dataset(src_p, img_dir, f"task_{ls_task_id}")
-                    if out_abs is not None:
-                        image_rel_for_line = str(out_abs.relative_to(self._workspace)).replace("\\", "/")
-            ans = _extract_answer_from_ls_task(raw)
-            ut = _default_question()
-            obj = _build_dataset_line(
-                self._workspace, image_rel_for_line, ut, ans, prepend_image_token=add_image_token
+        n_src = 0
+        resolved_proj_title: str | None = None
+
+        if job.ls_project_id is None:
+            job.status = "failed"
+            job.error_message = "内部错误：缺少 Label Studio 项目信息"
+            job.finished_at = time.time()
+            _db_update_job(self._workspace, job_id, "failed", job.error_message, 1.0, None)
+            return
+
+        lines, skipped_resolve, skipped_build, n_src, resolved_proj_title = asyncio.run(
+            _async_collect_lines_from_label_studio(
+                self._workspace, job, vdir, img_dir, add_image_token
             )
-            if obj:
-                lines.append(obj)
-            else:
-                skipped_build += 1
-            if job.cancel_event.is_set():
-                _finish_cancel(self._workspace, job_id, job)
-                return
+        )
+        job.label_studio_token = None
 
         job.progress = 0.4
         _db_update_job(self._workspace, job_id, "running", None, 0.4, None)
@@ -402,13 +487,13 @@ class DatasetBuildManager:
             except OSError:
                 pass
             job.status = "failed"
-            job.error_message = "没有可用的本地图片样本，请检查导入任务路径是否位于工作区内"
+            job.error_message = "没有可用的图片样本，请检查 Label Studio 任务中的图片路径与网络可达性"
             job.finished_at = time.time()
             _db_update_job(self._workspace, job_id, "failed", job.error_message, 1.0, None)
             log.error(
-                "数据集构建失败 job_id=%s: 无有效样本 (import行=%d skip_resolve=%d skip_build=%d)",
+                "数据集构建失败 job_id=%s: 无有效样本 (源任务行=%d skip_resolve=%d skip_build=%d)",
                 job_id,
-                len(rows),
+                n_src,
                 skipped_resolve,
                 skipped_build,
             )
@@ -446,10 +531,14 @@ class DatasetBuildManager:
         val_p = vdir / "val.jsonl"
         tr_rel = _write(train_p, a)
         va_rel = _write(val_p, b)
+        ls_pid_ins = job.ls_project_id
+        ls_ptitle_ins = resolved_proj_title or job.label_studio_project_title
         (vdir / "meta.json").write_text(
             json_dumps(
                 {
-                    "ls_import_id": job.ls_import_id,
+                    "source": "label_studio",
+                    "label_studio_project_id": ls_pid_ins,
+                    "label_studio_project_title": ls_ptitle_ins,
                     "note": note,
                     "counts": {"train": len(a), "val": len(b), "total": n},
                     "image_preprocess": {
@@ -465,22 +554,29 @@ class DatasetBuildManager:
 
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         conn = get_connection(self._workspace)
-        brow = conn.execute(
-            "SELECT project_title FROM ls_imports WHERE id = ?",
-            (job.ls_import_id,),
-        ).fetchone()
+        proj_for_name = (resolved_proj_title or job.label_studio_project_title or "").strip() or None
         custom_vn = (version_name or "").strip()
         display_name = (
             custom_vn
             if custom_vn
-            else _default_dataset_version_name(brow["project_title"] if brow else None)
+            else _default_dataset_version_name(proj_for_name)
         )
         conn.execute(
             """
-            INSERT INTO dw_dataset (id, ls_import_id, note, name, rel_dir, train_relpath, val_relpath, test_relpath, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)
+            INSERT INTO dw_dataset (id, ls_import_id, label_studio_project_id, label_studio_project_title, note, name, rel_dir, train_relpath, val_relpath, test_relpath, created_at)
+            VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
             """,
-            (version_id, job.ls_import_id, note or "", display_name, rel_dir, tr_rel, va_rel, now),
+            (
+                version_id,
+                ls_pid_ins,
+                ls_ptitle_ins,
+                note or "",
+                display_name,
+                rel_dir,
+                tr_rel,
+                va_rel,
+                now,
+            ),
         )
         from backend.app.db import app_kv_set
 
