@@ -295,7 +295,7 @@ defineExpose({ refreshAfterConnectionLoaded });
           </template>
           <template #extra>
             <a-button type="primary" :loading="creatingDatasetIds.has(record.id)" @click.stop="openCreateDatasetModal(record)">
-              新建数据集
+              导入数据集
             </a-button>
           </template>
 
