@@ -7,7 +7,7 @@ const emit = defineEmits<{ newTrain: [] }>();
 <template>
   <div class="datasets-page-header">
     <div class="datasets-page-header__title-row">
-      <a-typography-title :level="4">LoRA 训练</a-typography-title>
+      <a-typography-title :level="4">微调</a-typography-title>
       <a-tooltip title="新建训练" placement="bottom">
         <a-button
           type="text"

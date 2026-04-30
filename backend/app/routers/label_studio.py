@@ -1,80 +1,25 @@
 from __future__ import annotations
 
-import logging
-import time
-import uuid
-from datetime import datetime
-from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.app.config import get_settings
-from backend.app.db import app_kv_get, app_kv_set, get_connection, json_dumps
+from backend.app.db import app_kv_get, app_kv_set, get_connection
 from backend.app.services import label_studio_api as ls
-from backend.app.services.paths import resolve_under_workspace
 
 router = APIRouter(tags=["label-studio"])
-log = logging.getLogger(__name__)
 
 # 持久化在 SQLite app_kv 表（与「活跃数据集」等键值同表）
 _KV_LABEL_STUDIO_BASE_URL = "label_studio.ui_base_url"
 _KV_LABEL_STUDIO_API_TOKEN = "label_studio.ui_api_token"
 
 
-async def _resolve_import_image(
-    client: httpx.AsyncClient,
-    root: Path,
-    base: str,
-    token: str,
-    imp_dir: Path,
-    ls_task_id: int | None,
-    img: str,
-    note: str | None,
-) -> tuple[str | None, int, str | None]:
-    """
-    得到写入 import_tasks 的 image_rel、resolved、thumb_note。
-    优先工作区内已有文件，否则从 LS/外链下载到 imports/<run_id>/files/。
-    """
-    s = (img or "").strip()
-    if not s:
-        return None, 0, note
-    b = base.rstrip("/")
-    if not s.startswith("http://") and not s.startswith("https://"):
-        try:
-            p = (root / s.replace("\\", "/").lstrip("/")).resolve()
-            p.relative_to(root)
-            if p.is_file():
-                return str(p.relative_to(root)).replace("\\", "/"), 1, note
-        except Exception:
-            pass
-
-    fetch_url = ls.source_to_fetch_url(b, s)
-    raw_name = Path(urlparse(fetch_url).path).name
-    base_fn = ls.safe_import_filename(raw_name, f"task{ls_task_id or 0}")
-    if "." not in base_fn:
-        base_fn = f"{base_fn}.jpg"
-    dest = imp_dir / "files" / f"{int(ls_task_id) if ls_task_id is not None else 0}_{base_fn}"
-    ok = await ls.fetch_image_to_path(client, b, token, s, dest)
-    if ok:
-        return str(dest.resolve().relative_to(root.resolve())).replace("\\", "/"), 1, note
-    if s.startswith("http://") or s.startswith("https://"):
-        return s, 0, ((note or "") + "（未下载到工作区，保留 URL）").strip() or "（未下载到工作区，保留 URL）"
-    return s, 0, ((note or "") + "（图片下载失败，请检查基址与网络）").strip() or "（图片下载失败）"
-
-
 class TestConnectionBody(BaseModel):
     base_url: str = Field(..., description="Label Studio 根 URL，如 http://127.0.0.1:8080")
     token: str = Field(..., min_length=1, description="LS API Token")
-
-
-class LabelStudioImportBody(BaseModel):
-    project_id: int
-    base_url: str | None = None
-    token: str
 
 
 class LabelStudioConnectionBody(BaseModel):
@@ -163,105 +108,3 @@ async def label_studio_projects(
         return {"items": items, "base_url": b}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"获取项目失败：{e}") from e
-
-
-@router.post("/label-studio/import")
-async def label_studio_import(body: LabelStudioImportBody) -> dict[str, Any]:
-    settings = get_settings()
-    root = settings.workspace_root.resolve()
-    base = (body.base_url or settings.label_studio_url).rstrip("/")
-
-    projects = await ls.list_projects(base, body.token)
-    proj = next((p for p in projects if int(p.get("id") or 0) == int(body.project_id)), None)
-    if not proj:
-        raise HTTPException(status_code=404, detail="未找到该 project_id 对应项目")
-
-    tasks = await ls.iter_project_tasks(base, body.token, int(body.project_id))
-    import_id = uuid.uuid4().hex
-    rel_dir = f"imports/{import_id}"
-    imp_dir = resolve_under_workspace(root, rel_dir)
-    imp_dir.mkdir(parents=True, exist_ok=True)
-
-    conn = get_connection(root)
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    import_label = datetime.now().strftime("%Y%m%d-%H%M%S")
-    conn.execute(
-        """
-        INSERT INTO ls_imports (id, project_id, project_title, label_studio_base, task_count, workspace_dir, created_at, import_label)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (import_id, int(body.project_id), str(proj.get("title") or ""), base, len(tasks), rel_dir, now, import_label),
-    )
-
-    (imp_dir / "files").mkdir(parents=True, exist_ok=True)
-
-    stored = 0
-    resolved_count = 0
-    log.info(
-        "Label Studio 导入开始: ls_import_id=%s project_id=%s title=%s task_count=%d base=%s",
-        import_id,
-        int(body.project_id),
-        str(proj.get("title") or ""),
-        len(tasks),
-        base,
-    )
-    async with httpx.AsyncClient(timeout=120.0) as dl_client:
-        n_tasks = len(tasks)
-        for t in tasks:
-            tid = t.get("id")
-            data = t.get("data") or {}
-            if not isinstance(data, dict):
-                data = {}
-            img, thumb_note = ls.pick_image_from_task_data(data)
-            resolved = 0
-            image_rel: str | None = None
-            if img:
-                image_rel, resolved, thumb_note = await _resolve_import_image(
-                    dl_client,
-                    root,
-                    base,
-                    body.token,
-                    imp_dir,
-                    int(tid) if tid is not None else None,
-                    img,
-                    thumb_note,
-                )
-                if resolved:
-                    resolved_count += 1
-            row_id = f"{import_id}-{tid}"
-            conn.execute(
-                """
-                INSERT INTO import_tasks (id, ls_import_id, ls_task_id, image_rel, resolved, thumb_note, raw_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (row_id, import_id, int(tid) if tid is not None else 0, image_rel, resolved, thumb_note, json_dumps(t)),
-            )
-            stored += 1
-            if stored == 1 or stored % 10 == 0 or stored == n_tasks:
-                log.info(
-                    "Label Studio 导入进度: %d/%d 已写入 (resolved 本地/落盘=%d) ls_import_id=%s",
-                    stored,
-                    n_tasks,
-                    resolved_count,
-                    import_id,
-                )
-
-    log.info(
-        "Label Studio 导入完成: ls_import_id=%s 任务行=%d 条图片标记为已解析(resolved)=%d 目录=%s",
-        import_id,
-        stored,
-        resolved_count,
-        rel_dir,
-    )
-
-    manifest = imp_dir / "tasks_manifest.jsonl"
-    with open(manifest, "w", encoding="utf-8") as f:
-        for t in tasks:
-            f.write(json_dumps(t) + "\n")
-    conn.commit()
-    return {
-        "ls_import_id": import_id,
-        "task_count": stored,
-        "project_title": proj.get("title"),
-        "workspace_dir": rel_dir.replace("\\", "/"),
-    }

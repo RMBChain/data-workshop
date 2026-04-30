@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { message } from "ant-design-vue";
-import { EditOutlined, ReloadOutlined } from "@ant-design/icons-vue";
+import { EditOutlined } from "@ant-design/icons-vue";
 import { reactive, ref } from "vue";
 import { apiErrorDetail, http } from "../api/http";
 
@@ -170,18 +170,17 @@ async function createDatasetFromLsProject(projectId: number, form: CreateDataset
   }
   creatingDatasetIds.add(projectId);
   selectedProjectId.value = projectId;
+  const proj = projects.value.find((p) => p.id === projectId);
+  const pt =
+    proj != null && proj.title != null && String(proj.title).trim()
+      ? String(proj.title).trim()
+      : null;
   try {
-    const ir = await http.post("/api/label-studio/import", {
+    const br = await http.post("/api/datasets/build-from-label-studio", {
       project_id: projectId,
       base_url: props.baseUrl,
       token: props.token,
-    });
-    const lsImportId = ir.data.ls_import_id as string;
-    const tc = Number(ir.data.task_count ?? 0);
-    message.success(`已从 Label Studio 拉取 ${tc} 条标注，正在生成数据集…`);
-
-    const br = await http.post("/api/datasets/build", {
-      ls_import_id: lsImportId,
+      project_title: pt,
       add_image_token: form.addImageToken,
       train_ratio: form.trainRatio,
       val_ratio: form.valRatio,
@@ -190,6 +189,7 @@ async function createDatasetFromLsProject(projectId: number, form: CreateDataset
       version_name: form.versionName,
     });
     const jobId = br.data.job_id as string;
+    message.success("正在从 Label Studio 拉取并生成数据集…");
 
     const buildPollStart = Date.now();
     for (;;) {
@@ -248,27 +248,11 @@ async function refreshAfterConnectionLoaded() {
   }
 }
 
-defineExpose({ refreshAfterConnectionLoaded });
+defineExpose({ refreshAfterConnectionLoaded, loadProjects, loadingProjects });
 </script>
 
 <template>
   <div class="data-import-project-list">
-    <a-typography-title :level="5" class="data-import-project-list__title">
-      项目列表
-      <a-tooltip title="刷新项目列表" placement="bottomRight" :auto-adjust-overflow="false">
-        <a-button
-          type="text"
-          class="data-import-project-list__refresh-btn"
-          :loading="loadingProjects"
-          aria-label="刷新项目列表"
-          @click="loadProjects"
-        >
-          <template #icon>
-            <ReloadOutlined />
-          </template>
-        </a-button>
-      </a-tooltip>
-    </a-typography-title>
     <a-spin :spinning="loadingProjects">
       <div v-if="projects.length" class="import-project-card-grid">
         <a-card
@@ -414,18 +398,6 @@ defineExpose({ refreshAfterConnectionLoaded });
 }
 .data-import-project-list__title :deep(h5) {
   margin: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.data-import-project-list__refresh-btn {
-  flex-shrink: 0;
-  font-size: 18px;
-  color: rgba(0, 0, 0, 0.45);
-  margin-left: 4px;
-}
-.data-import-project-list__refresh-btn:hover {
-  color: var(--ant-primary-color, #1677ff);
 }
 .data-import-project-list {
   width: 100%;

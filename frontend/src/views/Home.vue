@@ -1,20 +1,36 @@
 <script setup lang="ts">
 import { RouterLink } from "vue-router";
+import DataImportGlobalPreview from "../components/DataImportGlobalPreview.vue";
 
-const pipelineSteps = [
-  { key: "import-data", label: "数据与数据集", to: "/importData" as const },
-  { key: "train", label: "LoRA 训练", to: "/train" as const },
-  { key: "playground", label: "LoRA 验证", to: "/playground" as const },
-  { key: "merge", label: "LoRA 合并", to: "/merge" as const },
-  { key: "eval", label: "评测", to: "/eval" as const },  
-  { key: "export", label: "导出", to: "/export" as const },
-] as const;
+type HomeFlowTo = "/importData" | "/train" | "/playground" | "/merge" | "/eval" | "/export";
+
+type HomeFlowStep = {
+  key: string;
+  label: string;
+  to: HomeFlowTo;
+  /** 流程节点下方可选说明 */
+  desc?: string;
+};
+
+const pipelineSteps: HomeFlowStep[] = [
+  {
+    key: "import-data",
+    label: "数据集",
+    to: "/importData",
+    desc: "从 Label Studio 拉取标注并生成训练用数据集版本。",
+  },
+  { key: "train", label: "微调", to: "/train", desc: "配置并启动微调或全量训练任务。" },
+  { key: "playground", label: "验证", to: "/playground", desc: "在线试跑模型输出，快速验证效果。" },
+  { key: "merge", label: "合并", to: "/merge", desc: "将 LoRA 权重与基座模型合并导出。" },
+  { key: "eval", label: "评测", to: "/eval", desc: "在固定集上评估模型指标与样例。" },
+  { key: "export", label: "导出", to: "/export", desc: "打包模型与相关产物以便部署或分发。" },
+];
 
 const features: { path: string; title: string; desc: string }[] = [
-  { path: "/importData", title: "数据导入与数据集", desc: "从 Label Studio 拉取标注并生成训练用数据集版本。" },
-  { path: "/train", title: "LoRA 训练", desc: "配置并启动微调或全量训练任务。" },
-  { path: "/playground", title: "LoRA 验证", desc: "在线试跑模型输出，快速验证效果。" },
-  { path: "/merge", title: "LoRA 合并", desc: "将 LoRA 权重与基座模型合并导出。" },
+  { path: "/importData", title: "数据集", desc: "从 Label Studio 拉取标注并生成训练用数据集版本。" },
+  { path: "/train", title: "微调", desc: "配置并启动微调或全量训练任务。" },
+  { path: "/playground", title: "验证", desc: "在线试跑模型输出，快速验证效果。" },
+  { path: "/merge", title: "合并", desc: "将 LoRA 权重与基座模型合并导出。" },
   { path: "/eval", title: "评测", desc: "在固定集上评估模型指标与样例。" },
   { path: "/export", title: "导出", desc: "打包模型与相关产物以便部署或分发。" },
 ];
@@ -32,43 +48,13 @@ const features: { path: string; title: string; desc: string }[] = [
           <span v-if="i > 0" class="home-flow__arrow" aria-hidden="true">→</span>
           <div class="home-flow__node">
             <RouterLink class="home-flow__link-main" :to="step.to">{{ step.label }}</RouterLink>
+            <p v-if="step.desc" class="home-flow__desc">{{ step.desc }}</p>
           </div>
         </template>
       </div>
     </div>
 
-    <a-typography-title :level="4">功能一览</a-typography-title>
-    <a-row :gutter="[16, 16]" style="margin-bottom: 24px">
-      <a-col v-for="item in features" :key="item.path" :xs="24" :sm="12" :md="6">
-        <a-card size="small" hoverable>
-          <template #title>
-            <RouterLink :to="item.path">{{ item.title }}</RouterLink>
-          </template>
-          <a-typography-paragraph type="secondary" style="margin-bottom: 0">{{ item.desc }}</a-typography-paragraph>
-        </a-card>
-      </a-col>
-    </a-row>
-
-    <a-typography-title :level="4">推荐流程</a-typography-title>
-    <a-typography-paragraph type="secondary" style="margin-bottom: 8px">
-      可按实际需求跳过某些步骤；合并与导出通常在得到满意 checkpoint 后进行。
-    </a-typography-paragraph>
-    <a-typography-paragraph>
-      <ol style="margin: 0; padding-left: 20px">
-        <li>
-          <RouterLink to="/importData">数据导入与数据集</RouterLink>
-          —— 从 Label Studio 准备标注并生成 SFT 数据
-        </li>
-        <li><RouterLink to="/train">训练</RouterLink> —— 启动训练并关注日志与产物</li>
-        <li><RouterLink to="/playground">推理沙盒</RouterLink> 与 <RouterLink to="/eval">评测</RouterLink> —— 验证效果</li>
-        <li>
-          若使用 LoRA：<RouterLink to="/merge">LoRA 合并</RouterLink>，再通过
-          <RouterLink to="/export">导出</RouterLink>
-          交付
-        </li>
-        <li><RouterLink to="/models">模型管理</RouterLink> —— 统一管理模型与路径</li>
-      </ol>
-    </a-typography-paragraph>
+    <DataImportGlobalPreview />
   </div>
 </template>
 
@@ -113,5 +99,12 @@ const features: { path: string; title: string; desc: string }[] = [
 }
 .home-flow__link-main:hover {
   color: #4096ff;
+}
+.home-flow__desc {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(0, 0, 0, 0.45);
+  text-align: center;
 }
 </style>

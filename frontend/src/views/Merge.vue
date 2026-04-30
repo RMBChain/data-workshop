@@ -14,8 +14,6 @@ type SuccessTrainingRow = {
   job_name: string;
   label: string;
   project_title?: string | null;
-  import_label?: string | null;
-  ls_import_id?: string | null;
   dataset_name?: string | null;
   /** 与训练表单的「数据集版本」ID 一致（数据 id） */
   dataset_version_id?: string | null;

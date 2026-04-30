@@ -56,28 +56,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
             v TEXT
         );
 
-        CREATE TABLE IF NOT EXISTS ls_imports (
-            id TEXT PRIMARY KEY,
-            project_id INTEGER NOT NULL,
-            project_title TEXT,
-            label_studio_base TEXT,
-            task_count INTEGER DEFAULT 0,
-            workspace_dir TEXT,
-            created_at TEXT NOT NULL,
-            import_label TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS import_tasks (
-            id TEXT PRIMARY KEY,
-            ls_import_id TEXT NOT NULL,
-            ls_task_id INTEGER NOT NULL,
-            image_rel TEXT,
-            resolved INTEGER DEFAULT 0,
-            thumb_note TEXT,
-            raw_json TEXT,
-            FOREIGN KEY (ls_import_id) REFERENCES ls_imports(id) ON DELETE CASCADE
-        );
-
         CREATE TABLE IF NOT EXISTS dataset_build_jobs (
             id TEXT PRIMARY KEY,
             status TEXT NOT NULL,
@@ -92,6 +70,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS dw_dataset (
             id TEXT PRIMARY KEY,
             ls_import_id TEXT,
+            label_studio_project_id INTEGER,
+            label_studio_project_title TEXT,
             note TEXT,
             name TEXT,
             rel_dir TEXT NOT NULL,
@@ -150,10 +130,14 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
         """
     )
-    try:
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_import_tasks_ls_import ON import_tasks(ls_import_id);")
-    except sqlite3.OperationalError as e:
-        _log.warning("无法创建 idx_import_tasks_ls_import（请删库或检查 import_tasks 列）: %s", e)
+    for alter in (
+        "ALTER TABLE dw_dataset ADD COLUMN label_studio_project_id INTEGER",
+        "ALTER TABLE dw_dataset ADD COLUMN label_studio_project_title TEXT",
+    ):
+        try:
+            conn.execute(alter)
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
 
 

@@ -269,8 +269,6 @@ type DatasetVersionRow = {
   id: string;
   name?: string | null;
   note?: string | null;
-  ls_import_id?: string | null;
-  import_label?: string | null;
   project_title?: string | null;
   train_relpath?: string | null;
   val_relpath?: string | null;
@@ -651,8 +649,6 @@ function buildTrainJobRequestBody(): Record<string, unknown> {
     dataset_version_id: dvid,
     job_name: resolvedJobName,
     project_title: (ver?.project_title ?? "").trim(),
-    import_label: (ver?.import_label ?? "").trim(),
-    ls_import_id: (ver?.ls_import_id ?? "").trim(),
     dataset_name: dataLabel,
   };
 }
