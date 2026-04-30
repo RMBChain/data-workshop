@@ -39,6 +39,30 @@ const selectedVersionId = ref<string | null>(null);
 const POLL_MS = 2500;
 const POLL_MAX_MS = 60 * 60 * 1000;
 
+/** 与后端 `_default_dataset_version_name` 中的时间戳格式对齐（本地时间） */
+function formatLocalTs(d = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+
+type CreateDatasetFormValues = {
+  versionName: string | null;
+  trainRatio: number;
+  valRatio: number;
+  randomSeed: number | null;
+  note: string | null;
+  addImageToken: boolean;
+};
+
+const createDatasetModalOpen = ref(false);
+const createModalProject = ref<LsProject | null>(null);
+const createVersionName = ref("");
+const createTrainRatio = ref(80);
+const createValRatio = ref(20);
+const createRandomSeed = ref<number | null>(null);
+const createNote = ref("");
+const createAddImageToken = ref(true);
+
 function projectVersions(projectId: number): DatasetVersionRow[] {
   return props.versions.filter(
     (v) => v.label_studio_project_id != null && Number(v.label_studio_project_id) === Number(projectId),
@@ -75,7 +99,70 @@ async function loadProjects() {
   }
 }
 
-async function createDatasetFromLsProject(projectId: number) {
+function openCreateDatasetModal(project: LsProject) {
+  createModalProject.value = project;
+  const title =
+    project.title != null && String(project.title).trim() ? String(project.title).trim() : "未命名项目";
+  createVersionName.value = `${title}-${formatLocalTs()}`;
+  createTrainRatio.value = 80;
+  createValRatio.value = 20;
+  createRandomSeed.value = null;
+  createNote.value = "";
+  createAddImageToken.value = true;
+  createDatasetModalOpen.value = true;
+}
+
+function onTrainRatioChange(v: number | string | null) {
+  const t = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(t)) return;
+  const clamped = Math.min(100, Math.max(1, Math.round(t)));
+  createTrainRatio.value = clamped;
+  createValRatio.value = 100 - clamped;
+}
+
+function onValRatioChange(v: number | string | null) {
+  const val = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(val)) return;
+  const clamped = Math.min(99, Math.max(0, Math.round(val)));
+  createValRatio.value = clamped;
+  createTrainRatio.value = 100 - clamped;
+  if (createTrainRatio.value < 1) {
+    createTrainRatio.value = 1;
+    createValRatio.value = 99;
+  }
+}
+
+function handleCreateDatasetModalOk() {
+  const pid = createModalProject.value?.id;
+  if (pid == null) return Promise.reject(new Error("no project"));
+  const tr = createTrainRatio.value;
+  const vr = createValRatio.value;
+  if (tr + vr !== 100) {
+    message.warning("训练集与验证集比例之和须为 100");
+    return Promise.reject(new Error("validation"));
+  }
+  if (tr < 1 || tr > 100 || vr < 0 || vr > 100) {
+    message.warning("比例取值无效（训练集至少 1%）");
+    return Promise.reject(new Error("validation"));
+  }
+
+  const rawName = createVersionName.value.trim();
+  const params: CreateDatasetFormValues = {
+    versionName: rawName.length ? rawName : null,
+    trainRatio: tr,
+    valRatio: vr,
+    randomSeed: createRandomSeed.value,
+    note: createNote.value.trim() ? createNote.value.trim() : null,
+    addImageToken: createAddImageToken.value,
+  };
+
+  createDatasetModalOpen.value = false;
+  createModalProject.value = null;
+
+  void createDatasetFromLsProject(pid, params);
+}
+
+async function createDatasetFromLsProject(projectId: number, form: CreateDatasetFormValues) {
   if (creatingDatasetIds.has(projectId)) return;
   if (!props.token.trim()) {
     message.warning("请填写 Token");
@@ -95,11 +182,12 @@ async function createDatasetFromLsProject(projectId: number) {
 
     const br = await http.post("/api/datasets/build", {
       ls_import_id: lsImportId,
-      add_image_token: true,
-      train_ratio: 80,
-      val_ratio: 20,
-      random_seed: null,
-      note: null,
+      add_image_token: form.addImageToken,
+      train_ratio: form.trainRatio,
+      val_ratio: form.valRatio,
+      random_seed: form.randomSeed,
+      note: form.note,
+      version_name: form.versionName,
     });
     const jobId = br.data.job_id as string;
 
@@ -206,11 +294,7 @@ defineExpose({ refreshAfterConnectionLoaded });
             </div>
           </template>
           <template #extra>
-            <a-button
-              type="primary"
-              :loading="creatingDatasetIds.has(record.id)"
-              @click.stop="createDatasetFromLsProject(record.id)"
-            >
+            <a-button type="primary" :loading="creatingDatasetIds.has(record.id)" @click.stop="openCreateDatasetModal(record)">
               新建数据集
             </a-button>
           </template>
@@ -266,6 +350,57 @@ defineExpose({ refreshAfterConnectionLoaded });
     <a-typography-paragraph v-if="!loadingProjects && !projects.length" type="secondary">
       请先在右上角打开连接设置，填写地址与 Token，再点击「刷新项目列表」加载 Label Studio 中的项目
     </a-typography-paragraph>
+
+    <a-modal
+      v-model:open="createDatasetModalOpen"
+      title="新建数据集"
+      ok-text="开始生成"
+      cancel-text="取消"
+      width="min(600px, 96vw)"
+      :destroy-on-close="true"
+      @ok="handleCreateDatasetModalOk"
+    >
+      <a-form layout="vertical" class="import-create-dataset-form">
+        <a-form-item label="数据集名称">
+          <a-input
+            v-model:value="createVersionName"
+            placeholder="留空则使用「项目名-时间戳」自动生成"
+            allow-clear
+            :maxlength="500"
+            show-count
+          />
+        </a-form-item>
+        <a-form-item label="划分比例（训练 / 验证）" extra="两项相加须为 100%；训练集至少 1%。">
+          <a-space align="center" wrap>
+            <span>训练</span>
+            <a-input-number
+              v-model:value="createTrainRatio"
+              :min="1"
+              :max="100"
+              addon-after="%"
+              @change="onTrainRatioChange"
+            />
+            <span>验证</span>
+            <a-input-number
+              v-model:value="createValRatio"
+              :min="0"
+              :max="99"
+              addon-after="%"
+              @change="onValRatioChange"
+            />
+          </a-space>
+        </a-form-item>
+        <a-form-item label="随机种子" extra="可选，固定后多次划分结果一致；留空则每次随机。">
+          <a-input-number v-model:value="createRandomSeed" placeholder="留空为随机" style="width: 100%" allow-clear />
+        </a-form-item>
+        <a-form-item label="备注">
+          <a-textarea v-model:value="createNote" placeholder="写入 meta / 版本备注（可选）" :rows="2" allow-clear />
+        </a-form-item>
+        <a-form-item label="在对话中加入图像占位符 &lt;image&gt;">
+          <a-switch v-model:checked="createAddImageToken" checked-children="开" un-checked-children="关" />
+        </a-form-item>
+      </a-form>
+    </a-modal>
   </div>
 </template>
 

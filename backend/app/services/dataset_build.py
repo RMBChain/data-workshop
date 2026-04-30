@@ -136,6 +136,7 @@ class DatasetBuildManager:
         val_ratio: int,
         seed: int | None,
         note: str | None,
+        version_name: str | None = None,
     ) -> DatasetBuildJob:
         if train_ratio + val_ratio != 100:
             raise ValueError("训练/验证比例之和须为 100")
@@ -170,7 +171,7 @@ class DatasetBuildManager:
         )
         t = threading.Thread(
             target=self._run,
-            args=(job_id, add_image_token, train_ratio, val_ratio, seed, note or ""),
+            args=(job_id, add_image_token, train_ratio, val_ratio, seed, note or "", version_name),
             daemon=True,
         )
         t.start()
@@ -184,6 +185,7 @@ class DatasetBuildManager:
         vr: int,
         seed: int | None,
         note: str,
+        version_name: str | None,
     ) -> None:
         job = self.get(job_id)
         if not job:
@@ -306,13 +308,18 @@ class DatasetBuildManager:
             "SELECT project_title FROM ls_imports WHERE id = ?",
             (job.ls_import_id,),
         ).fetchone()
-        version_name = _default_dataset_version_name(brow["project_title"] if brow else None)
+        custom_vn = (version_name or "").strip()
+        display_name = (
+            custom_vn
+            if custom_vn
+            else _default_dataset_version_name(brow["project_title"] if brow else None)
+        )
         conn.execute(
             """
             INSERT INTO dataset_versions (id, ls_import_id, note, name, rel_dir, train_relpath, val_relpath, test_relpath, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)
             """,
-            (version_id, job.ls_import_id, note or "", version_name, rel_dir, tr_rel, va_rel, now),
+            (version_id, job.ls_import_id, note or "", display_name, rel_dir, tr_rel, va_rel, now),
         )
         from backend.app.db import app_kv_set
 
