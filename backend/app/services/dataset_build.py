@@ -34,7 +34,7 @@ class DatasetBuildJob:
 
 
 def _default_question() -> str:
-    return "请描述图片中的内容。"
+    return "Detect all objects in the image and output their bounding boxes and labels."
 
 
 DEFAULT_SFT_SYSTEM = "You are a helpful assistant."
@@ -59,8 +59,29 @@ def _default_dataset_version_name(project_title: str | None) -> str:
     return f"{pt}-{ts}"
 
 
+def _rectanglelabel_compact_piece(r: dict[str, Any]) -> str | None:
+    """单框：``Class: [x1, y1, x2, y2]``，坐标为 0~1（LS 百分数/100，x/w 相对宽、y/h 相对高）。"""
+    v = r.get("value") if isinstance(r.get("value"), dict) else {}
+    names = v.get("rectanglelabels") or v.get("labels") or []
+    if not isinstance(names, list) or not names:
+        return None
+    try:
+        x = float(v.get("x", 0))
+        y = float(v.get("y", 0))
+        w = float(v.get("width", 0))
+        h = float(v.get("height", 0))
+    except (TypeError, ValueError):
+        return None
+    x1 = x / 100.0
+    y1 = y / 100.0
+    x2 = x1 + w / 100.0
+    y2 = y1 + h / 100.0
+    lab = ", ".join(str(n) for n in names)
+    return f"{lab}: [{x1:.4f}, {y1:.4f}, {x2:.4f}, {y2:.4f}]"
+
+
 def _format_one_ls_result(r: dict[str, Any]) -> str | None:
-    """从单条 Label Studio result 生成写入 response 的文本片段。"""
+    """从单条 Label Studio result 生成写入 response 的文本片段（不含 rectanglelabels）。"""
     t = r.get("type")
     v = r.get("value") if isinstance(r.get("value"), dict) else {}
     if t == "textarea":
@@ -84,24 +105,6 @@ def _format_one_ls_result(r: dict[str, Any]) -> str | None:
         if "text" in v:
             return str(v.get("text", "")).strip() or None
         return None
-    if t == "rectanglelabels":
-        names = v.get("rectanglelabels") or v.get("labels") or []
-        if not isinstance(names, list) or not names:
-            return None
-        try:
-            x = float(v.get("x", 0))
-            y = float(v.get("y", 0))
-            w = float(v.get("width", 0))
-            h = float(v.get("height", 0))
-        except (TypeError, ValueError):
-            return None
-        # LS 中 x、width 为相对图像宽度的百分数，y、height 为相对高度的百分数；换算为 0~1
-        xn, yn, wn, hn = x / 100.0, y / 100.0, w / 100.0, h / 100.0
-        lab = "，".join(str(x) for x in names)
-        return (
-            f"{lab}：矩形框（坐标已归一化：x、w 相对宽度，y、h 相对高度，范围 0~1）"
-            f"x={xn:.6f}, y={yn:.6f}, w={wn:.6f}, h={hn:.6f}"
-        )
     if t == "polygonlabels":
         pts = v.get("points")
         names = v.get("polygonlabels") or v.get("labels") or []
@@ -129,7 +132,8 @@ def _extract_answer_from_ls_task(task_row_json: str | None) -> str:
         t = json.loads(task_row_json)
     except Exception:
         return "（暂无标注，占位回答）"
-    chunks: list[str] = []
+    rect_parts: list[str] = []
+    other_chunks: list[str] = []
     sources: list[Any] = []
     anns = t.get("annotations")
     if isinstance(anns, list) and anns:
@@ -151,11 +155,21 @@ def _extract_answer_from_ls_task(task_row_json: str | None) -> str:
         for r in res:
             if not isinstance(r, dict):
                 continue
+            if r.get("type") == "rectanglelabels":
+                rp = _rectanglelabel_compact_piece(r)
+                if rp:
+                    rect_parts.append(rp)
+                continue
             piece = _format_one_ls_result(r)
             if piece:
-                chunks.append(piece)
-    if chunks:
-        return "\n".join(chunks)[:8000]
+                other_chunks.append(piece)
+    out_parts: list[str] = []
+    if rect_parts:
+        out_parts.append("; ".join(rect_parts))
+    if other_chunks:
+        out_parts.append("\n".join(other_chunks))
+    if out_parts:
+        return "\n".join(out_parts)[:8000]
     return "（暂无标注，占位回答）"
 
 
@@ -442,7 +456,7 @@ class DatasetBuildManager:
                         "rgb": True,
                         "max_edge_px": _DATASET_IMAGE_MAX_EDGE,
                         "output_format": "JPEG",
-                        "annotation_coords": "rectanglelabels 等坐标在 response 文本中为 0~1（由 LS 百分数/100）",
+                        "annotation_coords": "rectanglelabels：response 中为 Class: [x1,y1,x2,y2]（0~1，LS 百分数/100 后 x2=x1+w/100、y2=y1+h/100）",
                     },
                 }
             ),
@@ -463,7 +477,7 @@ class DatasetBuildManager:
         )
         conn.execute(
             """
-            INSERT INTO dataset_versions (id, ls_import_id, note, name, rel_dir, train_relpath, val_relpath, test_relpath, created_at)
+            INSERT INTO dw_dataset (id, ls_import_id, note, name, rel_dir, train_relpath, val_relpath, test_relpath, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)
             """,
             (version_id, job.ls_import_id, note or "", display_name, rel_dir, tr_rel, va_rel, now),

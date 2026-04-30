@@ -30,7 +30,7 @@ def _val_relpath_for_training_request(conn: sqlite3.Connection, req: dict[str, A
     dvid = str(req.get("dataset_version_id") or "").strip()
     if dvid:
         row = conn.execute(
-            "SELECT val_relpath FROM dataset_versions WHERE id = ?",
+            "SELECT val_relpath FROM dw_dataset WHERE id = ?",
             (dvid,),
         ).fetchone()
         if row and row["val_relpath"] is not None:
@@ -46,7 +46,7 @@ def _val_jsonl_and_dataset_id_for_lora(
 ) -> tuple[str, str | None]:
     """
     根据合并使用的 LoRA 在已成功任务中反查训练请求：
-    通过 dataset_version_id 用 dataset_versions.val_relpath 作为验证集（即 val jsonl 工作区相对路径）。
+    通过 dataset_version_id 用 dw_dataset.val_relpath 作为验证集（即 val jsonl 工作区相对路径）。
     """
     try:
         lora_p = Path(lora_used).resolve()

@@ -55,7 +55,7 @@ def _display_names_for_job_request(workspace: Path, req: dict[str, Any]) -> tupl
             conn = get_connection(workspace)
             row = conn.execute(
                 "SELECT v.name, b.project_title, v.rel_dir "
-                "FROM dataset_versions v "
+                "FROM dw_dataset v "
                 "LEFT JOIN ls_imports b ON b.id = v.ls_import_id "
                 "WHERE v.train_relpath = ? "
                 "ORDER BY v.created_at DESC "

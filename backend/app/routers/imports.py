@@ -226,7 +226,7 @@ async def delete_ls_import(import_id: str) -> dict[str, Any]:
     if not row:
         raise HTTPException(status_code=404, detail="导入记录不存在")
     rel = row["workspace_dir"] or ""
-    conn.execute("UPDATE dataset_versions SET ls_import_id = NULL WHERE ls_import_id = ?", (import_id,))
+    conn.execute("UPDATE dw_dataset SET ls_import_id = NULL WHERE ls_import_id = ?", (import_id,))
     conn.execute("DELETE FROM dataset_build_jobs WHERE ls_import_id = ?", (import_id,))
     conn.execute("DELETE FROM ls_imports WHERE id = ?", (import_id,))
     conn.commit()

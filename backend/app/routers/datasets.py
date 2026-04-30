@@ -208,7 +208,7 @@ async def list_dataset_versions() -> dict[str, Any]:
     rows = get_connection(root).execute(
         "SELECT v.id, v.ls_import_id, v.note, v.name, v.rel_dir, v.train_relpath, v.val_relpath, "
         "v.created_at, b.project_id AS label_studio_project_id, b.project_title, b.import_label "
-        "FROM dataset_versions v "
+        "FROM dw_dataset v "
         "LEFT JOIN ls_imports b ON b.id = v.ls_import_id "
         "ORDER BY v.created_at DESC"
     ).fetchall()
@@ -228,7 +228,7 @@ async def rollback_version(version_id: str) -> dict[str, Any]:
     settings = get_settings()
     root = settings.workspace_root.resolve()
     conn = get_connection(root)
-    row = conn.execute("SELECT id FROM dataset_versions WHERE id = ?", (version_id,)).fetchone()
+    row = conn.execute("SELECT id FROM dw_dataset WHERE id = ?", (version_id,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="版本不存在")
     from backend.app.db import app_kv_set
@@ -244,13 +244,13 @@ async def update_dataset_version(version_id: str, body: DatasetVersionNameBody) 
     settings = get_settings()
     root = settings.workspace_root.resolve()
     conn = get_connection(root)
-    row = conn.execute("SELECT id FROM dataset_versions WHERE id = ?", (version_id,)).fetchone()
+    row = conn.execute("SELECT id FROM dw_dataset WHERE id = ?", (version_id,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="版本不存在")
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="名称不能为空")
-    conn.execute("UPDATE dataset_versions SET name = ? WHERE id = ?", (name, version_id))
+    conn.execute("UPDATE dw_dataset SET name = ? WHERE id = ?", (name, version_id))
     conn.commit()
     return {"ok": True, "id": version_id, "name": name}
 
@@ -271,7 +271,7 @@ async def get_version_dataset_data(
     root = settings.workspace_root.resolve()
     conn = get_connection(root)
     row = conn.execute(
-        "SELECT id, rel_dir, train_relpath, val_relpath, ls_import_id FROM dataset_versions WHERE id = ?",
+        "SELECT id, rel_dir, train_relpath, val_relpath, ls_import_id FROM dw_dataset WHERE id = ?",
         (version_id,),
     ).fetchone()
     if not row:
@@ -346,7 +346,7 @@ async def delete_dataset_version(version_id: str) -> dict[str, Any]:
     root = settings.workspace_root.resolve()
     conn = get_connection(root)
     row = conn.execute(
-        "SELECT id, rel_dir FROM dataset_versions WHERE id = ?",
+        "SELECT id, rel_dir FROM dw_dataset WHERE id = ?",
         (version_id,),
     ).fetchone()
     if not row:
@@ -358,7 +358,7 @@ async def delete_dataset_version(version_id: str) -> dict[str, Any]:
     if active == version_id:
         conn.execute("DELETE FROM app_kv WHERE k = ?", ("active_dataset_version",))
 
-    conn.execute("DELETE FROM dataset_versions WHERE id = ?", (version_id,))
+    conn.execute("DELETE FROM dw_dataset WHERE id = ?", (version_id,))
     conn.commit()
 
     if rel_dir and str(rel_dir).strip():
@@ -384,7 +384,7 @@ async def export_version(version_id: str) -> dict[str, Any]:
     settings = get_settings()
     root = settings.workspace_root.resolve()
     row = get_connection(root).execute(
-        "SELECT rel_dir FROM dataset_versions WHERE id = ?", (version_id,)
+        "SELECT rel_dir FROM dw_dataset WHERE id = ?", (version_id,)
     ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="版本不存在")
@@ -417,7 +417,7 @@ async def dataset_preview(version_id: str | None = Query(None)) -> dict[str, Any
     if not vid:
         raise HTTPException(status_code=400, detail="请指定 version_id 或先构建数据集")
     r = conn.execute(
-        "SELECT train_relpath FROM dataset_versions WHERE id = ?",
+        "SELECT train_relpath FROM dw_dataset WHERE id = ?",
         (vid,),
     ).fetchone()
     if not r:

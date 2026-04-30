@@ -84,7 +84,7 @@ function onMenuClick(info: { key: string | number }) {
           </a-menu-item>
           <a-menu-item key="/importData">
             <template #icon><CloudUploadOutlined /></template>
-            数据导入与数据集
+            数据集
           </a-menu-item>
           <a-menu-item key="/train">
             <template #icon><RocketOutlined /></template>

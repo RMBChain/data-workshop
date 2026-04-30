@@ -229,7 +229,7 @@ async function testConnection() {
     <div class="data-import__page-header">
       <div class="data-import__title-row">
         <div class="data-import__title-refresh">
-          <a-typography-title :level="4" class="data-import__title">数据导入与数据集</a-typography-title>
+          <a-typography-title :level="4" class="data-import__title">数据集</a-typography-title>
         </div>
         <a-tooltip title="Label Studio 连接设置" placement="bottomRight" :auto-adjust-overflow="false">
           <a-button
