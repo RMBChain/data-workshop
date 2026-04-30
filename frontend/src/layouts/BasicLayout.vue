@@ -90,7 +90,7 @@ function onMenuClick(info: { key: string | number }) {
           </a-menu-item>
           <a-menu-item key="/batchDataView">
             <template #icon><FileSearchOutlined /></template>
-            批次数据查看
+            批次数据
           </a-menu-item>
           <a-menu-item key="/datasets">
             <template #icon><DatabaseOutlined /></template>

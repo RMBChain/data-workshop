@@ -178,38 +178,28 @@
 - 界面操作 → 生成 `swift` 命令 → 子进程执行 → 解析日志/输出 → 刷新界面
 
 ## 十、本机怎么跑
-### Label Studio
-- 需单独安装
-- API 访问宿主机上 LS 的基址默认即为 `http://host.docker.internal:8080`（`backend/app/config.py`），
-- 无需在容器启动时设置 `WORKSHOP_LABEL_STUDIO_URL`。
-**PowerShell：**
-```powershell
-docker rm -f label-studio
-docker run -it -d --name label-studio -p 127.0.0.1:8080:8080 `
-  -e LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true `
-  -v "$((Get-Location).Path -replace '\\','/')/label-studio-data:/label-studio/data" `
-  heartexlabs/label-studio:20260421.012345-main-a5c6f37
-
-# xwhoyeah@sohu.com/xwhoyeah/RUI_887Ytewr
-# eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6ODA4NDA2NjMwNiwiaWF0IjoxNzc2ODY2MzA2LCJqdGkiOiI1ZDNiOGZiYTA3ZTI0MTBmODAwZTI2YzI1ZGFlZjU0OSIsInVzZXJfaWQiOiIxIn0.tLVtBtn9-8O7H0XvUh8M2DWDaPRPDSFWCRydI7VRb90
-
-```
-
 ### 服务约定（开发）
 #### **后端**
 - API：http://127.0.0.1:8702/api
 - health：http://127.0.0.1:8702/api/health
 - 在**仓库根**中运行：
 ```powershell
+# build基础镜像
+docker build -f devops/swift4.03-cpu.dockerfile .
+
 # 启动（MODELSCOPE_CACHE_HOST = 宿主机上 ModelScope 缓存根，即其中须含 `hub` 子目录；勿填到 `.../hub` 本身）
 $env:MODELSCOPE_CACHE_HOST = "C:/_llm_model/modelscope"
-docker compose -f devops/docker-compose.yml up -d --build data-workshop-api
+docker compose -f devops/docker-compose.yml up -d --build backend label-studio
+# label-studio: xwhoyeah@sohu.com/xwhoyeah/RUI_887Ytewr
+# label-studio: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6ODA4NDA2NjMwNiwiaWF0IjoxNzc2ODY2MzA2LCJqdGkiOiI1ZDNiOGZiYTA3ZTI0MTBmODAwZTI2YzI1ZGFlZjU0OSIsInVzZXJfaWQiOiIxIn0.tLVtBtn9-8O7H0XvUh8M2DWDaPRPDSFWCRydI7VRb90
 
 # 查看日志
 docker logs -f data-workshop-api
 
 # 删除
 docker compose -f devops/docker-compose.yml down
+
+
 ```
 
 #### **前端**

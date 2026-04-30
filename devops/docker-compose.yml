@@ -9,13 +9,13 @@
 name: data-workshop
 
 services:
-  data-workshop-api:
+  backend:
     build:
       context: ..
       dockerfile: devops/swift4.03-cpu.dockerfile
     image: swift4.03-cpu:latest
-    container_name: data-workshop-api
-    working_dir: /workspace/project
+    container_name: backend
+    working_dir: /data_workshop
     shm_size: "4g"
     command:
       - uvicorn
@@ -28,16 +28,28 @@ services:
     ports:
       - "127.0.0.1:8702:8702"
     volumes:
-      - ..:/workspace/project
+      - ..:/data_workshop
       # ModelScope 缓存根（内含 hub/）。宿主路径默认为本仓库上一级相对路径；覆盖：export MODELSCOPE_CACHE_HOST=D:/models/modelscope-cache
       - ${MODELSCOPE_CACHE_HOST:-../.cache/docker-modelscope}:/opt/modelscope-cache:rw
     environment:
       - WORKSHOP_LABEL_STUDIO_URL=http://host.docker.internal:8080
       - WORKSHOP_MERGE_USE_TMP_STAGING=1
-      - WORKSHOP_WORKSPACE_ROOT=/workspace/project/working_data
+      - WORKSHOP_WORKSPACE_ROOT=/workspace/project/working_dir/data_workshop
       - WORKSHOP_LOG_LEVEL=INFO
       # 与上列 volumes 中 /opt/modelscope-cache 一致（魔搭/HF 下载的模型落在此目录下 hub/）
       - MODELSCOPE_CACHE=/opt/modelscope-cache
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+
+  label-studio:
+    image: heartexlabs/label-studio:20260421.012345-main-a5c6f37
+    container_name: label-studio
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      - LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
+    volumes:
+      # 相对 devops/，与在仓库根执行 Get-Location 时 working_dir/label-studio 一致
+      - ../working_dir/label-studio:/label-studio/data
+    restart: always
