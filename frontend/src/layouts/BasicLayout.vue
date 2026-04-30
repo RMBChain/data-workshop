@@ -98,19 +98,7 @@ function onMenuClick(info: { key: string | number }) {
           </a-menu-item>
           <a-menu-item key="/train">
             <template #icon><RocketOutlined /></template>
-            LoRA 训练
-          </a-menu-item>
-          <a-menu-item key="/verify">
-            <template #icon><MessageOutlined /></template>
-            LoRA 验证
-          </a-menu-item>
-          <a-menu-item key="/merge">
-            <template #icon><BranchesOutlined /></template>
-            LoRA 合并
-          </a-menu-item>
-          <a-menu-item key="/eval">
-            <template #icon><BarChartOutlined /></template>
-            评测
+            微调
           </a-menu-item>
           <a-menu-item key="/models">
             <template #icon><BlockOutlined /></template>
