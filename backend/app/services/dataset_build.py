@@ -3,12 +3,16 @@ from __future__ import annotations
 import json
 import logging
 import random
+import shutil
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+# 构建数据集时最长边上限（像素），避免过大原图；仅缩小、不放大
+_DATASET_IMAGE_MAX_EDGE = 2048
 
 from backend.app.db import get_connection, json_dumps
 from backend.app.services.paths import resolve_under_workspace
@@ -55,6 +59,69 @@ def _default_dataset_version_name(project_title: str | None) -> str:
     return f"{pt}-{ts}"
 
 
+def _format_one_ls_result(r: dict[str, Any]) -> str | None:
+    """从单条 Label Studio result 生成写入 response 的文本片段。"""
+    t = r.get("type")
+    v = r.get("value") if isinstance(r.get("value"), dict) else {}
+    if t == "textarea":
+        texts = v.get("text")
+        if isinstance(texts, list) and texts:
+            return str(texts[0]).strip() or None
+        if isinstance(texts, str) and texts.strip():
+            return texts.strip()
+        return None
+    if t == "choices":
+        ch = v.get("choices")
+        if isinstance(ch, list) and ch:
+            return "；".join(str(x) for x in ch)
+        return None
+    if t == "labels":
+        labels = v.get("labels") or v.get("label")
+        if isinstance(labels, list) and labels:
+            return "标签：" + "，".join(str(x) for x in labels)
+        if isinstance(labels, str) and labels.strip():
+            return f"标签：{labels.strip()}"
+        if "text" in v:
+            return str(v.get("text", "")).strip() or None
+        return None
+    if t == "rectanglelabels":
+        names = v.get("rectanglelabels") or v.get("labels") or []
+        if not isinstance(names, list) or not names:
+            return None
+        try:
+            x = float(v.get("x", 0))
+            y = float(v.get("y", 0))
+            w = float(v.get("width", 0))
+            h = float(v.get("height", 0))
+        except (TypeError, ValueError):
+            return None
+        # LS 中 x、width 为相对图像宽度的百分数，y、height 为相对高度的百分数；换算为 0~1
+        xn, yn, wn, hn = x / 100.0, y / 100.0, w / 100.0, h / 100.0
+        lab = "，".join(str(x) for x in names)
+        return (
+            f"{lab}：矩形框（坐标已归一化：x、w 相对宽度，y、h 相对高度，范围 0~1）"
+            f"x={xn:.6f}, y={yn:.6f}, w={wn:.6f}, h={hn:.6f}"
+        )
+    if t == "polygonlabels":
+        pts = v.get("points")
+        names = v.get("polygonlabels") or v.get("labels") or []
+        if not isinstance(names, list) or not names:
+            return None
+        lab = "，".join(str(x) for x in names)
+        if isinstance(pts, list) and pts:
+            flat: list[str] = []
+            for p in pts:
+                if isinstance(p, (list, tuple)) and len(p) >= 2:
+                    try:
+                        flat.append(f"({float(p[0]) / 100.0:.6f},{float(p[1]) / 100.0:.6f})")
+                    except (TypeError, ValueError):
+                        continue
+            if flat:
+                return f"{lab}：多边形（归一化顶点 0~1）" + " ".join(flat)
+        return f"{lab}：多边形标注"
+    return None
+
+
 def _extract_answer_from_ls_task(task_row_json: str | None) -> str:
     if not task_row_json:
         return "（暂无标注，占位回答）"
@@ -62,17 +129,73 @@ def _extract_answer_from_ls_task(task_row_json: str | None) -> str:
         t = json.loads(task_row_json)
     except Exception:
         return "（暂无标注，占位回答）"
-    anns = t.get("annotations") or t.get("drafts") or []
-    for ann in anns:
+    chunks: list[str] = []
+    sources: list[Any] = []
+    anns = t.get("annotations")
+    if isinstance(anns, list) and anns:
+        sources.extend(anns)
+    if not sources:
+        drafts = t.get("drafts")
+        if isinstance(drafts, list) and drafts:
+            sources.extend(drafts)
+    if not sources:
+        preds = t.get("predictions")
+        if isinstance(preds, list) and preds:
+            sources.extend(preds)
+    for ann in sources:
+        if not isinstance(ann, dict):
+            continue
         res = ann.get("result") or []
+        if not isinstance(res, list):
+            continue
         for r in res:
-            if r.get("type") == "textarea" and r.get("value", {}).get("text"):
-                return str(r["value"]["text"][0])[:2000]
-            if r.get("type") in ("labels", "choices") and r.get("value"):
-                v = r.get("value", {})
-                if "text" in v:
-                    return str(v.get("text", ""))[:2000]
+            if not isinstance(r, dict):
+                continue
+            piece = _format_one_ls_result(r)
+            if piece:
+                chunks.append(piece)
+    if chunks:
+        return "\n".join(chunks)[:8000]
     return "（暂无标注，占位回答）"
+
+
+def _prepare_image_for_dataset(src_abs: Path, dest_dir: Path, stem: str) -> Path | None:
+    """
+    将源图转为 RGB，最长边不超过 _DATASET_IMAGE_MAX_EDGE（超过则按比例缩小），写入 JPEG。
+    返回产出文件绝对路径；失败时尝试原样复制，仍失败则返回 None。
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_abs = dest_dir / f"{stem}.jpg"
+    try:
+        from PIL import Image
+    except ImportError:
+        try:
+            shutil.copy2(src_abs, dest_abs)
+            log.debug("未安装 Pillow，数据集图像已原样复制: %s", dest_abs.name)
+            return dest_abs
+        except OSError as e:
+            log.warning("复制图像失败 stem=%s: %s", stem, e)
+            return None
+    try:
+        with Image.open(src_abs) as im:
+            im = im.convert("RGB")
+            w, h = im.size
+            m = max(w, h)
+            if m > _DATASET_IMAGE_MAX_EDGE:
+                scale = _DATASET_IMAGE_MAX_EDGE / m
+                nw = max(1, int(round(w * scale)))
+                nh = max(1, int(round(h * scale)))
+                resample = getattr(Image, "Resampling", Image).LANCZOS
+                im = im.resize((nw, nh), resample)
+            im.save(dest_abs, format="JPEG", quality=95, optimize=True)
+        return dest_abs
+    except Exception as e:
+        log.warning("图像归一化失败 stem=%s，尝试原样复制: %s", stem, e)
+        try:
+            shutil.copy2(src_abs, dest_abs)
+            return dest_abs
+        except OSError:
+            return None
 
 
 def _build_dataset_line(
@@ -194,9 +317,15 @@ class DatasetBuildManager:
         _db_update_job(self._workspace, job_id, "running", None, 0.05, None)
         log.info("数据集构建开始: job_id=%s ls_import_id=%s", job_id, job.ls_import_id)
 
+        version_id = uuid.uuid4().hex[:12]
+        rel_dir = f"dataset/{version_id}"
+        vdir = self._workspace / rel_dir
+        vdir.mkdir(parents=True, exist_ok=True)
+        img_dir = vdir / "images"
+
         conn = get_connection(self._workspace)
         rows = conn.execute(
-            "SELECT image_rel, raw_json FROM import_tasks WHERE ls_import_id = ? AND image_rel IS NOT NULL",
+            "SELECT ls_task_id, image_rel, raw_json FROM import_tasks WHERE ls_import_id = ? AND image_rel IS NOT NULL",
             (job.ls_import_id,),
         ).fetchall()
         log.info("数据集构建: 待处理 import 行数=%d (有 image_rel)", len(rows))
@@ -204,7 +333,11 @@ class DatasetBuildManager:
         skipped_resolve = 0
         skipped_build = 0
         for row in rows:
-            rel, raw = row[0], row[1]
+            try:
+                ls_task_id = int(row[0])
+            except (TypeError, ValueError):
+                ls_task_id = 0
+            rel, raw = row[1], row[2]
             if not rel:
                 continue
             is_url = rel.startswith("http://") or rel.startswith("https://")
@@ -214,10 +347,20 @@ class DatasetBuildManager:
                 except Exception:
                     skipped_resolve += 1
                     continue
+            image_rel_for_line = rel
+            if not is_url:
+                try:
+                    src_p = resolve_under_workspace(self._workspace, rel)
+                except Exception:
+                    src_p = None
+                if src_p is not None and src_p.is_file():
+                    out_abs = _prepare_image_for_dataset(src_p, img_dir, f"task_{ls_task_id}")
+                    if out_abs is not None:
+                        image_rel_for_line = str(out_abs.relative_to(self._workspace)).replace("\\", "/")
             ans = _extract_answer_from_ls_task(raw)
             ut = _default_question()
             obj = _build_dataset_line(
-                self._workspace, rel, ut, ans, prepend_image_token=add_image_token
+                self._workspace, image_rel_for_line, ut, ans, prepend_image_token=add_image_token
             )
             if obj:
                 lines.append(obj)
@@ -240,6 +383,10 @@ class DatasetBuildManager:
         rng.shuffle(lines)
         n = len(lines)
         if n == 0:
+            try:
+                shutil.rmtree(vdir)
+            except OSError:
+                pass
             job.status = "failed"
             job.error_message = "没有可用的本地图片样本，请检查导入任务路径是否位于工作区内"
             job.finished_at = time.time()
@@ -274,12 +421,6 @@ class DatasetBuildManager:
         a = lines[:n_train]
         b = lines[n_train:]
 
-        version_id = uuid.uuid4().hex[:12]
-        rel_dir = f"dataset/{version_id}"
-        # Path 与 / 拼接时接受正斜杠子路径，勿用 Path.sep（不存在于 pathlib.Path）
-        vdir = self._workspace / rel_dir
-        vdir.mkdir(parents=True, exist_ok=True)
-
         def _write(p: Path, items: list[dict[str, Any]]) -> str:
             p.write_text(
                 "\n".join(json_dumps(x) for x in items) + ("\n" if items else ""),
@@ -297,6 +438,12 @@ class DatasetBuildManager:
                     "ls_import_id": job.ls_import_id,
                     "note": note,
                     "counts": {"train": len(a), "val": len(b), "total": n},
+                    "image_preprocess": {
+                        "rgb": True,
+                        "max_edge_px": _DATASET_IMAGE_MAX_EDGE,
+                        "output_format": "JPEG",
+                        "annotation_coords": "rectanglelabels 等坐标在 response 文本中为 0~1（由 LS 百分数/100）",
+                    },
                 }
             ),
             encoding="utf-8",
