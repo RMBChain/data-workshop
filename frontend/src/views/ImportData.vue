@@ -28,6 +28,9 @@ type VersionDataPayload = {
   meta: unknown;
   train_jsonl_preview: string;
   val_jsonl_preview: string;
+  label_studio_raw_preview?: string;
+  label_studio_raw_task_count?: number;
+  label_studio_raw_truncated?: boolean;
 };
 
 function jsonlPreviewLineCount(text: string): number {
@@ -102,7 +105,7 @@ async function openVersionDataView(versionId: string) {
   versionViewPayload.value = null;
   try {
     const r = await http.get(`/api/datasets/versions/${encodeURIComponent(versionId)}/data`, {
-      params: { per_split: 8 },
+      params: { per_split: 8, ls_raw_tasks: 8 },
     });
     versionViewPayload.value = r.data as VersionDataPayload;
   } catch (e: unknown) {
@@ -289,6 +292,21 @@ async function testConnection() {
           <a-tab-pane key="meta" tab="元数据">
             <pre class="dataset-version-view-pre">{{
               versionViewPayload.meta != null ? formatJson(versionViewPayload.meta) : "（无 meta.json 或无法解析）"
+            }}</pre>
+          </a-tab-pane>
+          <a-tab-pane
+            key="ls_raw"
+            :tab="`Label Studio 原始 (${versionViewPayload.label_studio_raw_task_count ?? 0})`"
+          >
+            <a-typography-paragraph v-if="versionViewPayload.label_studio_raw_truncated" type="secondary" style="margin-bottom: 8px">
+              共 {{ versionViewPayload.label_studio_raw_task_count }} 条导入任务，此处仅展示前若干条预览。
+            </a-typography-paragraph>
+            <pre class="dataset-version-view-pre">{{
+              (versionViewPayload.label_studio_raw_preview ?? "").trim()
+                ? versionViewPayload.label_studio_raw_preview
+                : versionViewPayload.label_studio_raw_task_count === 0
+                  ? "（无 Label Studio 导入任务或未关联 ls_import_id）"
+                  : "（尚无原始 JSON，请确认导入时已写入 raw_json）"
             }}</pre>
           </a-tab-pane>
           <a-tab-pane key="train" :tab="`训练样本 (${jsonlPreviewLineCount(versionViewPayload.train_jsonl_preview)})`">

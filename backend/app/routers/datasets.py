@@ -80,6 +80,35 @@ def _read_jsonl_raw_preview(workspace_root: Path, rel_path: Any, max_lines: int)
     return "\n".join(lines_out)
 
 
+def _label_studio_raw_tasks_preview(conn: Any, ls_import_id: str | None, max_tasks: int) -> tuple[str, int, bool]:
+    """从 import_tasks 读取写入库内的 Label Studio 任务 JSON，拼接为可读预览文本。"""
+    if ls_import_id is None or not str(ls_import_id).strip() or max_tasks <= 0:
+        return "", 0, False
+    lid = str(ls_import_id).strip()
+    total_row = conn.execute("SELECT COUNT(*) FROM import_tasks WHERE ls_import_id = ?", (lid,)).fetchone()
+    total = int(total_row[0]) if total_row and total_row[0] is not None else 0
+    rows = conn.execute(
+        "SELECT ls_task_id, raw_json FROM import_tasks WHERE ls_import_id = ? ORDER BY ls_task_id LIMIT ?",
+        (lid, max_tasks),
+    ).fetchall()
+    chunks: list[str] = []
+    for r in rows:
+        tid = r["ls_task_id"]
+        raw = r["raw_json"]
+        header = f"// Label Studio task_id={tid}\n"
+        if not raw:
+            chunks.append(f"{header}（无 raw_json）")
+            continue
+        try:
+            obj = json.loads(raw)
+            chunks.append(header + json.dumps(obj, ensure_ascii=False, indent=2))
+        except json.JSONDecodeError:
+            chunks.append(header + str(raw))
+    text = "\n\n".join(chunks)
+    truncated = total > len(rows)
+    return text, total, truncated
+
+
 class DatasetVersionNameBody(BaseModel):
     name: str = Field(..., min_length=1, max_length=500)
 
@@ -91,12 +120,15 @@ class DatasetBuildBody(BaseModel):
     val_ratio: int = Field(20, ge=0, le=100)
     random_seed: int | None = None
     note: str | None = None
+    version_name: str | None = Field(None, max_length=500, description="数据集展示名；留空则使用「项目名-时间戳」")
 
 
 @router.post("/datasets/build")
 async def dataset_build(body: DatasetBuildBody) -> dict[str, Any]:
     if body.train_ratio + body.val_ratio != 100:
         raise HTTPException(status_code=400, detail="训练/验证比例之和须为 100")
+    vn = body.version_name.strip() if body.version_name else ""
+    version_name_out: str | None = vn if vn else None
     settings = get_settings()
     root = settings.workspace_root.resolve()
     conn = get_connection(root)
@@ -112,6 +144,7 @@ async def dataset_build(body: DatasetBuildBody) -> dict[str, Any]:
             val_ratio=body.val_ratio,
             seed=body.random_seed,
             note=body.note,
+            version_name=version_name_out,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -226,13 +259,19 @@ async def update_dataset_version(version_id: str, body: DatasetVersionNameBody) 
 async def get_version_dataset_data(
     version_id: str,
     per_split: int = Query(8, ge=1, le=50, description="训练/验证每个划分最多返回的样本条数"),
+    ls_raw_tasks: int = Query(
+        8,
+        ge=0,
+        le=50,
+        description="Label Studio 导入任务原始 JSON 最多返回条数；0 表示不返回该段预览",
+    ),
 ) -> dict[str, Any]:
-    """返回版本 meta.json 及 train/val JSONL 的前若干行原始内容，供界面按 jsonl 形态查看。"""
+    """返回版本 meta.json、train/val JSONL 预览，以及关联 LS 导入任务中保存的原始任务 JSON 预览。"""
     settings = get_settings()
     root = settings.workspace_root.resolve()
     conn = get_connection(root)
     row = conn.execute(
-        "SELECT id, rel_dir, train_relpath, val_relpath FROM dataset_versions WHERE id = ?",
+        "SELECT id, rel_dir, train_relpath, val_relpath, ls_import_id FROM dataset_versions WHERE id = ?",
         (version_id,),
     ).fetchone()
     if not row:
@@ -249,12 +288,16 @@ async def get_version_dataset_data(
             meta = None
 
     rel_dir_str = (str(rel_dir).strip().replace("\\", "/") if rel_dir and str(rel_dir).strip() else None)
+    ls_preview, ls_total, ls_truncated = _label_studio_raw_tasks_preview(conn, d.get("ls_import_id"), ls_raw_tasks)
     return {
         "version_id": version_id,
         "dataset": rel_dir_str,
         "meta": meta,
         "train_jsonl_preview": _read_jsonl_raw_preview(root, d.get("train_relpath"), per_split),
         "val_jsonl_preview": _read_jsonl_raw_preview(root, d.get("val_relpath"), per_split),
+        "label_studio_raw_preview": ls_preview,
+        "label_studio_raw_task_count": ls_total,
+        "label_studio_raw_truncated": ls_truncated,
     }
 
 
