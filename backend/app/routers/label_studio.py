@@ -37,7 +37,7 @@ async def _resolve_import_image(
 ) -> tuple[str | None, int, str | None]:
     """
     得到写入 import_tasks 的 image_rel、resolved、thumb_note。
-    优先工作区内已有文件，否则从 LS/外链下载到 imports/<batch>/files/。
+    优先工作区内已有文件，否则从 LS/外链下载到 imports/<run_id>/files/。
     """
     s = (img or "").strip()
     if not s:
@@ -177,20 +177,20 @@ async def label_studio_import(body: LabelStudioImportBody) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="未找到该 project_id 对应项目")
 
     tasks = await ls.iter_project_tasks(base, body.token, int(body.project_id))
-    batch_id = uuid.uuid4().hex
-    rel_dir = f"imports/{batch_id}"
+    import_id = uuid.uuid4().hex
+    rel_dir = f"imports/{import_id}"
     imp_dir = resolve_under_workspace(root, rel_dir)
     imp_dir.mkdir(parents=True, exist_ok=True)
 
     conn = get_connection(root)
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    batch_name = datetime.now().strftime("%Y%m%d-%H%M%S")
+    import_label = datetime.now().strftime("%Y%m%d-%H%M%S")
     conn.execute(
         """
-        INSERT INTO import_batches (id, project_id, project_title, label_studio_base, task_count, workspace_dir, created_at, batch_name)
+        INSERT INTO ls_imports (id, project_id, project_title, label_studio_base, task_count, workspace_dir, created_at, import_label)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (batch_id, int(body.project_id), str(proj.get("title") or ""), base, len(tasks), rel_dir, now, batch_name),
+        (import_id, int(body.project_id), str(proj.get("title") or ""), base, len(tasks), rel_dir, now, import_label),
     )
 
     (imp_dir / "files").mkdir(parents=True, exist_ok=True)
@@ -198,8 +198,8 @@ async def label_studio_import(body: LabelStudioImportBody) -> dict[str, Any]:
     stored = 0
     resolved_count = 0
     log.info(
-        "Label Studio 导入开始: batch_id=%s project_id=%s title=%s task_count=%d base=%s",
-        batch_id,
+        "Label Studio 导入开始: ls_import_id=%s project_id=%s title=%s task_count=%d base=%s",
+        import_id,
         int(body.project_id),
         str(proj.get("title") or ""),
         len(tasks),
@@ -228,27 +228,27 @@ async def label_studio_import(body: LabelStudioImportBody) -> dict[str, Any]:
                 )
                 if resolved:
                     resolved_count += 1
-            row_id = f"{batch_id}-{tid}"
+            row_id = f"{import_id}-{tid}"
             conn.execute(
                 """
-                INSERT INTO import_tasks (id, batch_id, ls_task_id, image_rel, resolved, thumb_note, raw_json)
+                INSERT INTO import_tasks (id, ls_import_id, ls_task_id, image_rel, resolved, thumb_note, raw_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (row_id, batch_id, int(tid) if tid is not None else 0, image_rel, resolved, thumb_note, json_dumps(t)),
+                (row_id, import_id, int(tid) if tid is not None else 0, image_rel, resolved, thumb_note, json_dumps(t)),
             )
             stored += 1
             if stored == 1 or stored % 10 == 0 or stored == n_tasks:
                 log.info(
-                    "Label Studio 导入进度: %d/%d 已写入 (resolved 本地/落盘=%d) batch_id=%s",
+                    "Label Studio 导入进度: %d/%d 已写入 (resolved 本地/落盘=%d) ls_import_id=%s",
                     stored,
                     n_tasks,
                     resolved_count,
-                    batch_id,
+                    import_id,
                 )
 
     log.info(
-        "Label Studio 导入完成: batch_id=%s 任务行=%d 条图片标记为已解析(resolved)=%d 目录=%s",
-        batch_id,
+        "Label Studio 导入完成: ls_import_id=%s 任务行=%d 条图片标记为已解析(resolved)=%d 目录=%s",
+        import_id,
         stored,
         resolved_count,
         rel_dir,
@@ -260,7 +260,7 @@ async def label_studio_import(body: LabelStudioImportBody) -> dict[str, Any]:
             f.write(json_dumps(t) + "\n")
     conn.commit()
     return {
-        "import_batch_id": batch_id,
+        "ls_import_id": import_id,
         "task_count": stored,
         "project_title": proj.get("title"),
         "workspace_dir": rel_dir.replace("\\", "/"),

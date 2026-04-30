@@ -174,7 +174,7 @@ export function mergeConfirmDescription(record: Record<string, unknown>): string
   ].join("\n");
 }
 
-/** 数据集列 tooltip：项目 / 批次展示 */
+/** 数据集列 tooltip：项目等展示 */
 export function trainingDatasetTooltipField(v: unknown): string {
   if (v == null || v === "") return "—";
   const s = String(v).trim();
@@ -191,7 +191,6 @@ export function trainingJobCardMeta(
   return [
     { label: "数据集", value: trainingDatasetTooltipField(record.dataset_name) },
     { label: "项目", value: trainingDatasetTooltipField(record.project_title) },
-    { label: "批次", value: trainingDatasetTooltipField(record.batch_name) },
     { label: "训练集", value: formatJobSplitCount(record.train_count) },
     { label: "验证集", value: formatJobSplitCount(record.val_count) },
     {

@@ -2,8 +2,7 @@
 import { RouterLink } from "vue-router";
 
 const pipelineSteps = [
-  { key: "import", label: "导入数据", to: "/import" as const },
-  { key: "datasets", label: "构建数据集", to: "/datasets" as const },
+  { key: "import-data", label: "数据与数据集", to: "/importData" as const },
   { key: "train", label: "LoRA 训练", to: "/train" as const },
   { key: "playground", label: "LoRA 验证", to: "/playground" as const },
   { key: "merge", label: "LoRA 合并", to: "/merge" as const },
@@ -12,9 +11,7 @@ const pipelineSteps = [
 ] as const;
 
 const features: { path: string; title: string; desc: string }[] = [
-  { path: "/import", title: "数据导入", desc: "上传或接入原始数据，进入后续处理流程。" },
-  { path: "/import-data", title: "数据查看", desc: "浏览、检索已导入的数据与字段。" },
-  { path: "/datasets", title: "数据集", desc: "管理训练/评测用数据集与划分。" },
+  { path: "/importData", title: "数据导入与数据集", desc: "从 Label Studio 拉取标注并生成训练用数据集版本。" },
   { path: "/train", title: "LoRA 训练", desc: "配置并启动微调或全量训练任务。" },
   { path: "/playground", title: "LoRA 验证", desc: "在线试跑模型输出，快速验证效果。" },
   { path: "/merge", title: "LoRA 合并", desc: "将 LoRA 权重与基座模型合并导出。" },
@@ -59,12 +56,9 @@ const features: { path: string; title: string; desc: string }[] = [
     <a-typography-paragraph>
       <ol style="margin: 0; padding-left: 20px">
         <li>
-          <RouterLink to="/import">数据导入</RouterLink>
-          与
-          <RouterLink to="/import-data">数据查看</RouterLink>
-          —— 准备与检查数据
+          <RouterLink to="/importData">数据导入与数据集</RouterLink>
+          —— 从 Label Studio 准备标注并生成 SFT 数据
         </li>
-        <li><RouterLink to="/datasets">数据集</RouterLink> —— 构建训练/评测数据</li>
         <li><RouterLink to="/train">训练</RouterLink> —— 启动训练并关注日志与产物</li>
         <li><RouterLink to="/playground">推理沙盒</RouterLink> 与 <RouterLink to="/eval">评测</RouterLink> —— 验证效果</li>
         <li>

@@ -14,7 +14,8 @@ type SuccessTrainingRow = {
   job_name: string;
   label: string;
   project_title?: string | null;
-  batch_name?: string | null;
+  import_label?: string | null;
+  ls_import_id?: string | null;
   dataset_name?: string | null;
   /** 与训练表单的「数据集版本」ID 一致（数据 id） */
   dataset_version_id?: string | null;
@@ -180,7 +181,6 @@ const mergeCardMetaItems: MergeCardMetaItem[] = [
   { title: "训练", dataIndex: "training_status_label" },
   { title: "训练备注", dataIndex: "error_message" },
   { title: "项目名称", dataIndex: "project_title" },
-  { title: "批次名称", dataIndex: "batch_name" },
   { title: "数据集名称", dataIndex: "dataset_name" },
   { title: "基座", dataIndex: "train_base_model" },
   { title: "LoRA 路径", dataIndex: "path", fullPathTooltip: true },

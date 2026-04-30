@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { message } from "ant-design-vue";
+import { message, Modal } from "ant-design-vue";
 import { QuestionCircleOutlined, SettingOutlined } from "@ant-design/icons-vue";
 import { computed, nextTick, onMounted, ref } from "vue";
 import DataImportGlobalPreview from "../components/DataImportGlobalPreview.vue";
@@ -12,6 +12,38 @@ type DataImportProjectListExposed = {
   refreshAfterConnectionLoaded: () => Promise<void>;
 };
 
+type DatasetVersionRow = {
+  id: string;
+  label_studio_project_id?: number | null;
+  name?: string | null;
+  train_count?: number | null;
+  val_count?: number | null;
+  created_at?: string;
+  note?: string | null;
+  project_title?: string | null;
+};
+
+type VersionDataPayload = {
+  version_id: string;
+  meta: unknown;
+  train_jsonl_preview: string;
+  val_jsonl_preview: string;
+};
+
+function jsonlPreviewLineCount(text: string): number {
+  const t = (text ?? "").trim();
+  if (!t) return 0;
+  return t.split(/\r?\n/).filter((line) => line.trim()).length;
+}
+
+function formatJson(v: unknown): string {
+  try {
+    return JSON.stringify(v, null, 2);
+  } catch {
+    return String(v);
+  }
+}
+
 const baseUrl = ref("http://host.docker.internal:8080");
 const token = ref("");
 const testing = ref(false);
@@ -20,7 +52,91 @@ const status = ref<LsStatus>({});
 const settingsModalOpen = ref(false);
 const projectListRef = ref<DataImportProjectListExposed | null>(null);
 
+const versions = ref<DatasetVersionRow[]>([]);
+const activeVersionId = ref<string | null>(null);
+
 const lsUnreachable = computed(() => status.value.reachable === false);
+
+const versionNameEditOpen = ref(false);
+const versionNameEditId = ref<string | null>(null);
+const versionNameEditValue = ref("");
+const versionNameSaving = ref(false);
+
+const versionViewOpen = ref(false);
+const versionViewLoading = ref(false);
+const versionViewTitle = ref("");
+const versionViewPayload = ref<VersionDataPayload | null>(null);
+
+function openVersionNameEditor(record: Record<string, unknown>) {
+  if (!record?.id) return;
+  versionNameEditId.value = String(record.id);
+  versionNameEditValue.value = record.name != null ? String(record.name) : "";
+  versionNameEditOpen.value = true;
+}
+
+async function saveVersionName() {
+  const id = versionNameEditId.value;
+  if (!id) return;
+  const name = (versionNameEditValue.value ?? "").trim();
+  if (!name) {
+    message.warning("名称不能为空");
+    return;
+  }
+  versionNameSaving.value = true;
+  try {
+    await http.patch(`/api/datasets/versions/${encodeURIComponent(id)}`, { name });
+    message.success("名称已保存");
+    versionNameEditOpen.value = false;
+    await refreshVersions();
+  } catch (e: unknown) {
+    message.error(apiErrorDetail(e) ?? "保存失败");
+  } finally {
+    versionNameSaving.value = false;
+  }
+}
+
+async function openVersionDataView(versionId: string) {
+  versionViewTitle.value = `数据集 · ${versionId}`;
+  versionViewOpen.value = true;
+  versionViewLoading.value = true;
+  versionViewPayload.value = null;
+  try {
+    const r = await http.get(`/api/datasets/versions/${encodeURIComponent(versionId)}/data`, {
+      params: { per_split: 8 },
+    });
+    versionViewPayload.value = r.data as VersionDataPayload;
+  } catch (e: unknown) {
+    message.error(apiErrorDetail(e) ?? "加载失败");
+    versionViewOpen.value = false;
+  } finally {
+    versionViewLoading.value = false;
+  }
+}
+
+async function promptDeleteVersion(versionId: string) {
+  Modal.confirm({
+    title: "删除数据集？",
+    content:
+      "将永久删除该版本对应的 versions/ 目录（含 train/val.jsonl 和 meta.json）及数据库记录。若为当前活跃版本，激活标记将被清除。此操作不可恢复。",
+    okText: "删除",
+    okType: "danger",
+    cancelText: "取消",
+    async onOk() {
+      try {
+        const r = await http.delete(`/api/datasets/versions/${encodeURIComponent(versionId)}`);
+        if (r.data?.warning) {
+          message.warning(String(r.data.warning));
+        } else {
+          message.success("版本已删除");
+        }
+        await refreshVersions();
+      } catch (e: unknown) {
+        message.error(apiErrorDetail(e) ?? "删除失败");
+        throw e;
+      }
+    },
+  });
+}
 
 async function loadLabelStudioConnection() {
   try {
@@ -52,9 +168,20 @@ async function saveLabelStudioConnection() {
   }
 }
 
+async function refreshVersions() {
+  try {
+    const r = await http.get("/api/datasets/versions");
+    versions.value = r.data.items as DatasetVersionRow[];
+    activeVersionId.value = (r.data.active_version_id as string | null) ?? null;
+  } catch (e: unknown) {
+    message.error(apiErrorDetail(e) ?? "获取数据集列表失败");
+  }
+}
+
 async function fetchInitialViewData() {
   await loadLabelStudioConnection();
   await refreshConfigStatus();
+  await refreshVersions();
   await nextTick();
   await projectListRef.value?.refreshAfterConnectionLoaded();
 }
@@ -99,7 +226,7 @@ async function testConnection() {
     <div class="data-import__page-header">
       <div class="data-import__title-row">
         <div class="data-import__title-refresh">
-          <a-typography-title :level="4" class="data-import__title">数据导入</a-typography-title>
+          <a-typography-title :level="4" class="data-import__title">数据导入与数据集</a-typography-title>
         </div>
         <a-tooltip title="Label Studio 连接设置" placement="bottomRight" :auto-adjust-overflow="false">
           <a-button
@@ -121,8 +248,66 @@ async function testConnection() {
       <code>WORKSHOP_LABEL_STUDIO_URL</code> 与网络可达性。
     </a-typography-paragraph>
 
-    <DataImportProjectList ref="projectListRef" :base-url="baseUrl" :token="token" />
+    <DataImportProjectList
+      ref="projectListRef"
+      :base-url="baseUrl"
+      :token="token"
+      :versions="versions"
+      :active-version-id="activeVersionId"
+      @request-refresh-versions="refreshVersions"
+      @open-version-view="openVersionDataView"
+      @open-version-name-edit="openVersionNameEditor"
+      @delete-version="promptDeleteVersion"
+    />
     <DataImportGlobalPreview />
+
+    <a-modal
+      v-model:open="versionNameEditOpen"
+      title="编辑数据集名称"
+      ok-text="保存"
+      cancel-text="取消"
+      :confirm-loading="versionNameSaving"
+      destroy-on-close
+      @ok="saveVersionName"
+    >
+      <a-input
+        v-model:value="versionNameEditValue"
+        placeholder="版本显示名称"
+        allow-clear
+        @press-enter="saveVersionName"
+      />
+    </a-modal>
+    <a-modal
+      v-model:open="versionViewOpen"
+      :title="versionViewTitle"
+      width="min(1200px, 96vw)"
+      :footer="null"
+      destroy-on-close
+    >
+      <a-spin :spinning="versionViewLoading">
+        <a-tabs v-if="versionViewPayload">
+          <a-tab-pane key="meta" tab="元数据">
+            <pre class="dataset-version-view-pre">{{
+              versionViewPayload.meta != null ? formatJson(versionViewPayload.meta) : "（无 meta.json 或无法解析）"
+            }}</pre>
+          </a-tab-pane>
+          <a-tab-pane key="train" :tab="`训练样本 (${jsonlPreviewLineCount(versionViewPayload.train_jsonl_preview)})`">
+            <pre class="dataset-version-view-pre">{{
+              versionViewPayload.train_jsonl_preview.trim()
+                ? versionViewPayload.train_jsonl_preview
+                : "（无样本或 train.jsonl 不存在）"
+            }}</pre>
+          </a-tab-pane>
+          <a-tab-pane key="val" :tab="`验证样本 (${jsonlPreviewLineCount(versionViewPayload.val_jsonl_preview)})`">
+            <pre class="dataset-version-view-pre">{{
+              versionViewPayload.val_jsonl_preview.trim()
+                ? versionViewPayload.val_jsonl_preview
+                : "（无样本或 val.jsonl 不存在）"
+            }}</pre>
+          </a-tab-pane>
+        </a-tabs>
+      </a-spin>
+    </a-modal>
 
     <a-modal v-model:open="settingsModalOpen" title="Label Studio 连接设置" width="min(880px, 96vw)" :footer="null">
       <a-form layout="vertical">
@@ -209,5 +394,14 @@ async function testConnection() {
 }
 .data-import__settings-btn:hover {
   color: var(--ant-primary-color, #1677ff);
+}
+
+.dataset-version-view-pre {
+  margin: 0;
+  max-height: 70vh;
+  overflow: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>

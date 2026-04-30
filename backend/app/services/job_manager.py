@@ -83,9 +83,9 @@ class TrainJobCreate(BaseModel):
     resume_from_checkpoint: str | None = Field(default=None, description="从该 checkpoint 目录继续，如 output/.../checkpoint-8")
     # 仅用于列表/展示，不参与 train.py 命令行
     job_name: str = Field(default="", description="展示用：训练任务名称")
-    project_title: str = Field(default="", description="展示用：导入项目名")
-    batch_name: str = Field(default="", description="展示用：导入批次名")
-    dataset_name: str = Field(default="", description="展示用：数据集版本展示名")
+    project_title: str = Field(default="", description="展示用：Label Studio 项目名")
+    import_label: str = Field(default="", description="展示用：对应 ls_imports.import_label（可选）")
+    ls_import_id: str = Field(default="", description="展示用：关联的 Label Studio 导入记录 id")
     dataset_version_id: str = Field(
         default="",
         description="仅用于展开默认 output 目录（output/<version_id>）；不参与 train 命令行。",

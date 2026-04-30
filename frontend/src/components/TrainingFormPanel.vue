@@ -269,9 +269,9 @@ type DatasetVersionRow = {
   id: string;
   name?: string | null;
   note?: string | null;
-  import_batch_id?: string | null;
+  ls_import_id?: string | null;
+  import_label?: string | null;
   project_title?: string | null;
-  batch_name?: string | null;
   train_relpath?: string | null;
   val_relpath?: string | null;
   is_active?: boolean;
@@ -286,13 +286,7 @@ const selectedDatasetVersionId = ref<string | null | undefined>(null);
 function projectKeyOf(v: { project_title?: string | null }): string {
   return `ptitle:${(v.project_title ?? "").trim() || "—"}`;
 }
-/** 有 import_batch 用批次 id；无则每版本独键，避免多 orphan 混在一个选项里 */
-function batchKeyOf(v: DatasetVersionRow): string {
-  const bid = (v.import_batch_id ?? "").trim();
-  if (bid) return `bid:${bid}`;
-  return `orphan:${v.id}`;
-}
-/** 与 a-cascader 一致：项目 key → 批次 key → 数据集版本 id */
+/** 与 a-cascader 一致：项目 key → 数据集版本 id */
 const datasetCascaderValue = ref<string[] | null>(null);
 
 type DatasetCascaderOption = { value: string; label: string; children?: DatasetCascaderOption[] };
@@ -313,22 +307,10 @@ const datasetCascaderOptions = computed((): DatasetCascaderOption[] => {
   const out: DatasetCascaderOption[] = [];
   for (const pk of projectKeysSorted) {
     const inProj = items.filter((x) => projectKeyOf(x) === pk);
-    const byBatch = new Map<string, { label: string; versions: DatasetVersionRow[] }>();
-    for (const v of inProj) {
-      const bk = batchKeyOf(v);
-      if (!byBatch.has(bk)) {
-        const rawBn = (v.batch_name ?? "").trim();
-        const hasBid = Boolean((v.import_batch_id ?? "").trim());
-        const label = rawBn || (hasBid ? "—" : `未关联批次 · ${v.id.slice(0, 8)}${v.id.length > 8 ? "…" : ""}`);
-        byBatch.set(bk, { label, versions: [] });
-      }
-      byBatch.get(bk)!.versions.push(v);
-    }
-    const batchSorted = [...byBatch.entries()].sort((a, b) => a[1].label.localeCompare(b[1].label, "zh-CN"));
-    const children: DatasetCascaderOption[] = batchSorted.map(([bk, o]) => ({
-      value: bk,
-      label: o.label,
-      children: o.versions.map((row) => ({ value: row.id, label: versionRowLabel(row) })),
+    const sorted = [...inProj].sort((a, b) => versionRowLabel(a).localeCompare(versionRowLabel(b), "zh-CN"));
+    const children: DatasetCascaderOption[] = sorted.map((row) => ({
+      value: row.id,
+      label: versionRowLabel(row),
     }));
     out.push({ value: pk, label: projectMap.get(pk)!, children });
   }
@@ -377,7 +359,7 @@ function syncCascadeFromVersionRow(row: DatasetVersionRow | null) {
   if (!row) {
     datasetCascaderValue.value = null;
   } else {
-    datasetCascaderValue.value = [projectKeyOf(row), batchKeyOf(row), row.id];
+    datasetCascaderValue.value = [projectKeyOf(row), row.id];
   }
 }
 
@@ -396,8 +378,8 @@ function onDatasetVersionSelect(versionId: string | null | undefined) {
 }
 
 function onDatasetCascaderUpdate(v: string[] | null) {
-  if (v && v.length >= 3) {
-    onDatasetVersionSelect(v[2]!);
+  if (v && v.length >= 2) {
+    onDatasetVersionSelect(v[1]!);
   } else {
     onDatasetVersionSelect(null);
   }
@@ -484,7 +466,7 @@ async function openDatasetPathModal(kind: "train" | "val") {
 }
 
 function goDatasets() {
-  void router.push({ name: "datasets" });
+  void router.push({ name: "importData" });
 }
 
 const progressStatus = computed(() => {
@@ -669,7 +651,8 @@ function buildTrainJobRequestBody(): Record<string, unknown> {
     dataset_version_id: dvid,
     job_name: resolvedJobName,
     project_title: (ver?.project_title ?? "").trim(),
-    batch_name: (ver?.batch_name ?? "").trim(),
+    import_label: (ver?.import_label ?? "").trim(),
+    ls_import_id: (ver?.ls_import_id ?? "").trim(),
     dataset_name: dataLabel,
   };
 }
@@ -746,7 +729,7 @@ function applySavedFormParamsToForm(d: Record<string, unknown>) {
   }
 }
 
-/** 当点击表格「训练」加载已有任务时，初始化数据集级联选择器（使项目/批次/数据集名称可编辑） */
+/** 当点击表格「训练」加载已有任务时，初始化数据集级联选择器（使项目/数据集名称可编辑） */
 async function initCascadeFromExistingJob(jobId: string) {
   const row = props.jobs.find((j) => (j as { id?: string }).id === jobId) as
     | {
@@ -767,7 +750,7 @@ async function initCascadeFromExistingJob(jobId: string) {
     }
   }
 
-  // Fallback: try to match by dataset_name/project_title/batch_name
+  // Fallback: try to match by dataset_name/project_title
   const dsName =
     (typeof req.dataset_name === "string" ? req.dataset_name : String(req.dataset_name ?? "")).trim() ||
     (row.dataset_name != null ? String(row.dataset_name) : "").trim();
@@ -1070,7 +1053,7 @@ watch(
           </a-form-item>
         </a-col>
         <a-col :span="16">
-          <a-form-item label="项目 / 批次 / 数据集">
+          <a-form-item label="项目 / 数据集">
             <a-cascader
               :value="datasetCascaderValue"
               :options="datasetCascaderOptions"
@@ -1083,7 +1066,7 @@ watch(
                 loadingDatasetPaths
                   ? '加载中…'
                   : datasetCascaderOptions.length
-                    ? '选择项目、批次与数据版本'
+                    ? '选择项目与数据集版本'
                     : '暂无项目，请去「数据集」构建'
               "
               allow-clear

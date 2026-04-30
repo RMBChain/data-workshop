@@ -47,8 +47,83 @@ def connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _table_names(conn: sqlite3.Connection) -> set[str]:
+    try:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+        return {str(r[0]) for r in rows}
+    except sqlite3.OperationalError:
+        return set()
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    try:
+        return {str(r[1]) for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    except sqlite3.OperationalError:
+        return set()
+
+
+def _migrate_legacy_batch_schema(conn: sqlite3.Connection) -> None:
+    """将旧版 import_batches / batch_id / import_batch_id 迁到 ls_imports / ls_import_id（SQLite 3.25+ RENAME COLUMN）。"""
+    try:
+        conn.execute("DROP INDEX IF EXISTS idx_import_tasks_batch")
+    except sqlite3.OperationalError:
+        pass
+
+    tables = _table_names(conn)
+
+    if "ls_imports" in tables and "import_batches" in tables:
+        try:
+            n_old = int(conn.execute("SELECT COUNT(*) FROM import_batches").fetchone()[0])
+            n_new = int(conn.execute("SELECT COUNT(*) FROM ls_imports").fetchone()[0])
+            if n_old > 0 and n_new == 0:
+                conn.execute("DROP TABLE ls_imports")
+                tables = _table_names(conn)
+                _log.info('已删除占位表 ls_imports（保留 import_batches 数据），将继续改名为 ls_imports')
+        except sqlite3.OperationalError as e:
+            _log.warning("整理 ls_imports/import_batches 时跳过: %s", e)
+
+    if "import_batches" in tables and "ls_imports" not in _table_names(conn):
+        try:
+            conn.execute("ALTER TABLE import_batches RENAME TO ls_imports")
+            _log.info("已迁移表名 import_batches -> ls_imports")
+        except sqlite3.OperationalError as e:
+            _log.warning("重命名 import_batches 失败（可删除 workshop.db 后重试）: %s", e)
+
+    if "ls_imports" in _table_names(conn):
+        cols = _table_columns(conn, "ls_imports")
+        if "batch_name" in cols and "import_label" not in cols:
+            try:
+                conn.execute("ALTER TABLE ls_imports RENAME COLUMN batch_name TO import_label")
+            except sqlite3.OperationalError as e:
+                _log.warning("ls_imports.batch_name 重命名失败: %s", e)
+
+    if "import_tasks" in _table_names(conn):
+        cols = _table_columns(conn, "import_tasks")
+        if "batch_id" in cols and "ls_import_id" not in cols:
+            try:
+                conn.execute("ALTER TABLE import_tasks RENAME COLUMN batch_id TO ls_import_id")
+            except sqlite3.OperationalError as e:
+                _log.warning("import_tasks.batch_id 重命名失败: %s", e)
+
+    for tbl, old_c, new_c in (
+        ("dataset_versions", "import_batch_id", "ls_import_id"),
+        ("dataset_build_jobs", "import_batch_id", "ls_import_id"),
+    ):
+        if tbl not in _table_names(conn):
+            continue
+        cols = _table_columns(conn, tbl)
+        if old_c in cols and new_c not in cols:
+            try:
+                conn.execute(f"ALTER TABLE {tbl} RENAME COLUMN {old_c} TO {new_c}")
+            except sqlite3.OperationalError as e:
+                _log.warning("%s.%s 重命名失败: %s", tbl, old_c, e)
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
-    """以 DDL 为唯一真实来源；不兼容时删除 `state/workshop.db` 后重启即可，不做列级升级迁移。"""
+    """以 DDL 为唯一真实来源；启动时尽可能把旧版 batch 相关列/表迁到 ls_import 命名。"""
+    _migrate_legacy_batch_schema(conn)
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS app_kv (
@@ -56,7 +131,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             v TEXT
         );
 
-        CREATE TABLE IF NOT EXISTS import_batches (
+        CREATE TABLE IF NOT EXISTS ls_imports (
             id TEXT PRIMARY KEY,
             project_id INTEGER NOT NULL,
             project_title TEXT,
@@ -64,24 +139,24 @@ def init_schema(conn: sqlite3.Connection) -> None:
             task_count INTEGER DEFAULT 0,
             workspace_dir TEXT,
             created_at TEXT NOT NULL,
-            batch_name TEXT
+            import_label TEXT
         );
 
         CREATE TABLE IF NOT EXISTS import_tasks (
             id TEXT PRIMARY KEY,
-            batch_id TEXT NOT NULL,
+            ls_import_id TEXT NOT NULL,
             ls_task_id INTEGER NOT NULL,
             image_rel TEXT,
             resolved INTEGER DEFAULT 0,
             thumb_note TEXT,
             raw_json TEXT,
-            FOREIGN KEY (batch_id) REFERENCES import_batches(id) ON DELETE CASCADE
+            FOREIGN KEY (ls_import_id) REFERENCES ls_imports(id) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS dataset_build_jobs (
             id TEXT PRIMARY KEY,
             status TEXT NOT NULL,
-            import_batch_id TEXT,
+            ls_import_id TEXT,
             created_at TEXT,
             finished_at TEXT,
             error_message TEXT,
@@ -91,7 +166,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS dataset_versions (
             id TEXT PRIMARY KEY,
-            import_batch_id TEXT,
+            ls_import_id TEXT,
             note TEXT,
             name TEXT,
             rel_dir TEXT NOT NULL,
@@ -149,7 +224,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
         """
     )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_import_tasks_batch ON import_tasks(batch_id);")
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_import_tasks_ls_import ON import_tasks(ls_import_id);")
+    except sqlite3.OperationalError as e:
+        _log.warning("无法创建 idx_import_tasks_ls_import（请删库或检查 import_tasks 列）: %s", e)
     _migrate_merge_export_zips_merged_path(conn)
     conn.commit()
 

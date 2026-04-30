@@ -85,7 +85,7 @@ class DatasetVersionNameBody(BaseModel):
 
 
 class DatasetBuildBody(BaseModel):
-    import_batch_id: str
+    ls_import_id: str
     add_image_token: bool = True
     train_ratio: int = Field(80, ge=1, le=100, description="至少 1%，否则训练集为空会导致 ms-swift 报错")
     val_ratio: int = Field(20, ge=0, le=100)
@@ -100,13 +100,13 @@ async def dataset_build(body: DatasetBuildBody) -> dict[str, Any]:
     settings = get_settings()
     root = settings.workspace_root.resolve()
     conn = get_connection(root)
-    b = conn.execute("SELECT 1 FROM import_batches WHERE id = ?", (body.import_batch_id,)).fetchone()
+    b = conn.execute("SELECT 1 FROM ls_imports WHERE id = ?", (body.ls_import_id,)).fetchone()
     if not b:
-        raise HTTPException(status_code=404, detail="导入批次不存在")
+        raise HTTPException(status_code=404, detail="导入记录不存在，无法构建数据集")
     try:
         mgr = get_dataset_manager(root)
         job = mgr.start_build(
-            import_batch_id=body.import_batch_id,
+            ls_import_id=body.ls_import_id,
             add_image_token=body.add_image_token,
             train_ratio=body.train_ratio,
             val_ratio=body.val_ratio,
@@ -116,9 +116,9 @@ async def dataset_build(body: DatasetBuildBody) -> dict[str, Any]:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     log.info(
-        "已提交数据集构建: job_id=%s import_batch_id=%s 比例 train/val=%d/%d",
+        "已提交数据集构建: job_id=%s ls_import_id=%s 比例 train/val=%d/%d",
         job.id,
-        body.import_batch_id,
+        body.ls_import_id,
         body.train_ratio,
         body.val_ratio,
     )
@@ -134,13 +134,13 @@ async def get_dataset_job(job_id: str) -> dict[str, Any]:
         return {
             "id": j.id,
             "status": j.status,
-            "import_batch_id": j.import_batch_id,
+            "ls_import_id": j.ls_import_id,
             "progress": j.progress,
             "error_message": j.error_message,
             "result_version_id": j.result_version_id,
         }
     row = get_connection(root).execute(
-        "SELECT id, status, import_batch_id, created_at, finished_at, error_message, progress, result_version_id "
+        "SELECT id, status, ls_import_id, created_at, finished_at, error_message, progress, result_version_id "
         "FROM dataset_build_jobs WHERE id = ?",
         (job_id,),
     ).fetchone()
@@ -150,7 +150,7 @@ async def get_dataset_job(job_id: str) -> dict[str, Any]:
     return {
         "id": d["id"],
         "status": d["status"],
-        "import_batch_id": d["import_batch_id"],
+        "ls_import_id": d["ls_import_id"],
         "progress": d["progress"] or 0,
         "error_message": d["error_message"],
         "result_version_id": d["result_version_id"],
@@ -173,10 +173,10 @@ async def list_dataset_versions() -> dict[str, Any]:
     root = settings.workspace_root.resolve()
     active = app_kv_get(get_connection(root), "active_dataset_version")
     rows = get_connection(root).execute(
-        "SELECT v.id, v.import_batch_id, v.note, v.name, v.rel_dir, v.train_relpath, v.val_relpath, "
-        "v.created_at, b.project_title, b.batch_name "
+        "SELECT v.id, v.ls_import_id, v.note, v.name, v.rel_dir, v.train_relpath, v.val_relpath, "
+        "v.created_at, b.project_id AS label_studio_project_id, b.project_title, b.import_label "
         "FROM dataset_versions v "
-        "LEFT JOIN import_batches b ON b.id = v.import_batch_id "
+        "LEFT JOIN ls_imports b ON b.id = v.ls_import_id "
         "ORDER BY v.created_at DESC"
     ).fetchall()
     items = [row_to_dict(r) for r in rows]

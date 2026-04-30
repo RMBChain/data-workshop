@@ -1,70 +1,57 @@
 <script setup lang="ts">
-import { message, Modal } from "ant-design-vue";
+import { message } from "ant-design-vue";
 import { EditOutlined, ReloadOutlined } from "@ant-design/icons-vue";
-import { computed, reactive, ref } from "vue";
+import { reactive, ref } from "vue";
 import { apiErrorDetail, http } from "../api/http";
 
-type ImportBatch = { id: string; project_id?: number; batch_name?: string | null; task_count?: number; created_at?: string };
+type DatasetVersionRow = {
+  id: string;
+  label_studio_project_id?: number | null;
+  name?: string | null;
+  train_count?: number | null;
+  val_count?: number | null;
+  created_at?: string;
+  project_title?: string | null;
+};
+
 type LsProject = { id: number; title: string; task_number: number };
 
 const props = defineProps<{
   baseUrl: string;
   token: string;
+  versions: DatasetVersionRow[];
+  activeVersionId?: string | null;
+}>();
+
+const emit = defineEmits<{
+  requestRefreshVersions: [];
+  openVersionView: [versionId: string];
+  openVersionNameEdit: [record: Record<string, unknown>];
+  deleteVersion: [versionId: string];
 }>();
 
 const loadingProjects = ref(false);
 const projects = ref<LsProject[]>([]);
 const selectedProjectId = ref<number | null>(null);
-const importingIds = reactive(new Set<number>());
-const batches = ref<ImportBatch[]>([]);
-const selectedBatchId = ref<string | null>(null);
-const loadingBatches = ref(false);
+const creatingDatasetIds = reactive(new Set<number>());
+const selectedVersionId = ref<string | null>(null);
 
-const batchNameEditOpen = ref(false);
-const batchNameEditId = ref<string | null>(null);
-const batchNameEditValue = ref("");
-const batchNameSaving = ref(false);
+const POLL_MS = 2500;
+const POLL_MAX_MS = 60 * 60 * 1000;
 
-const batchesByProjectId = computed(() => {
-  const m = new Map<number, ImportBatch[]>();
-  for (const b of batches.value) {
-    const pid = Number(b.project_id);
-    if (Number.isNaN(pid)) continue;
-    const list = m.get(pid);
-    if (list) list.push(b);
-    else m.set(pid, [b]);
-  }
-  return m;
-});
-
-function projectBatches(projectId: number): ImportBatch[] {
-  return batchesByProjectId.value.get(projectId) ?? [];
+function projectVersions(projectId: number): DatasetVersionRow[] {
+  return props.versions.filter(
+    (v) => v.label_studio_project_id != null && Number(v.label_studio_project_id) === Number(projectId),
+  );
 }
 
-function openBatchNameEditor(record: ImportBatch) {
-  if (!record?.id) return;
-  batchNameEditId.value = String(record.id);
-  batchNameEditValue.value = record.batch_name != null ? String(record.batch_name) : "";
-  batchNameEditOpen.value = true;
-}
-
-async function saveBatchName() {
-  const id = batchNameEditId.value;
-  if (!id) return;
-  batchNameSaving.value = true;
-  try {
-    await http.patch(`/api/imports/${encodeURIComponent(id)}`, {
-      batch_name: batchNameEditValue.value ?? "",
-    });
-    message.success("批次名称已保存");
-    batchNameEditOpen.value = false;
-    await loadBatches();
-  } catch (e: unknown) {
-    message.error(apiErrorDetail(e) ?? "保存失败");
-  } finally {
-    batchNameSaving.value = false;
-  }
-}
+const datasetColumns = [
+  { title: "数据集名称", dataIndex: "name", key: "name", ellipsis: true, width: 160 },
+  { title: "训练", dataIndex: "train_count", key: "train_count", width: 56 },
+  { title: "验证", dataIndex: "val_count", key: "val_count", width: 56 },
+  { title: "生成时间", dataIndex: "created_at", key: "created_at", width: 160 },
+  { title: "操作", key: "action", width: 120 },
+];
 
 async function loadProjects() {
   if (!props.token.trim()) {
@@ -88,89 +75,86 @@ async function loadProjects() {
   }
 }
 
-async function importProject(projectId: number) {
-  if (importingIds.has(projectId)) return;
+async function createDatasetFromLsProject(projectId: number) {
+  if (creatingDatasetIds.has(projectId)) return;
   if (!props.token.trim()) {
     message.warning("请填写 Token");
     return;
   }
-  importingIds.add(projectId);
+  creatingDatasetIds.add(projectId);
+  selectedProjectId.value = projectId;
   try {
-    const r = await http.post("/api/label-studio/import", {
+    const ir = await http.post("/api/label-studio/import", {
       project_id: projectId,
       base_url: props.baseUrl,
       token: props.token,
     });
-    selectedBatchId.value = r.data.import_batch_id;
-    selectedProjectId.value = projectId;
-    message.success(`已导入 ${r.data.task_count} 条任务 (项目 ${projectId})`);
-    await loadBatches();
-  } catch (e: unknown) {
-    message.error(apiErrorDetail(e) ?? "导入失败");
-  } finally {
-    importingIds.delete(projectId);
-  }
-}
+    const lsImportId = ir.data.ls_import_id as string;
+    const tc = Number(ir.data.task_count ?? 0);
+    message.success(`已从 Label Studio 拉取 ${tc} 条标注，正在生成数据集…`);
 
-async function loadBatches() {
-  loadingBatches.value = true;
-  try {
-    const r = await http.get("/api/imports");
-    batches.value = r.data.items || [];
-  } catch (e: unknown) {
-    message.error(apiErrorDetail(e) ?? "获取批次列表失败");
-  } finally {
-    loadingBatches.value = false;
-  }
-}
+    const br = await http.post("/api/datasets/build", {
+      ls_import_id: lsImportId,
+      add_image_token: true,
+      train_ratio: 80,
+      val_ratio: 20,
+      random_seed: null,
+      note: null,
+    });
+    const jobId = br.data.job_id as string;
 
-function confirmDeleteBatch(batchId: string) {
-  Modal.confirm({
-    title: "删除导入批次？",
-    content:
-      "将删除该批次的记录与本地导入目录。已生成的数据集版本会保留，仅解除与此批次的关联。此操作不可恢复。",
-    okText: "删除",
-    cancelText: "取消",
-    okType: "danger",
-    async onOk() {
-      try {
-        await http.delete(`/api/imports/${encodeURIComponent(batchId)}`);
-        message.success("已删除批次");
-        if (selectedBatchId.value === batchId) {
-          selectedBatchId.value = null;
-        }
-        await loadBatches();
-      } catch (e: unknown) {
-        message.error(apiErrorDetail(e) ?? "删除失败");
-        return Promise.reject(e);
+    const buildPollStart = Date.now();
+    for (;;) {
+      if (Date.now() - buildPollStart > POLL_MAX_MS) {
+        message.warning("构建状态长时间未结束，请稍后在本页刷新「数据集」列表查看。");
+        break;
       }
-    },
-  });
+      const st = await http.get(`/api/datasets/jobs/${jobId}`);
+      const status = String(st.data.status);
+      if (["succeeded", "failed", "cancelled"].includes(status)) {
+        if (status === "succeeded") {
+          message.success("数据集已生成");
+          emit("requestRefreshVersions");
+        } else if (status === "failed") {
+          const em = (st.data as { error_message?: string }).error_message;
+          message.error(em && String(em).trim() ? em : "数据集构建失败");
+        }
+        break;
+      }
+      await new Promise((r) => setTimeout(r, POLL_MS));
+    }
+  } catch (e: unknown) {
+    const code = (e as { response?: { status?: number } }).response?.status;
+    if (code === 404) {
+      message.error("构建任务已不存在");
+    } else {
+      message.error(apiErrorDetail(e) ?? "操作失败");
+    }
+  } finally {
+    creatingDatasetIds.delete(projectId);
+  }
 }
 
-function selectBatch(batchId: string) {
-  selectedBatchId.value = batchId;
+function selectVersion(versionId: string) {
+  selectedVersionId.value = versionId;
 }
 
-function onBatchTableRow(r: ImportBatch) {
-  return { onClick: () => r?.id != null && selectBatch(String(r.id)) };
+function onDatasetTableRow(r: DatasetVersionRow) {
+  return { onClick: () => r?.id != null && selectVersion(String(r.id)) };
 }
 
-function batchRowClassName(record: { id?: string }) {
-  const sid = selectedBatchId.value;
+function datasetRowClassName(record: { id?: string }) {
+  const vid = props.activeVersionId;
+  const sid = selectedVersionId.value;
+  if (record?.id != null && vid != null && String(record.id) === String(vid)) {
+    return "import-dataset-table__row--active";
+  }
   if (sid == null || record?.id == null) return "";
-  return String(record.id) === String(sid) ? "import-batch-table__row--selected" : "";
+  return String(record.id) === String(sid) ? "import-dataset-table__row--selected" : "";
 }
-
-const batchColumns = [
-  { title: "批次名称", dataIndex: "batch_name", key: "batch_name", ellipsis: true, width: 180 },
-  { title: "任务数", dataIndex: "task_count", key: "task_count", width: 60 },
-  { title: "建立时间", dataIndex: "created_at", key: "created_at", width: 160 },
-  { title: "操作", key: "action", width: 60 },
-];
 
 async function refreshAfterConnectionLoaded() {
-  await loadBatches();
+  emit("requestRefreshVersions");
   if (props.token.trim()) {
     await loadProjects();
   }
@@ -222,48 +206,59 @@ defineExpose({ refreshAfterConnectionLoaded });
             </div>
           </template>
           <template #extra>
-            <a-button type="primary" :loading="importingIds.has(record.id)" @click.stop="importProject(record.id)">
-              新建数据批次
+            <a-button
+              type="primary"
+              :loading="creatingDatasetIds.has(record.id)"
+              @click.stop="createDatasetFromLsProject(record.id)"
+            >
+              新建数据集
             </a-button>
           </template>
 
           <a-table
-            v-if="projectBatches(record.id).length"
-            class="import-batch-table"
-            :columns="batchColumns"
-            :data-source="projectBatches(record.id)"
-            :loading="loadingBatches"
+            v-if="projectVersions(record.id).length"
+            class="import-dataset-table"
+            :columns="datasetColumns"
+            :data-source="projectVersions(record.id)"
             :pagination="false"
             size="small"
             row-key="id"
-            :row-class-name="batchRowClassName"
-            :custom-row="onBatchTableRow"
+            :row-class-name="datasetRowClassName"
+            :custom-row="onDatasetTableRow"
           >
-            <template #bodyCell="{ column, record: br }">
-              <template v-if="column.key === 'batch_name'">
-                <span class="import-batch-name-cell" @click.stop>
+            <template #bodyCell="{ column, record: vr }">
+              <template v-if="column.key === 'name'">
+                <span class="import-dataset-name-cell" @click.stop>
                   <span
-                    class="import-batch-name-text"
-                    :title="br?.batch_name != null && String(br.batch_name) ? String(br.batch_name) : undefined"
+                    class="import-dataset-name-text"
+                    :title="vr?.name != null && String(vr.name) ? String(vr.name) : undefined"
                   >
-                    {{ br?.batch_name != null && String(br.batch_name) ? br.batch_name : "—" }}
+                    {{ vr?.name != null && String(vr.name) ? vr.name : "—" }}
                   </span>
-                  <EditOutlined class="import-batch-name-edit" @click="openBatchNameEditor(br)" />
+                  <EditOutlined
+                    class="import-dataset-name-edit"
+                    @click="emit('openVersionNameEdit', vr as Record<string, unknown>)"
+                  />
                 </span>
               </template>
               <template v-else-if="column.key === 'action'">
                 <a-space size="small" @click.stop>
-                  <a style="color: #ff4d4f" @click="confirmDeleteBatch(String(br.id))">删除</a>
+                  <a-button type="link" size="small" @click="emit('openVersionView', String(vr.id))">查看</a-button>
+                  <a-button danger type="link" size="small" @click="emit('deleteVersion', String(vr.id))">
+                    删除
+                  </a-button>
                 </a-space>
               </template>
               <span v-else>{{
                 column.dataIndex == null
                   ? "—"
-                  : (br as Record<string, unknown>)?.[String(column.dataIndex)] ?? "—"
+                  : (vr as Record<string, unknown>)?.[String(column.dataIndex)] ?? "—"
               }}</span>
             </template>
           </a-table>
-          <a-typography-paragraph v-else type="secondary" style="margin-top: 8px">暂无批次。请先导入数据。</a-typography-paragraph>
+          <a-typography-paragraph v-else type="secondary" style="margin-top: 8px"
+            >尚无数据集，点击「新建数据集」从本项目生成。</a-typography-paragraph
+          >
         </a-card>
       </div>
     </a-spin>
@@ -271,23 +266,6 @@ defineExpose({ refreshAfterConnectionLoaded });
     <a-typography-paragraph v-if="!loadingProjects && !projects.length" type="secondary">
       请先在右上角打开连接设置，填写地址与 Token，再点击「刷新项目列表」加载 Label Studio 中的项目
     </a-typography-paragraph>
-
-    <a-modal
-      v-model:open="batchNameEditOpen"
-      title="编辑批次名称"
-      ok-text="保存"
-      cancel-text="取消"
-      :confirm-loading="batchNameSaving"
-      destroy-on-close
-      @ok="saveBatchName"
-    >
-      <a-input
-        v-model:value="batchNameEditValue"
-        placeholder="批次显示名称"
-        allow-clear
-        @press-enter="saveBatchName"
-      />
-    </a-modal>
   </div>
 </template>
 
@@ -314,23 +292,23 @@ defineExpose({ refreshAfterConnectionLoaded });
 .data-import-project-list__refresh-btn:hover {
   color: var(--ant-primary-color, #1677ff);
 }
+.data-import-project-list {
+  width: 100%;
+  max-width: none;
+}
 .import-project-card-grid {
   display: grid;
   gap: 16px;
   margin-top: 8px;
   grid-template-columns: 1fr;
 }
-@media (min-width: 576px) {
+@media (min-width: 520px) {
   .import-project-card-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-@media (min-width: 992px) {
-  .import-project-card-grid {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 .import-project-card {
+  min-width: 0;
   cursor: pointer;
   border-radius: 12px;
   border: 1px solid rgba(0, 0, 0, 0.14);
@@ -392,35 +370,41 @@ defineExpose({ refreshAfterConnectionLoaded });
   font-variant-numeric: tabular-nums;
   color: rgba(0, 0, 0, 0.88);
 }
-.import-batch-table :deep(.ant-table-tbody > tr) {
+.import-dataset-table :deep(.ant-table-tbody > tr) {
   cursor: pointer;
 }
-.import-batch-table :deep(.import-batch-table__row--selected > td) {
+.import-dataset-table :deep(.import-dataset-table__row--selected > td) {
   background: color-mix(in srgb, var(--ant-primary-color, #1677ff) 12%, var(--ant-color-bg-container, #fff));
 }
-.import-batch-table :deep(.import-batch-table__row--selected:hover > td) {
+.import-dataset-table :deep(.import-dataset-table__row--selected:hover > td) {
   background: color-mix(in srgb, var(--ant-primary-color, #1677ff) 20%, var(--ant-color-bg-container, #fff));
 }
-.import-batch-name-cell {
+.import-dataset-table :deep(.import-dataset-table__row--active > td) {
+  background: color-mix(in srgb, var(--ant-color-success, #52c41a) 14%, var(--ant-color-bg-container, #fff));
+}
+.import-dataset-table :deep(.import-dataset-table__row--active:hover > td) {
+  background: color-mix(in srgb, var(--ant-color-success, #52c41a) 22%, var(--ant-color-bg-container, #fff));
+}
+.import-dataset-name-cell {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   max-width: 100%;
 }
-.import-batch-name-text {
+.import-dataset-name-text {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.import-batch-name-edit {
+.import-dataset-name-edit {
   flex-shrink: 0;
   color: rgba(0, 0, 0, 0.45);
   cursor: pointer;
   font-size: 14px;
 }
-.import-batch-name-edit:hover {
+.import-dataset-name-edit:hover {
   color: var(--ant-primary-color, #1677ff);
 }
 </style>

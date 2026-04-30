@@ -186,7 +186,8 @@ def list_registered_training_models(workspace: Path) -> list[dict[str, Any]]:
         jn = _training_job_display_name(req, jid)
         tbm = str(req.get("model") or "").strip()
         project_title = str(req.get("project_title") or "").strip() or None
-        batch_name = str(req.get("batch_name") or "").strip() or None
+        import_label = str(req.get("import_label") or "").strip() or None
+        ls_import_id = str(req.get("ls_import_id") or "").strip() or None
         dataset_name = str(req.get("dataset_name") or "").strip() or None
         dvid = str(req.get("dataset_version_id") or "").strip() or None
         swift_tv = _ms_swift_train_version_segment(req, adapter_rel)
@@ -200,7 +201,8 @@ def list_registered_training_models(workspace: Path) -> list[dict[str, Any]]:
                 "job_name": jn,
                 "label": jn,
                 "project_title": project_title,
-                "batch_name": batch_name,
+                "import_label": import_label,
+                "ls_import_id": ls_import_id,
                 "dataset_name": dataset_name,
                 "dataset_version_id": dvid,
                 "swift_train_version": swift_tv,
@@ -241,7 +243,8 @@ def list_merge_page_training_rows(workspace: Path) -> list[dict[str, Any]]:
         jn = _training_job_display_name(req, jid)
         tbm = str(req.get("model") or "").strip()
         project_title = str(req.get("project_title") or "").strip() or None
-        batch_name = str(req.get("batch_name") or "").strip() or None
+        import_label = str(req.get("import_label") or "").strip() or None
+        ls_import_id = str(req.get("ls_import_id") or "").strip() or None
         dataset_name = str(req.get("dataset_name") or "").strip() or None
         dvid = str(req.get("dataset_version_id") or "").strip() or None
         ad = adapter_rel or ""
@@ -256,7 +259,8 @@ def list_merge_page_training_rows(workspace: Path) -> list[dict[str, Any]]:
                 "job_name": jn,
                 "label": jn,
                 "project_title": project_title,
-                "batch_name": batch_name,
+                "import_label": import_label,
+                "ls_import_id": ls_import_id,
                 "dataset_name": dataset_name,
                 "dataset_version_id": dvid,
                 "swift_train_version": swift_tv,
