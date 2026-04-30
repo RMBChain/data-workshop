@@ -106,8 +106,8 @@ RUN REAL_PY="$(readlink -f /workspace/.venv/bin/python)" && \
 # 远程调试 SSH 5622，SWIFT Web UI 常用 7860，data-workshop API 与 compose 一致 8702
 EXPOSE 5622 7860 8702
 
-# data-workshop：挂载代码到 /workspace/project 后 import backend.app
-ENV PYTHONPATH=/workspace/project
+# data-workshop：默认与本仓库 devops/docker-compose.yml 一致（代码挂 /data-workshop）。若挂载到其他路径，请设 -e PYTHONPATH=<挂载点>
+ENV PYTHONPATH=/data-workshop
 
 # 5. 启动脚本 (关键：同时启动 SSH 和保持容器运行)
 RUN echo '#!/bin/bash\n\

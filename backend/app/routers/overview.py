@@ -71,7 +71,7 @@ async def get_pipeline_tree(root: WorkspaceRoot) -> dict[str, Any]:
         "SELECT id, project_title, import_label, created_at FROM ls_imports ORDER BY created_at"
     ).fetchall()
     v_rows = conn.execute(
-        "SELECT id, ls_import_id, name, note, train_relpath, created_at FROM dataset_versions ORDER BY created_at"
+        "SELECT id, ls_import_id, name, note, train_relpath, created_at FROM dw_dataset ORDER BY created_at"
     ).fetchall()
     t_rows = conn.execute(
         "SELECT id, status, request_json, created_at FROM training_jobs_persist ORDER BY created_at"
