@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 class DatasetBuildJob:
     id: str
     status: str
-    import_batch_id: str
+    ls_import_id: str
     created_at: float
     finished_at: float | None = None
     error_message: str | None = None
@@ -48,12 +48,11 @@ def _user_text_with_image_token(user_text: str, add_image_token: bool) -> str:
     return f"<image>{t}"
 
 
-def _default_dataset_version_name(project_title: str | None, batch_name: str | None) -> str:
-    """新建数据集版本时的展示名：项目名 + 批次名 + 本地时间戳 YYYYMMdd-HHmmss。"""
+def _default_dataset_version_name(project_title: str | None) -> str:
+    """新建数据集版本时的展示名：项目名 + 本地时间戳 YYYYMMdd-HHmmss。"""
     pt = (project_title or "").strip() or "未命名项目"
-    bn = (batch_name or "").strip() or "未命名批次"
     ts = time.strftime("%Y%m%d-%H%M%S", time.localtime())
-    return f"{pt}{bn}{ts}"
+    return f"{pt}-{ts}"
 
 
 def _extract_answer_from_ls_task(task_row_json: str | None) -> str:
@@ -131,7 +130,7 @@ class DatasetBuildManager:
     def start_build(
         self,
         *,
-        import_batch_id: str,
+        ls_import_id: str,
         add_image_token: bool,
         train_ratio: int,
         val_ratio: int,
@@ -145,7 +144,7 @@ class DatasetBuildManager:
         job = DatasetBuildJob(
             id=job_id,
             status="pending",
-            import_batch_id=import_batch_id,
+            ls_import_id=ls_import_id,
             created_at=now,
         )
         with self._lock:
@@ -154,17 +153,17 @@ class DatasetBuildManager:
         conn = get_connection(self._workspace)
         conn.execute(
             """
-            INSERT INTO dataset_build_jobs (id, status, import_batch_id, created_at, progress)
+            INSERT INTO dataset_build_jobs (id, status, ls_import_id, created_at, progress)
             VALUES (?, ?, ?, ?, 0)
             """,
-            (job_id, "pending", import_batch_id, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),),
+            (job_id, "pending", ls_import_id, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),),
         )
         conn.commit()
 
         log.info(
-            "数据集构建任务已入队: job_id=%s import_batch_id=%s train/val=%d/%d seed=%s",
+            "数据集构建任务已入队: job_id=%s ls_import_id=%s train/val=%d/%d seed=%s",
             job_id,
-            import_batch_id,
+            ls_import_id,
             train_ratio,
             val_ratio,
             seed,
@@ -191,12 +190,12 @@ class DatasetBuildManager:
             return
         job.status = "running"
         _db_update_job(self._workspace, job_id, "running", None, 0.05, None)
-        log.info("数据集构建开始: job_id=%s batch_id=%s", job_id, job.import_batch_id)
+        log.info("数据集构建开始: job_id=%s ls_import_id=%s", job_id, job.ls_import_id)
 
         conn = get_connection(self._workspace)
         rows = conn.execute(
-            "SELECT image_rel, raw_json FROM import_tasks WHERE batch_id = ? AND image_rel IS NOT NULL",
-            (job.import_batch_id,),
+            "SELECT image_rel, raw_json FROM import_tasks WHERE ls_import_id = ? AND image_rel IS NOT NULL",
+            (job.ls_import_id,),
         ).fetchall()
         log.info("数据集构建: 待处理 import 行数=%d (有 image_rel)", len(rows))
         lines: list[dict[str, Any]] = []
@@ -293,7 +292,7 @@ class DatasetBuildManager:
         (vdir / "meta.json").write_text(
             json_dumps(
                 {
-                    "import_batch_id": job.import_batch_id,
+                    "ls_import_id": job.ls_import_id,
                     "note": note,
                     "counts": {"train": len(a), "val": len(b), "total": n},
                 }
@@ -304,19 +303,16 @@ class DatasetBuildManager:
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         conn = get_connection(self._workspace)
         brow = conn.execute(
-            "SELECT project_title, batch_name FROM import_batches WHERE id = ?",
-            (job.import_batch_id,),
+            "SELECT project_title FROM ls_imports WHERE id = ?",
+            (job.ls_import_id,),
         ).fetchone()
-        version_name = _default_dataset_version_name(
-            brow["project_title"] if brow else None,
-            brow["batch_name"] if brow else None,
-        )
+        version_name = _default_dataset_version_name(brow["project_title"] if brow else None)
         conn.execute(
             """
-            INSERT INTO dataset_versions (id, import_batch_id, note, name, rel_dir, train_relpath, val_relpath, test_relpath, created_at)
+            INSERT INTO dataset_versions (id, ls_import_id, note, name, rel_dir, train_relpath, val_relpath, test_relpath, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)
             """,
-            (version_id, job.import_batch_id, note or "", version_name, rel_dir, tr_rel, va_rel, now),
+            (version_id, job.ls_import_id, note or "", version_name, rel_dir, tr_rel, va_rel, now),
         )
         from backend.app.db import app_kv_set
 

@@ -1,7 +1,5 @@
 import { createRouter, createWebHistory } from "vue-router";
-import Datasets from "../views/Datasets.vue";
 import ImportData from "../views/ImportData.vue";
-import BatchDataView from "../views/BatchDataView.vue";
 import Eval from "../views/Eval.vue";
 import Home from "../views/Home.vue";
 import ModelManagement from "../views/ModelManagement.vue";
@@ -13,9 +11,8 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: "/", name: "home", component: Home, meta: { title: "设置" } },
-    { path: "/importData", name: "importData", component: ImportData, meta: { title: "数据导入" } },
-    { path: "/batchDataView", name: "batchDataView", component: BatchDataView, meta: { title: "数据查看" } },
-    { path: "/datasets", name: "datasets", component: Datasets, meta: { title: "数据集" } },
+    { path: "/importData", name: "importData", component: ImportData, meta: { title: "数据导入与数据集" } },
+    { path: "/datasets", redirect: { name: "importData" } },
     { path: "/models", name: "models", component: ModelManagement, meta: { title: "模型管理" } },
     { path: "/train", name: "train", component: Train, meta: { title: "训练" } },
     { path: "/verify", name: "playground", component: Verify, meta: { title: "推理沙盒" } },

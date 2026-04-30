@@ -9,12 +9,11 @@ type PipeTrainN = { id: string; label: string; status: string; merges: PipeMerge
 type PipeDatasetN = {
   id: string;
   label: string;
-  import_batch_id: string;
+  ls_import_id: string;
   virtual?: boolean;
   trainings: PipeTrainN[];
 };
-type PipeBatchN = { id: string; label: string; datasets: PipeDatasetN[] };
-type PipeProjectN = { key: string; label: string; batches: PipeBatchN[] };
+type PipeProjectN = { key: string; label: string; datasets: PipeDatasetN[] };
 
 const pipelineLoading = ref(false);
 const pipelineErrorText = ref<string | null>(null);
@@ -69,25 +68,14 @@ function pipeDatasetNode(d: PipeDatasetN) {
   };
 }
 
-function pipeBatchNode(b: PipeBatchN) {
-  const bName = `批次 · ${b.label}`;
-  if (!b.datasets.length) {
-    return { name: bName };
-  }
-  return {
-    name: bName,
-    children: b.datasets.map(pipeDatasetNode),
-  };
-}
-
 function pipeBuildTreeData(list: PipeProjectN[]) {
   return list.map((p) => {
-    if (!p.batches.length) {
+    if (!p.datasets.length) {
       return { name: `项目 · ${p.label}` };
     }
     return {
       name: `项目 · ${p.label}`,
-      children: p.batches.map(pipeBatchNode),
+      children: p.datasets.map(pipeDatasetNode),
     };
   });
 }
@@ -112,7 +100,7 @@ function setPipelineChartOption() {
     pipelineChartMinHeight.value = 480;
     pipelineChart.setOption(
       {
-        title: { text: "暂无导入批次/数据", left: "center", top: "middle", textStyle: { color: "#999", fontSize: 16 } },
+        title: { text: "暂无项目/数据集", left: "center", top: "middle", textStyle: { color: "#999", fontSize: 16 } },
         series: [],
       },
       true
@@ -165,7 +153,7 @@ function setPipelineChartOption() {
           },
           emphasis: { focus: "descendant" },
           expandAndCollapse: true,
-          initialTreeDepth: 6,
+          initialTreeDepth: 5,
           animationDuration: 200,
           animationDurationUpdate: 200,
           lineStyle: { width: 1.5, color: "#b5b5b5" },
@@ -255,7 +243,7 @@ onUnmounted(() => {
       </a-tooltip>
     </div>
     <a-typography-paragraph type="secondary" style="margin-bottom: 16px">
-      自左至右为：总览根「全部项目」、各项目、批次、数据集版本、训练、LoRA 合并。
+      自左至右为：总览根「全部项目」、各 Label Studio 项目、数据集版本、训练、LoRA 合并。
     </a-typography-paragraph>
     <a-alert v-if="pipelineErrorText" type="error" :message="pipelineErrorText" show-icon style="margin-bottom: 12px" />
     <a-spin :spinning="pipelineLoading" tip="加载中…">

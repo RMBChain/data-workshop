@@ -64,14 +64,14 @@ def _pick_single_merge_node(candidates: list[dict[str, Any]]) -> list[dict[str, 
 
 @router.get("/overview/pipeline")
 async def get_pipeline_tree(root: WorkspaceRoot) -> dict[str, Any]:
-    """五层：项目 → 批次 → 数据集（版本）→ 训练 → 合并（每训练仅一条合并，优先成功再按时间）。"""
+    """四层（展示）：项目 → 数据集（版本）→ 训练 → 合并（每训练仅一条合并，优先成功再按时间）。"""
     conn = get_connection(root.resolve())
 
-    b_rows = conn.execute(
-        "SELECT id, project_title, batch_name, created_at FROM import_batches ORDER BY created_at"
+    imp_rows = conn.execute(
+        "SELECT id, project_title, import_label, created_at FROM ls_imports ORDER BY created_at"
     ).fetchall()
     v_rows = conn.execute(
-        "SELECT id, import_batch_id, name, note, train_relpath, created_at FROM dataset_versions ORDER BY created_at"
+        "SELECT id, ls_import_id, name, note, train_relpath, created_at FROM dataset_versions ORDER BY created_at"
     ).fetchall()
     t_rows = conn.execute(
         "SELECT id, status, request_json, created_at FROM training_jobs_persist ORDER BY created_at"
@@ -83,10 +83,9 @@ async def get_pipeline_tree(root: WorkspaceRoot) -> dict[str, Any]:
     for r in v_rows or []:
         tr = str(r["train_relpath"] or "").strip()
         if tr:
-            # 同一 relpath 多版本时保留最后遍历的一条
             train_relpath_to_vid[tr] = str(r["id"])
 
-    batch_by_id = {str(r["id"]): r for r in (b_rows or [])}
+    ls_import_by_id = {str(r["id"]): r for r in (imp_rows or [])}
 
     merges_by_tid: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in m_rows or []:
@@ -107,7 +106,7 @@ async def get_pipeline_tree(root: WorkspaceRoot) -> dict[str, Any]:
     merges_by_tid = {tid: _pick_single_merge_node(lst) for tid, lst in merges_by_tid.items()}
 
     v_to_train: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    orphan_batch: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    orphan_ls: dict[str, list[dict[str, Any]]] = defaultdict(list)
     assigned_tid: set[str] = set()
 
     for r in t_rows or []:
@@ -133,19 +132,31 @@ async def get_pipeline_tree(root: WorkspaceRoot) -> dict[str, Any]:
             assigned_tid.add(tid)
             continue
 
-        pt = str(reqt.get("project_title") or "").strip()
-        bn = str(reqt.get("batch_name") or "").strip()
-        bid: str | None = None
-        for bid0, brow in batch_by_id.items():
-            p0 = str(brow["project_title"] or "").strip()
-            b0 = str(brow["batch_name"] or "").strip()
-            if p0 == pt and b0 == bn:
-                bid = bid0
-                break
-        if bid:
-            orphan_batch[bid].append(job)
+        liid = str(reqt.get("ls_import_id") or "").strip()
+        iid: str | None = None
+        if liid and liid in ls_import_by_id:
+            iid = liid
         else:
-            orphan_batch[""].append(job)
+            pt = str(reqt.get("project_title") or "").strip()
+            ilab = str(reqt.get("import_label") or "").strip()
+            if ilab:
+                for iid0, brow in ls_import_by_id.items():
+                    p0 = str(brow["project_title"] or "").strip()
+                    l0 = str(brow["import_label"] or "").strip()
+                    if p0 == pt and l0 == ilab:
+                        iid = iid0
+                        break
+            elif pt:
+                same_proj = [
+                    iid0
+                    for iid0, brow in ls_import_by_id.items()
+                    if str(brow["project_title"] or "").strip() == pt
+                ]
+                iid = same_proj[0] if len(same_proj) == 1 else None
+        if iid:
+            orphan_ls[iid].append(job)
+        else:
+            orphan_ls[""].append(job)
         assigned_tid.add(tid)
 
     for tid in merges_by_tid:
@@ -158,29 +169,29 @@ async def get_pipeline_tree(root: WorkspaceRoot) -> dict[str, Any]:
             "status": "unknown",
             "merges": rows,
         }
-        orphan_batch[""].append(job)
+        orphan_ls[""].append(job)
 
-    v_by_batch: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    v_by_ls_import: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in v_rows or []:
-        bid0 = str(r["import_batch_id"] or "").strip()
-        if not bid0:
+        iid0 = str(r["ls_import_id"] or "").strip()
+        if not iid0:
             continue
         d = {
             "id": str(r["id"]),
             "label": str(r["name"] or "").strip() or str(r["id"])[:8],
-            "import_batch_id": bid0,
+            "ls_import_id": iid0,
             "trainings": v_to_train.get(str(r["id"]), []),
         }
-        v_by_batch[bid0].append(d)
+        v_by_ls_import[iid0].append(d)
 
-    for bid0, tlist in orphan_batch.items():
-        if not tlist or not bid0:
+    for iid0, tlist in orphan_ls.items():
+        if not tlist or not iid0:
             continue
-        v_by_batch[bid0].append(
+        v_by_ls_import[iid0].append(
             {
-                "id": f"__virtual__:{bid0}:no_version",
+                "id": f"__virtual__:{iid0}:no_version",
                 "label": "（未建数据集版本）",
-                "import_batch_id": bid0,
+                "ls_import_id": iid0,
                 "virtual": True,
                 "trainings": tlist,
             }
@@ -192,58 +203,89 @@ async def get_pipeline_tree(root: WorkspaceRoot) -> dict[str, Any]:
     def _project_key(project_title: str) -> str:
         return project_title if project_title else "未命名项目"
 
-    for r in b_rows or []:
-        bid0 = str(r["id"])
-        pkey = _project_key(str(r["project_title"] or "").strip())
+    def _ensure_project(pkey: str) -> None:
         if pkey not in projects_map:
             projects_map[pkey] = {
                 "key": f"project:{pkey}",
                 "label": pkey,
-                "batches": [],
+                "datasets": [],
             }
             project_order.append(pkey)
-        dsets = v_by_batch.get(bid0, [])
-        b_label = str(r["batch_name"] or "").strip() or "未命名批次"
-        projects_map[pkey]["batches"].append(
+
+    def _merge_no_version_virtuals(datasets: list[dict[str, Any]], pkey: str) -> list[dict[str, Any]]:
+        nv_label = "（未建数据集版本）"
+        buckets: list[dict[str, Any]] = []
+        rest = []
+        for d in datasets:
+            if d.get("virtual") and str(d.get("label") or "") == nv_label:
+                buckets.append(d)
+            else:
+                rest.append(d)
+        if not buckets:
+            return datasets
+        trainings: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for d in buckets:
+            for tj in d.get("trainings") or []:
+                tid = str(tj.get("id") or "")
+                if tid and tid not in seen:
+                    seen.add(tid)
+                    trainings.append(tj)
+        trainings.sort(key=lambda t: str(t.get("id") or ""))
+        safe_pk = pkey.replace(":", "_")[:120]
+        rest.append(
             {
-                "id": bid0,
-                "label": b_label,
-                "datasets": dsets,
+                "id": f"__virtual__:{safe_pk}:no_version",
+                "label": nv_label,
+                "ls_import_id": "",
+                "virtual": True,
+                "trainings": trainings,
+            }
+        )
+        return rest
+
+    for r in imp_rows or []:
+        iid0 = str(r["id"])
+        pkey = _project_key(str(r["project_title"] or "").strip())
+        _ensure_project(pkey)
+        projects_map[pkey]["datasets"].extend(v_by_ls_import.get(iid0, []))
+
+    for r in v_rows or []:
+        iid0 = str(r["ls_import_id"] or "").strip()
+        if iid0:
+            continue
+        pkey = "未归属"
+        _ensure_project(pkey)
+        projects_map[pkey]["datasets"].append(
+            {
+                "id": str(r["id"]),
+                "label": str(r["name"] or "").strip() or str(r["id"])[:8],
+                "ls_import_id": "",
+                "trainings": v_to_train.get(str(r["id"]), []),
             }
         )
 
-    if orphan_batch.get(""):
+    if orphan_ls.get(""):
         pkey = "未归属"
-        if pkey not in projects_map:
-            projects_map[pkey] = {
-                "key": f"project:{pkey}",
-                "label": pkey,
-                "batches": [
-                    {
-                        "id": "__orphan__",
-                        "label": "—",
-                        "datasets": [
-                            {
-                                "id": "__orphan_data__",
-                                "label": "（无匹配批次/数据集）",
-                                "import_batch_id": "",
-                                "virtual": True,
-                                "trainings": orphan_batch[""],
-                            }
-                        ],
-                    }
-                ],
+        _ensure_project(pkey)
+        projects_map[pkey]["datasets"].append(
+            {
+                "id": "__orphan_data__",
+                "label": "（无匹配项目/数据集）",
+                "ls_import_id": "",
+                "virtual": True,
+                "trainings": orphan_ls[""],
             }
-            project_order.append(pkey)
+        )
 
     projects = [projects_map[k] for k in project_order if k in projects_map]
     for p in projects:
-        p["batches"].sort(key=lambda b: str(b.get("id") or ""))
-        for b in p["batches"]:
-            b["datasets"].sort(key=lambda d: (1 if d.get("virtual") else 0, str(d.get("id") or "")))
-            for d in b["datasets"]:
-                d["trainings"].sort(key=lambda t: str(t.get("id") or ""))
-                for tj in d["trainings"]:
-                    tj.get("merges", []).sort(key=lambda m: str(m.get("id") or ""))
+        pkey = str(p.get("label") or "")
+        p["datasets"] = _merge_no_version_virtuals(list(p["datasets"]), pkey)
+        p["datasets"].sort(key=lambda d: (1 if d.get("virtual") else 0, str(d.get("id") or "")))
+        for d in p["datasets"]:
+            d["trainings"].sort(key=lambda t: str(t.get("id") or ""))
+            for tj in d["trainings"]:
+                tj.get("merges", []).sort(key=lambda m: str(m.get("id") or ""))
 
     return {"projects": projects}

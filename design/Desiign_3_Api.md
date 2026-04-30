@@ -267,7 +267,6 @@
 | 前端路由 | 主要 API 分组 |
 |----------|----------------|
 | `/importData` | §4、§5 |
-| `/batchDataView` | §5 |
 | `/datasets` | §6 |
 | `/models` | §8 |
 | `/train` | §7 |
