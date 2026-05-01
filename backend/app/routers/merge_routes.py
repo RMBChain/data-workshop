@@ -74,7 +74,7 @@ async def list_merge_training_candidates(root: WorkspaceRoot) -> dict[str, Any]:
 @router.get("/merge/training-status")
 async def get_merge_training_status(root: WorkspaceRoot) -> dict[str, Any]:
     """各训练 job_id 对应的 LoRA 合并态：未合并 / 合并中 / 已取消 / 失败 / 成功。
-    内存中最新 MergeJob 优先；无内存记录时以 SQLite `merge_jobs` 持久化结果为准（不扫磁盘）。
+    内存中最新 MergeJob 优先；无内存记录时以 SQLite `dws_merge_jobs` 持久化结果为准（不扫磁盘）。
     output_path_by_job_id：成功时来自合并任务 request.output_path、打包表 merged_model_relpath 等。
     zip_path_by_job_id：合并成功且已打包入库时非 null（工作区相对路径）。"""
     t_all = time.perf_counter()
@@ -140,7 +140,7 @@ async def get_train_run_logs_on_merge_page(root: WorkspaceRoot, training_job_id:
 
 @router.get("/merge/training-jobs/{training_job_id}/logs")
 async def get_merge_logs_for_training_job(root: WorkspaceRoot, training_job_id: str) -> dict[str, Any]:
-    """该训练 job 最近一次合并任务的日志（内存中最新任务或 SQLite `merge_jobs` + 磁盘 .log 文件）。"""
+    """该训练 job 最近一次合并任务的日志（内存中最新任务或 SQLite `dws_merge_jobs` + 磁盘 .log 文件）。"""
     t0 = time.perf_counter()
     tid = (training_job_id or "").strip()
     if not tid:

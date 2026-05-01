@@ -71,6 +71,7 @@
 
 - 库路径固定为 **`{workspace_root}/state/workshop.db`**（由 **`workspace_root`** 推导，不提供单独数据库路径的环境变量）。
 - 大文件、JSONL、权重、日志全文仍落盘工作区；库内为批次、版本、任务状态与索引。
+- 业务表名均带前缀 **`dws_`**，与 `backend/app/db.py` 中 DDL 一致：`dws_app_kv`、`dws_datasets`、`dws_training_jobs_persist`、`dws_merge_jobs`、`dws_merge_export_zips`、`dws_eval_jobs`、`dws_inference_sessions`。
 
 ### 1.7 调用 ms-swift（CLI 子进程）
 
@@ -98,7 +99,7 @@
 
 | 方法 | 路径 | 说明 | 状态 |
 |------|------|------|------|
-| GET | `/api/label-studio/connection` | 界面持久化的 `base_url`、`token`（库 `app_kv`），基址空则回退配置默认 | **已实现** |
+| GET | `/api/label-studio/connection` | 界面持久化的 `base_url`、`token`（表 `dws_app_kv`），基址空则回退配置默认 | **已实现** |
 | PUT | `/api/label-studio/connection` | 写入连接 | **已实现** |
 | GET | `/api/label-studio/status` | 探测配置默认 LS URL 是否可达 | **已实现** |
 | POST | `/api/label-studio/test-connection` | Body：`base_url`、`token` | **已实现** |

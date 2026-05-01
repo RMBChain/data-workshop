@@ -55,8 +55,8 @@ def _display_names_for_job_request(workspace: Path, req: dict[str, Any]) -> tupl
             conn = get_connection(workspace)
             row = conn.execute(
                 "SELECT v.name, v.label_studio_project_title, v.rel_dir "
-                "FROM dw_dataset v "
-                "WHERE v.train_relpath = ? "
+                "FROM dws_datasets v "
+                "WHERE v.train_relpath = ? AND v.status = 'succeeded' "
                 "ORDER BY v.created_at DESC "
                 "LIMIT 1",
                 (tr,),

@@ -17,7 +17,7 @@ type MergedModelRow = {
   id: string;
   path: string;
   label: string;
-  /** 来自 dw_dataset.val_relpath（与合并所用 LoRA 对应训练的数据集版本一致） */
+  /** 来自 dws_datasets.val_relpath（与合并所用 LoRA 对应训练的数据集版本一致） */
   val_jsonl: string;
   dataset_version_id?: string | null;
   /** 写入 workshop_merge_meta.json 的 Web 合并任务 id（仅新合并有） */

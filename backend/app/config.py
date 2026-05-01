@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     repo_root: Path = _DEFAULT_REPO_ROOT
     # 单独部署的 Label Studio；Docker 中 API 通过 host.docker.internal 访问宿主机端口（见 README）
     label_studio_url: str = "http://host.docker.internal:8080"
+    # 界面未在 dws_app_kv 中保存过 Token 时的默认值；可用 WORKSHOP_LABEL_STUDIO_API_TOKEN 覆盖
+    label_studio_api_token: str = (
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6ODA4NDA2NjMwNiwiaWF0IjoxNzc2ODY2MzA2LCJqdGkiOiI1ZDNiOGZiYTA3ZTI0MTBmODAwZTI2YzI1ZGFlZjU0OSIsInVzZXJfaWQiOiIxIn0.tLVtBtn9-8O7H0XvUh8M2DWDaPRPDSFWCRydI7VRb90"
+    )
     # 本地开发前端（Vite 等）
     cors_origins: str = (
         "http://127.0.0.1:5173,http://localhost:5173,"

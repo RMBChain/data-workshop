@@ -231,7 +231,7 @@ async def create_session(root: WorkspaceRoot, body: SessionCreateBody) -> dict[s
     key = f"{body.base_model}::{body.adapter_path or ''}::{body.model_id or ''}"
     get_connection(root).execute(
         """
-        INSERT INTO inference_sessions (id, created_at, updated_at, model_key, messages_json)
+        INSERT INTO dws_inference_sessions (id, created_at, updated_at, model_key, messages_json)
         VALUES (?, ?, ?, ?, '[]')
         """,
         (sid, now, now, key),
@@ -243,7 +243,7 @@ async def create_session(root: WorkspaceRoot, body: SessionCreateBody) -> dict[s
 @router.get("/inference/sessions/{session_id}")
 async def get_session(root: WorkspaceRoot, session_id: str) -> dict[str, Any]:
     r = get_connection(root).execute(
-        "SELECT id, model_key, messages_json, updated_at FROM inference_sessions WHERE id = ?",
+        "SELECT id, model_key, messages_json, updated_at FROM dws_inference_sessions WHERE id = ?",
         (session_id,),
     ).fetchone()
     if not r:
@@ -263,7 +263,7 @@ async def export_session(
     export_format: str = Query("markdown", description="markdown 或 json"),
 ) -> dict[str, str]:
     r = get_connection(root).execute(
-        "SELECT messages_json FROM inference_sessions WHERE id = ?",
+        "SELECT messages_json FROM dws_inference_sessions WHERE id = ?",
         (session_id,),
     ).fetchone()
     if not r:

@@ -32,7 +32,6 @@ class DatasetBuildJob:
     finished_at: float | None = None
     error_message: str | None = None
     progress: float = 0.0
-    result_version_id: str | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event)
     # 从 Label Studio 拉取；token 仅内存、不入库
     ls_project_id: int | None = None
@@ -402,12 +401,27 @@ class DatasetBuildManager:
             self._jobs[job_id] = job
 
         conn = get_connection(self._workspace)
+        created_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        provisional_name = (version_name or "").strip() or None
+        note_s = (note or "").strip() if note else ""
+        ls_title = (label_studio_project_title or "").strip() or None
         conn.execute(
             """
-            INSERT INTO dataset_build_jobs (id, status, ls_import_id, created_at, progress)
-            VALUES (?, ?, NULL, ?, 0)
+            INSERT INTO dws_datasets (
+                id, status, progress, ls_import_id,
+                label_studio_project_id, label_studio_project_title,
+                note, name, rel_dir, train_relpath, val_relpath, test_relpath, created_at
+            )
+            VALUES (?, 'pending', 0, NULL, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)
             """,
-            (job_id, "pending", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),),
+            (
+                job_id,
+                int(label_studio_project_id),
+                ls_title,
+                note_s,
+                provisional_name,
+                created_iso,
+            ),
         )
         conn.commit()
 
@@ -440,11 +454,10 @@ class DatasetBuildManager:
         if not job:
             return
         job.status = "running"
-        _db_update_job(self._workspace, job_id, "running", None, 0.05, None)
+        _db_update_job(self._workspace, job_id, "running", None, 0.05)
         log.info("数据集构建开始: job_id=%s (Label Studio 直连)", job_id)
 
-        version_id = uuid.uuid4().hex[:12]
-        rel_dir = f"dataset/{version_id}"
+        rel_dir = f"dataset/{job_id}"
         vdir = self._workspace / rel_dir
         vdir.mkdir(parents=True, exist_ok=True)
         img_dir = vdir / "images"
@@ -456,10 +469,14 @@ class DatasetBuildManager:
         resolved_proj_title: str | None = None
 
         if job.ls_project_id is None:
+            try:
+                shutil.rmtree(vdir)
+            except OSError:
+                pass
             job.status = "failed"
             job.error_message = "内部错误：缺少 Label Studio 项目信息"
             job.finished_at = time.time()
-            _db_update_job(self._workspace, job_id, "failed", job.error_message, 1.0, None)
+            _db_update_job(self._workspace, job_id, "failed", job.error_message, 1.0)
             return
 
         lines, skipped_resolve, skipped_build, n_src, resolved_proj_title = asyncio.run(
@@ -470,7 +487,7 @@ class DatasetBuildManager:
         job.label_studio_token = None
 
         job.progress = 0.4
-        _db_update_job(self._workspace, job_id, "running", None, 0.4, None)
+        _db_update_job(self._workspace, job_id, "running", None, 0.4)
         log.info(
             "数据集构建: 可写入样本行=%d 跳过(路径/解析)=%d 跳过(建样本失败)=%d",
             len(lines),
@@ -489,7 +506,7 @@ class DatasetBuildManager:
             job.status = "failed"
             job.error_message = "没有可用的图片样本，请检查 Label Studio 任务中的图片路径与网络可达性"
             job.finished_at = time.time()
-            _db_update_job(self._workspace, job_id, "failed", job.error_message, 1.0, None)
+            _db_update_job(self._workspace, job_id, "failed", job.error_message, 1.0)
             log.error(
                 "数据集构建失败 job_id=%s: 无有效样本 (源任务行=%d skip_resolve=%d skip_build=%d)",
                 job_id,
@@ -552,7 +569,6 @@ class DatasetBuildManager:
             encoding="utf-8",
         )
 
-        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         conn = get_connection(self._workspace)
         proj_for_name = (resolved_proj_title or job.label_studio_project_title or "").strip() or None
         custom_vn = (version_name or "").strip()
@@ -561,13 +577,27 @@ class DatasetBuildManager:
             if custom_vn
             else _default_dataset_version_name(proj_for_name)
         )
+        fin = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         conn.execute(
             """
-            INSERT INTO dw_dataset (id, ls_import_id, label_studio_project_id, label_studio_project_title, note, name, rel_dir, train_relpath, val_relpath, test_relpath, created_at)
-            VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+            UPDATE dws_datasets SET
+                status = 'succeeded',
+                error_message = NULL,
+                progress = 1.0,
+                finished_at = ?,
+                ls_import_id = NULL,
+                label_studio_project_id = ?,
+                label_studio_project_title = ?,
+                note = ?,
+                name = ?,
+                rel_dir = ?,
+                train_relpath = ?,
+                val_relpath = ?,
+                test_relpath = NULL
+            WHERE id = ?
             """,
             (
-                version_id,
+                fin,
                 ls_pid_ins,
                 ls_ptitle_ins,
                 note or "",
@@ -575,23 +605,20 @@ class DatasetBuildManager:
                 rel_dir,
                 tr_rel,
                 va_rel,
-                now,
+                job_id,
             ),
         )
         from backend.app.db import app_kv_set
 
-        app_kv_set(conn, "active_dataset_version", version_id)
+        app_kv_set(conn, "active_dataset_version", job_id)
         conn.commit()
 
         job.status = "succeeded"
         job.finished_at = time.time()
         job.progress = 1.0
-        job.result_version_id = version_id
-        _db_update_job(self._workspace, job_id, "succeeded", None, 1.0, version_id)
         log.info(
-            "数据集构建成功: job_id=%s version_id=%s 目录=%s",
+            "数据集构建成功: dataset_id=%s 目录=%s",
             job_id,
-            version_id,
             rel_dir,
         )
 
@@ -610,33 +637,14 @@ def _db_update_job(
     status: str,
     err: str | None,
     progress: float,
-    result_version: str | None,
 ) -> None:
     conn = get_connection(workspace)
     terminal = status in ("failed", "succeeded", "cancelled")
     fin = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) if terminal else None
-    if result_version is not None:
-        if fin:
-            conn.execute(
-                """
-                UPDATE dataset_build_jobs
-                SET status = ?, error_message = ?, progress = ?, finished_at = ?, result_version_id = ?
-                WHERE id = ?
-                """,
-                (status, err, progress, fin, result_version, job_id),
-            )
-        else:
-            conn.execute(
-                """
-                UPDATE dataset_build_jobs SET status = ?, error_message = ?, progress = ?, result_version_id = ?
-                WHERE id = ?
-                """,
-                (status, err, progress, result_version, job_id),
-            )
-    elif fin:
+    if fin:
         conn.execute(
             """
-            UPDATE dataset_build_jobs
+            UPDATE dws_datasets
             SET status = ?, error_message = ?, progress = ?, finished_at = ?
             WHERE id = ?
             """,
@@ -644,7 +652,7 @@ def _db_update_job(
         )
     else:
         conn.execute(
-            "UPDATE dataset_build_jobs SET status = ?, error_message = ?, progress = ? WHERE id = ?",
+            "UPDATE dws_datasets SET status = ?, error_message = ?, progress = ?, finished_at = NULL WHERE id = ?",
             (status, err, progress, job_id),
         )
     conn.commit()
@@ -653,7 +661,7 @@ def _db_update_job(
 def _finish_cancel(workspace: Path, job_id: str, job: DatasetBuildJob) -> None:
     job.status = "cancelled"
     job.finished_at = time.time()
-    _db_update_job(workspace, job_id, "cancelled", None, 1.0, None)
+    _db_update_job(workspace, job_id, "cancelled", None, 1.0)
     log.info("数据集构建已取消: job_id=%s", job_id)
 
 
@@ -668,7 +676,7 @@ def mark_stale_build_jobs_failed_on_restart(workspace: Path) -> int:
     conn = get_connection(workspace)
     conn.execute(
         """
-        UPDATE dataset_build_jobs
+        UPDATE dws_datasets
         SET status = 'failed', error_message = ?, progress = 1.0, finished_at = ?
         WHERE status IN ('pending', 'running')
         """,

@@ -395,7 +395,10 @@ async function loadDatasetVersions(opts?: {
       items: DatasetVersionRow[];
     }>("/api/datasets/versions");
     serverActiveVersionId.value = r.data.active_version_id;
-    const items = r.data.items ?? [];
+    const raw = r.data.items ?? [];
+    const items = raw.filter(
+      (x) => (x as { status?: string }).status === "succeeded" || !(x as { status?: string }).status,
+    );
     datasetVersionItems.value = items;
     const ids = new Set(items.map((x) => x.id));
     const act = r.data.active_version_id;

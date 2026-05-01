@@ -174,7 +174,7 @@ class MergeJobCreate(BaseModel):
     )
     training_job_id: str | None = Field(
         None,
-        description="可选。对应训练任务 job_id；合并成功后将 zip 路径写入 merge_export_zips",
+        description="可选。对应训练任务 job_id；合并成功后将 zip 路径写入 dws_merge_export_zips",
     )
 
 
@@ -192,7 +192,7 @@ def _training_request_json(workspace: Path, training_job_id: str) -> dict[str, A
         return None
     conn = get_connection(workspace)
     row = conn.execute(
-        "SELECT request_json FROM training_jobs_persist WHERE id = ?",
+        "SELECT request_json FROM dws_training_jobs_persist WHERE id = ?",
         (tid,),
     ).fetchone()
     if not row:

@@ -276,7 +276,7 @@ class TrainingJobManager:
         conn = get_connection(self._workspace)
         conn.execute(
             """
-            INSERT INTO training_jobs_persist (
+            INSERT INTO dws_training_jobs_persist (
                 id, status, created_at, finished_at, return_code, error_message, request_json, log_path
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
@@ -302,7 +302,7 @@ class TrainingJobManager:
 
     def _delete_job_from_db(self, job_id: str) -> None:
         conn = get_connection(self._workspace)
-        conn.execute("DELETE FROM training_jobs_persist WHERE id = ?", (job_id,))
+        conn.execute("DELETE FROM dws_training_jobs_persist WHERE id = ?", (job_id,))
         conn.commit()
 
     def _remove_directory_for_output_dir(self, rel: str | None) -> None:
@@ -339,7 +339,7 @@ class TrainingJobManager:
     def _hydrate_from_db(self) -> None:
         conn = get_connection(self._workspace)
         rows = conn.execute(
-            "SELECT * FROM training_jobs_persist ORDER BY CAST(created_at AS REAL) ASC"
+            "SELECT * FROM dws_training_jobs_persist ORDER BY CAST(created_at AS REAL) ASC"
         ).fetchall()
         now = time.time()
         for row in rows:
@@ -357,7 +357,7 @@ class TrainingJobManager:
                 fin = str(now) if not fin else fin
                 ret_code = -1
                 conn.execute(
-                    "UPDATE training_jobs_persist SET status = ?, error_message = ?, finished_at = ?, return_code = ? WHERE id = ?",
+                    "UPDATE dws_training_jobs_persist SET status = ?, error_message = ?, finished_at = ?, return_code = ? WHERE id = ?",
                     ("failed", err_msg, fin, ret_code, jid),
                 )
             req_raw = d.get("request_json") or "{}"

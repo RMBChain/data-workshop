@@ -160,13 +160,13 @@ def _ms_swift_train_version_segment(req: dict[str, Any], adapter_rel: str) -> st
 
 
 def list_registered_training_models(workspace: Path) -> list[dict[str, Any]]:
-    """仅 `training_jobs_persist` 中状态为 succeeded 的训练任务。path 以训练成功时落库的
+    """仅 `dws_training_jobs_persist` 中状态为 succeeded 的训练任务。path 以训练成功时落库的
     `workshop_pinned_lora_relpath` 为准（该次任务结束时步数最大的 checkpoint），未落库时按当前磁盘
     步数最大 adapter 解析；不随后续同目录新 checkpoint 漂移。"""
     root = workspace.resolve()
     conn = get_connection(root)
     rows = conn.execute(
-        "SELECT id, request_json FROM training_jobs_persist "
+        "SELECT id, request_json FROM dws_training_jobs_persist "
         "WHERE status = 'succeeded' "
         "ORDER BY CAST(created_at AS REAL) DESC"
     ).fetchall()
@@ -212,7 +212,7 @@ def list_merge_page_training_rows(workspace: Path) -> list[dict[str, Any]]:
     root = workspace.resolve()
     conn = get_connection(root)
     rows = conn.execute(
-        "SELECT id, request_json, status, error_message FROM training_jobs_persist "
+        "SELECT id, request_json, status, error_message FROM dws_training_jobs_persist "
         "WHERE status NOT IN ('parameters_saved') "
         "ORDER BY CAST(created_at AS REAL) DESC"
     ).fetchall()

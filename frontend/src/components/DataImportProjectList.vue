@@ -8,6 +8,7 @@ type DatasetVersionRow = {
   id: string;
   label_studio_project_id?: number | null;
   name?: string | null;
+  status?: string | null;
   train_count?: number | null;
   val_count?: number | null;
   created_at?: string;
@@ -69,8 +70,19 @@ function projectVersions(projectId: number): DatasetVersionRow[] {
   );
 }
 
+function datasetStatusLabel(s: string | null | undefined): string {
+  const u = String(s ?? "").trim().toLowerCase();
+  if (u === "succeeded") return "已完成";
+  if (u === "failed") return "失败";
+  if (u === "cancelled") return "已取消";
+  if (u === "running") return "进行中";
+  if (u === "pending") return "等待中";
+  return u ? String(s) : "—";
+}
+
 const datasetColumns = [
   { title: "数据集名称", dataIndex: "name", key: "name", ellipsis: true, width: 160 },
+  { title: "状态", dataIndex: "status", key: "status", width: 80 },
   { title: "训练", dataIndex: "train_count", key: "train_count", width: 56 },
   { title: "验证", dataIndex: "val_count", key: "val_count", width: 56 },
   { title: "生成时间", dataIndex: "created_at", key: "created_at", width: 160 },
@@ -309,9 +321,19 @@ defineExpose({ refreshAfterConnectionLoaded, loadProjects, loadingProjects });
                   />
                 </span>
               </template>
+              <template v-else-if="column.key === 'status'">
+                {{ datasetStatusLabel(vr?.status as string | null | undefined) }}
+              </template>
               <template v-else-if="column.key === 'action'">
                 <a-space size="small" @click.stop>
-                  <a-button type="link" size="small" @click="emit('openVersionView', String(vr.id))">查看</a-button>
+                  <a-button
+                    type="link"
+                    size="small"
+                    :disabled="vr?.status != null && String(vr.status) !== 'succeeded'"
+                    @click="emit('openVersionView', String(vr.id))"
+                  >
+                    查看
+                  </a-button>
                   <a-button danger type="link" size="small" @click="emit('deleteVersion', String(vr.id))">
                     删除
                   </a-button>
