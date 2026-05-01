@@ -408,11 +408,11 @@ class DatasetBuildManager:
         conn.execute(
             """
             INSERT INTO dws_datasets (
-                id, status, progress, ls_import_id,
+                id, status, progress,
                 label_studio_project_id, label_studio_project_title,
                 note, name, rel_dir, train_relpath, val_relpath, test_relpath, created_at
             )
-            VALUES (?, 'pending', 0, NULL, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)
+            VALUES (?, 'pending', 0, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)
             """,
             (
                 job_id,
@@ -585,7 +585,6 @@ class DatasetBuildManager:
                 error_message = NULL,
                 progress = 1.0,
                 finished_at = ?,
-                ls_import_id = NULL,
                 label_studio_project_id = ?,
                 label_studio_project_title = ?,
                 note = ?,

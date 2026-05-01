@@ -62,7 +62,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
             progress REAL DEFAULT 0,
             error_message TEXT,
             finished_at TEXT,
-            ls_import_id TEXT,
             label_studio_project_id INTEGER,
             label_studio_project_title TEXT,
             note TEXT,
