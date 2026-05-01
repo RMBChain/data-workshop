@@ -30,6 +30,7 @@ type VersionDataPayload = {
   meta: unknown;
   train_jsonl_preview: string;
   val_jsonl_preview: string;
+  label_studio_raw_json?: string | null;
 };
 
 function jsonlPreviewLineCount(text: string): number {
@@ -43,6 +44,16 @@ function formatJson(v: unknown): string {
     return JSON.stringify(v, null, 2);
   } catch {
     return String(v);
+  }
+}
+
+function formatLabelStudioRawJson(text: string | null | undefined): string {
+  const t = (text ?? "").trim();
+  if (!t) return "（无 Label Studio 原始同步数据；可能为导入功能更新前的版本或未从 LS 构建）";
+  try {
+    return JSON.stringify(JSON.parse(t), null, 2);
+  } catch {
+    return t;
   }
 }
 
@@ -309,6 +320,11 @@ async function testConnection() {
           <a-tab-pane key="meta" tab="元数据">
             <pre class="dataset-version-view-pre">{{
               versionViewPayload.meta != null ? formatJson(versionViewPayload.meta) : "（无 meta.json 或无法解析）"
+            }}</pre>
+          </a-tab-pane>
+          <a-tab-pane key="ls_raw" tab="Label Studio 原始数据">
+            <pre class="dataset-version-view-pre">{{
+              formatLabelStudioRawJson(versionViewPayload.label_studio_raw_json)
             }}</pre>
           </a-tab-pane>
           <a-tab-pane key="train" :tab="`训练样本 (${jsonlPreviewLineCount(versionViewPayload.train_jsonl_preview)})`">

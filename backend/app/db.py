@@ -70,7 +70,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
             train_relpath TEXT,
             val_relpath TEXT,
             test_relpath TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            label_studio_raw_json TEXT
         );
 
         CREATE TABLE IF NOT EXISTS dws_training_jobs_persist (
@@ -129,6 +130,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE dws_datasets ADD COLUMN progress REAL DEFAULT 1.0",
         "ALTER TABLE dws_datasets ADD COLUMN error_message TEXT",
         "ALTER TABLE dws_datasets ADD COLUMN finished_at TEXT",
+        "ALTER TABLE dws_datasets ADD COLUMN label_studio_raw_json TEXT",
     ):
         try:
             conn.execute(alter)

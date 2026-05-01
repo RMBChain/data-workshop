@@ -249,7 +249,8 @@ async def get_version_dataset_data(
     root = settings.workspace_root.resolve()
     conn = get_connection(root)
     row = conn.execute(
-        "SELECT id, rel_dir, train_relpath, val_relpath, status FROM dws_datasets WHERE id = ?",
+        "SELECT id, rel_dir, train_relpath, val_relpath, status, label_studio_raw_json "
+        "FROM dws_datasets WHERE id = ?",
         (version_id,),
     ).fetchone()
     if not row or str(row["status"] or "") != "succeeded":
@@ -266,12 +267,15 @@ async def get_version_dataset_data(
             meta = None
 
     rel_dir_str = (str(rel_dir).strip().replace("\\", "/") if rel_dir and str(rel_dir).strip() else None)
+    raw_ls = d.get("label_studio_raw_json")
+    raw_ls_out = str(raw_ls).strip() if raw_ls is not None and str(raw_ls).strip() else None
     return {
         "version_id": version_id,
         "dataset": rel_dir_str,
         "meta": meta,
         "train_jsonl_preview": _read_jsonl_raw_preview(root, d.get("train_relpath"), per_split),
         "val_jsonl_preview": _read_jsonl_raw_preview(root, d.get("val_relpath"), per_split),
+        "label_studio_raw_json": raw_ls_out,
     }
 
 
