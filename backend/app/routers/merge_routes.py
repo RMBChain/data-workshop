@@ -33,7 +33,7 @@ _merge_route_log = logging.getLogger("workshop.merge")
 @router.post("/merge/jobs")
 async def create_merge_job(root: WorkspaceRoot, body: MergeJobCreate) -> dict[str, Any]:
     try:
-        resolve_under_workspace(root, "output/merged-workshop")
+        resolve_under_workspace(root, "merged")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     t0 = time.perf_counter()

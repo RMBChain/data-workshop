@@ -7,7 +7,7 @@ const props = withDefaults(
   defineProps<{
     /** 在 Modal 等场景中嵌入时为 true，不显示页面级标题 */
     embedded?: boolean;
-    /** 与训练任务 id 一致时，优先选中 `output/merged-workshop/{id}` 对应的合并产物 */
+    /** 与训练任务 id 一致时，优先选中 `merged/{id}` 对应的合并产物 */
     prefillJobId?: string | null;
   }>(),
   { embedded: false, prefillJobId: null },
@@ -50,8 +50,10 @@ function mergedPathMatchesTrainingJob(pathRaw: string, trainingJobId: string): b
   const p = pathRaw.replace(/\\/g, "/").replace(/\/+$/, "");
   const tid = trainingJobId.trim();
   if (!tid) return false;
-  const suffix = `/merged-workshop/${tid}`;
-  return p.endsWith(suffix);
+  return (
+    p.endsWith(`/merged/${tid}`) ||
+    p.endsWith(`/merged-workshop/${tid}`)
+  );
 }
 
 function applyPrefillJobId() {

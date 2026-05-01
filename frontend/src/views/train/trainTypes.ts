@@ -16,5 +16,5 @@ export const MERGE_STATUS_LABEL: Record<MergeUiStatus, string> = {
 };
 
 /** 与 Merge.vue `mergeOutputRelForTrainingJob` / 默认基座一致 */
-export const MERGE_OUTPUT_ROOT = "output/merged-workshop";
+export const MERGE_OUTPUT_ROOT = "merged";
 export const MERGE_DEFAULT_BASE = "Qwen/Qwen3-VL-2B-Instruct";

@@ -102,9 +102,9 @@ function workspaceAbsoluteDisplayPath(relOrDash: string): string {
 
 const router = useRouter();
 const base = ref("Qwen/Qwen3-VL-2B-Instruct");
-const MERGE_OUTPUT_ROOT = "output/merged-workshop";
+const MERGE_OUTPUT_ROOT = "merged";
 
-/** 合并全量模型写入 `output/merged-workshop/{训练 job_id}`（与后端一致）。 */
+/** 合并全量模型写入 `merged/{训练 job_id}`（与后端一致）。 */
 function mergeOutputRelForTrainingJob(trainingJobId: string): string {
   const tid = trainingJobId.trim();
   if (!tid) return MERGE_OUTPUT_ROOT;
@@ -257,7 +257,7 @@ watch(successTableRows, (rows) => {
   }
 });
 
-/** 使用 `base` 与 `merge_lora_only` 发起合并；产物目录为 output/merged-workshop/{训练 job_id}（与后端一致）。 */
+/** 使用 `base` 与 `merge_lora_only` 发起合并；产物目录为 merged/{训练 job_id}（与后端一致）。 */
 async function startMergeForRow(row: SuccessTrainingRow, loraOnly: boolean) {
   const paths = [row.path].map((s) => s.trim()).filter(Boolean);
   if (!paths.length) {

@@ -79,9 +79,10 @@ def _val_jsonl_and_dataset_id_for_lora(
 async def list_merged_models_for_eval(root: WorkspaceRoot) -> dict[str, Any]:
     """工作区内通过 LoRA 合并产出的模型目录，及建议的验证集 jsonl 相对路径（与对应训练任务一致，否则为 data/val.jsonl）。"""
     by_path: dict[str, dict[str, Any]] = {}
-    out_dir = root / "output"
-    if out_dir.is_dir():
-        for meta_path in out_dir.rglob("workshop_merge_meta.json"):
+    for base in (root / "merged", root / "output"):
+        if not base.is_dir():
+            continue
+        for meta_path in base.rglob("workshop_merge_meta.json"):
             if "merge-jobs" in meta_path.parts:
                 continue
             try:
