@@ -51,7 +51,7 @@ const form = reactive({
   job_name: "",
   train_dataset: "",
   val_dataset: "",
-  output_dir: "output/",
+  output_dir: "train/",
   lora_rank: 4,
   lora_alpha: 8,
   lora_dropout: 0.05,
@@ -178,16 +178,16 @@ function syncOutputDirWithTaskOrDataset(versionId?: string | null) {
     }
     const dvid0 = req?.dataset_version_id;
     if (typeof dvid0 === "string" && dvid0.trim()) {
-      form.output_dir = `output/${dvid0.trim()}`;
+      form.output_dir = `train/${dvid0.trim()}`;
       return;
     }
   }
   const vid = versionId !== undefined ? versionId : selectedDatasetVersionId.value;
   if (vid != null && vid !== "") {
-    form.output_dir = `output/${vid}`;
+    form.output_dir = `train/${vid}`;
     return;
   }
-  form.output_dir = "output/";
+  form.output_dir = "train/";
 }
 
 const currentJobNameDisplay = computed(() => {
@@ -633,7 +633,7 @@ async function refreshLogs() {
   }
 }
 
-/** 与「提交训练」POST /api/training/jobs 请求体一致（含 output_dir 占位、job_name 解析、扩展字段） */
+/** 与「提交训练」POST /api/training/jobs 请求体一致（含 output_dir 占位 train/、job_name 解析、扩展字段） */
 function buildTrainJobRequestBody(): Record<string, unknown> {
   const ver =
     selectedDatasetVersionId.value != null && selectedDatasetVersionId.value !== ""
@@ -648,7 +648,7 @@ function buildTrainJobRequestBody(): Record<string, unknown> {
   const plain = JSON.parse(JSON.stringify(toRaw(form))) as Record<string, unknown>;
   return {
     ...plain,
-    output_dir: "output/",
+    output_dir: "train/",
     dataset_version_id: dvid,
     job_name: resolvedJobName,
     project_title: (ver?.project_title ?? "").trim(),
@@ -676,7 +676,7 @@ async function saveTrainingFormParams() {
       const ro = (r.data.output_dir ?? "").trim();
       const dvid =
         typeof bodyPayload.dataset_version_id === "string" ? bodyPayload.dataset_version_id.trim() : "";
-      form.output_dir = ro || (dvid ? `output/${dvid}` : "output/");
+      form.output_dir = ro || (dvid ? `train/${dvid}` : "train/");
       jobStatus.value = r.data.status;
       jobError.value =
         r.data.error_message != null && String(r.data.error_message).trim()
@@ -827,7 +827,7 @@ async function startTraining() {
       const dvid = String(
         (buildTrainJobRequestBody() as { dataset_version_id?: string }).dataset_version_id ?? "",
       ).trim();
-      form.output_dir = ro || (dvid ? `output/${dvid}` : "output/");
+      form.output_dir = ro || (dvid ? `train/${dvid}` : "train/");
       jobStatus.value = r.data.status;
       jobError.value =
         r.data.error_message != null && String(r.data.error_message).trim()
@@ -848,7 +848,7 @@ async function startTraining() {
         output_dir?: string | null;
       }>("/api/training/jobs", requestBody);
       const ro = (r.data.output_dir ?? "").trim();
-      form.output_dir = ro || (dvid ? `output/${dvid}` : "output/");
+      form.output_dir = ro || (dvid ? `train/${dvid}` : "train/");
       jobStatus.value = r.data.status;
       jobError.value =
         r.data.error_message != null && String(r.data.error_message).trim() ? String(r.data.error_message) : "";
@@ -910,7 +910,7 @@ watch(
       const raw = typeof topOd === "string" && topOd.trim() && topOd !== "—" ? topOd : req?.output_dir;
       const od = typeof raw === "string" ? raw.trim() : "";
       const dvid = typeof req?.dataset_version_id === "string" ? req.dataset_version_id.trim() : "";
-      form.output_dir = od || (dvid ? `output/${dvid}` : "output/");
+      form.output_dir = od || (dvid ? `train/${dvid}` : "train/");
     }
     stopLogPoll();
     logPoll = setInterval(() => {

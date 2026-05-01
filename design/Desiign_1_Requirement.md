@@ -166,7 +166,7 @@
 **持久化**
 - **SQLite**（单文件）
 - **路径**：固定在 **`{workspace}/state/workshop.db`**，`{workspace}` 即 **`WORKSHOP_WORKSPACE_ROOT`**（默认仓库下 **`working_data`**）；无单独环境变量覆盖数据库路径。
-- **表名**：业务表均以 **`dws_`** 为前缀（与 `backend/app/db.py` 一致），含 `dws_app_kv`、`dws_datasets`、`dws_training_jobs_persist`、`dws_merge_jobs`、`dws_merge_export_zips`、`dws_eval_jobs`、`dws_inference_sessions`。
+- **表名**：业务表均以 **`dws_`** 为前缀（与 `backend/app/db.py` 一致），含 `dws_app_kv`、`dws_datasets`、`dws_trains`、`dws_merge_jobs`、`dws_merge_export_zips`、`dws_eval_jobs`、`dws_inference_sessions`。
 - **Docker**：见 **`devops/docker-compose.yml`**（示例中设置 **`WORKSHOP_WORKSPACE_ROOT=/workspace/project/working_data`**，库与同目录产出一并落在宿主 **`working_data/`**）。
 
 **运行**
@@ -188,6 +188,8 @@
 # build基础镜像
 docker build -f devops/swift4.03-cpu.dockerfile .
 
+# 删除
+docker compose -f devops/docker-compose.yml down
 # 启动（MODELSCOPE_CACHE_HOST = 宿主机上 ModelScope 缓存根，即其中须含 `hub` 子目录；勿填到 `.../hub` 本身）
 $env:MODELSCOPE_CACHE_HOST = "C:/_llm_model/modelscope"
 docker compose -f devops/docker-compose.yml up -d --build backend label-studio
@@ -195,10 +197,7 @@ docker compose -f devops/docker-compose.yml up -d --build backend label-studio
 # label-studio: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6ODA4NDA2NjMwNiwiaWF0IjoxNzc2ODY2MzA2LCJqdGkiOiI1ZDNiOGZiYTA3ZTI0MTBmODAwZTI2YzI1ZGFlZjU0OSIsInVzZXJfaWQiOiIxIn0.tLVtBtn9-8O7H0XvUh8M2DWDaPRPDSFWCRydI7VRb90
 
 # 查看日志
-docker logs -f data-workshop-api
-
-# 删除
-docker compose -f devops/docker-compose.yml down
+docker logs -f backend
 
 
 ```

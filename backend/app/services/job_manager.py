@@ -31,7 +31,7 @@ class TrainJobCreate(BaseModel):
     )
     train_dataset: str = "data/train.jsonl"
     val_dataset: str = "data/val.jsonl"
-    output_dir: str = "output/"
+    output_dir: str = "train/"
     lora_rank: int = 8
     lora_alpha: int = 32
     lora_dropout: float = Field(default=0.05, ge=0.0, le=1.0)
@@ -80,13 +80,13 @@ class TrainJobCreate(BaseModel):
     merge_lora: bool = False
     adapters: str = Field(default="", description="逗号分隔的 adapter 路径，传给 swift --adapters")
     # 与 ms-swift 一致；仅「继续训练」时写入，为相对仓库根目录的 checkpoint 路径
-    resume_from_checkpoint: str | None = Field(default=None, description="从该 checkpoint 目录继续，如 output/.../checkpoint-8")
+    resume_from_checkpoint: str | None = Field(default=None, description="从该 checkpoint 目录继续，如 train/.../checkpoint-8")
     # 仅用于列表/展示，不参与 train.py 命令行
     job_name: str = Field(default="", description="展示用：训练任务名称")
     project_title: str = Field(default="", description="展示用：Label Studio 项目名")
     dataset_version_id: str = Field(
         default="",
-        description="仅用于展开默认 output 目录（output/<version_id>）；不参与 train 命令行。",
+        description="仅用于展开默认训练产出目录（train/<version_id>）；不参与 train 命令行。",
     )
 
 
@@ -96,21 +96,21 @@ def _norm_output_dir_key(s: str) -> str:
 
 def _resolve_output_dir_for_new_job(body: TrainJobCreate, job_id: str) -> TrainJobCreate:
     """
-    占位路径 output / output/ 在创建任务后展开为：
-    - 有 dataset_version_id：output/<version_id>（同一数据集版本共用一个目录；多次训练由 ms-swift add_version 生成 v0-/v1-… 区分）
-    - 否则：output/<job_id>（无版本信息时仍按任务分目录）
+    占位路径 train / train/ 在创建任务后展开为：
+    - 有 dataset_version_id：train/<version_id>（同一数据集版本共用一个目录；多次训练由 ms-swift add_version 生成 v0-/v1-… 区分）
+    - 否则：train/<job_id>（无版本信息时仍按任务分目录）
     有 resume_from_checkpoint 时沿用 request 中的 output_dir，不会进入占位分支。
-    新任务仅允许占位 output/（由 create_job 在解析前写入）。
+    新任务仅允许占位 train/（由 create_job 在解析前写入）。
     """
     od = str(body.output_dir or "").strip().replace("\\", "/")
     core = od.rstrip("/")
-    if core == "" or core == "output":
+    if core == "" or core == "train":
         vid = str(body.dataset_version_id or "").strip()
         if ".." in vid or "/" in vid or "\\" in vid:
             vid = ""
         if vid:
-            return body.model_copy(update={"output_dir": f"output/{vid}"})
-        return body.model_copy(update={"output_dir": f"output/{job_id}"})
+            return body.model_copy(update={"output_dir": f"train/{vid}"})
+        return body.model_copy(update={"output_dir": f"train/{job_id}"})
     return body
 
 
@@ -276,7 +276,7 @@ class TrainingJobManager:
         conn = get_connection(self._workspace)
         conn.execute(
             """
-            INSERT INTO dws_training_jobs_persist (
+            INSERT INTO dws_trains (
                 id, status, created_at, finished_at, return_code, error_message, request_json, log_path
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
@@ -302,13 +302,14 @@ class TrainingJobManager:
 
     def _delete_job_from_db(self, job_id: str) -> None:
         conn = get_connection(self._workspace)
-        conn.execute("DELETE FROM dws_training_jobs_persist WHERE id = ?", (job_id,))
+        conn.execute("DELETE FROM dws_merges WHERE training_job_id = ?", (job_id,))
+        conn.execute("DELETE FROM dws_trains WHERE id = ?", (job_id,))
         conn.commit()
 
     def _remove_directory_for_output_dir(self, rel: str | None) -> None:
         """
         删除该任务在 request 中记录的 output_dir 对应工作区子目录（checkpoint、LoRA 等一并清除）。
-        不删除工作区根或单独的 output/ 根目录，避免误伤其它任务。
+        不删除工作区根或单独的 output/、train/ 根目录，避免误伤其它任务。
         """
         if not isinstance(rel, str) or not rel.strip():
             return
@@ -324,7 +325,7 @@ class TrainingJobManager:
         except ValueError:
             return
         ws = self._workspace.resolve()
-        if target == ws or target == (ws / "output"):
+        if target == ws or target == (ws / "output") or target == (ws / "train"):
             return
         if not target.exists():
             return
@@ -339,7 +340,7 @@ class TrainingJobManager:
     def _hydrate_from_db(self) -> None:
         conn = get_connection(self._workspace)
         rows = conn.execute(
-            "SELECT * FROM dws_training_jobs_persist ORDER BY CAST(created_at AS REAL) ASC"
+            "SELECT * FROM dws_trains ORDER BY CAST(created_at AS REAL) ASC"
         ).fetchall()
         now = time.time()
         for row in rows:
@@ -357,7 +358,7 @@ class TrainingJobManager:
                 fin = str(now) if not fin else fin
                 ret_code = -1
                 conn.execute(
-                    "UPDATE dws_training_jobs_persist SET status = ?, error_message = ?, finished_at = ?, return_code = ? WHERE id = ?",
+                    "UPDATE dws_trains SET status = ?, error_message = ?, finished_at = ?, return_code = ? WHERE id = ?",
                     ("failed", err_msg, fin, ret_code, jid),
                 )
             req_raw = d.get("request_json") or "{}"
@@ -400,7 +401,7 @@ class TrainingJobManager:
         body = TrainJobCreate.model_validate(data)
         rfc = body.resume_from_checkpoint
         if not (isinstance(rfc, str) and rfc.strip()):
-            body = body.model_copy(update={"output_dir": "output/"})
+            body = body.model_copy(update={"output_dir": "train/"})
         body = _resolve_output_dir_for_new_job(body, job_id)
         to_save: TrainJob | None = None
         with self._lock:
@@ -445,7 +446,7 @@ class TrainingJobManager:
         body = TrainJobCreate.model_validate(data)
         rfc = body.resume_from_checkpoint
         if not (isinstance(rfc, str) and rfc.strip()):
-            body = body.model_copy(update={"output_dir": "output/"})
+            body = body.model_copy(update={"output_dir": "train/"})
         return _resolve_output_dir_for_new_job(body, job_id)
 
     def create_params_only_job(self, data: dict[str, Any]) -> TrainJob:
@@ -583,7 +584,7 @@ class TrainingJobManager:
             return None
         rfc = body.resume_from_checkpoint
         if not (isinstance(rfc, str) and rfc.strip()):
-            body = body.model_copy(update={"output_dir": "output/"})
+            body = body.model_copy(update={"output_dir": "train/"})
         body = _resolve_output_dir_for_new_job(body, job_id)
         jobs_dir = self._workspace / "output" / "workshop-jobs"
         jobs_dir.mkdir(parents=True, exist_ok=True)
@@ -602,7 +603,7 @@ class TrainingJobManager:
         job_id = str(uuid.uuid4())
         rfc = body.resume_from_checkpoint
         if not (isinstance(rfc, str) and rfc.strip()):
-            body = body.model_copy(update={"output_dir": "output/"})
+            body = body.model_copy(update={"output_dir": "train/"})
         body = _resolve_output_dir_for_new_job(body, job_id)
         jobs_dir = self._workspace / "output" / "workshop-jobs"
         jobs_dir.mkdir(parents=True, exist_ok=True)

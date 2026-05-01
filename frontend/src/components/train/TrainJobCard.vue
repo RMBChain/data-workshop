@@ -46,7 +46,7 @@ function jobId(): string {
       <span class="train-job-card-extra" @click.stop>
         <EditOutlined class="training-job-name-edit" @click="$emit('editName', record)" />
         <a-popconfirm
-          title="确定删除？将移除任务记录与日志；仅当无其它任务共用同一 output 目录时，才删除该目录下文件（如 checkpoint/LoRA）。"
+          title="确定删除？将移除任务记录与日志；仅当无其它任务共用同一 train/ 子目录时，才删除该目录下文件（如 checkpoint/LoRA）。"
           ok-text="确定"
           cancel-text="取消"
           @confirm="$emit('delete', jobId())"

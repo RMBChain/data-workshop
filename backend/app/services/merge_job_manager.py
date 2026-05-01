@@ -174,7 +174,7 @@ class MergeJobCreate(BaseModel):
     )
     training_job_id: str | None = Field(
         None,
-        description="可选。对应训练任务 job_id；合并成功后将 zip 路径写入 dws_merge_export_zips",
+        description="可选。对应训练任务 job_id；合并成功后将 zip 路径写入关联的 `dws_merges` 行",
     )
 
 
@@ -192,7 +192,7 @@ def _training_request_json(workspace: Path, training_job_id: str) -> dict[str, A
         return None
     conn = get_connection(workspace)
     row = conn.execute(
-        "SELECT request_json FROM dws_training_jobs_persist WHERE id = ?",
+        "SELECT request_json FROM dws_trains WHERE id = ?",
         (tid,),
     ).fetchone()
     if not row:
@@ -297,7 +297,7 @@ class MergeJobManager:
             merge_jobs_delete_all_for_training_id(conn, tid)
             conn.commit()
         except Exception:
-            logging.getLogger("workshop.merge").exception("合并：按训练清理 merge_jobs 失败")
+            logging.getLogger("workshop.merge").exception("合并：按训练清空 dws_merges / merge_id 失败")
 
     def _persist_merge_job(self, job: MergeJob) -> None:
         try:
@@ -313,7 +313,7 @@ class MergeJobManager:
                 request=dict(job.request) if job.request else {},
             )
         except Exception:
-            logging.getLogger("workshop.merge").exception("合并任务写入 merge_jobs 失败")
+            logging.getLogger("workshop.merge").exception("合并任务写入 dws_merges 失败")
             return
         tid = str((job.request or {}).get("training_job_id") or "").strip()
         if not tid:

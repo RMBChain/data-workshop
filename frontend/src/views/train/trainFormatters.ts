@@ -121,7 +121,7 @@ export function trainingOutputDirText(record: Record<string, unknown>): string {
 export function trainingOutputDirVersionLevelText(record: Record<string, unknown>): string {
   const reqVid = trainingRequest(record)?.dataset_version_id;
   if (typeof reqVid === "string" && reqVid.trim()) {
-    return `output/${reqVid.trim()}`;
+    return `train/${reqVid.trim()}`;
   }
   const full = trainingOutputDirText(record);
   if (full === "—") return full;
@@ -130,8 +130,8 @@ export function trainingOutputDirVersionLevelText(record: Record<string, unknown
     .replace(/\/+$/, "")
     .split("/")
     .filter(Boolean);
-  if (parts.length >= 3 && parts[0] === "output") {
-    return `output/${parts[1]}`;
+  if (parts.length >= 3 && parts[0] === "train") {
+    return `train/${parts[1]}`;
   }
   return full;
 }

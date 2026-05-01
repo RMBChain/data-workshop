@@ -38,37 +38,13 @@ def _merge_label(mid: str, req: dict[str, Any]) -> str:
     return f"合并 {mid[:8]}"
 
 
-def _created_at_ts(raw: Any) -> float:
-    if raw is None:
-        return 0.0
-    if isinstance(raw, (int, float)):
-        return float(raw)
-    s = str(raw).strip()
-    if not s:
-        return 0.0
-    try:
-        return float(s)
-    except ValueError:
-        return 0.0
-
-
-def _pick_single_merge_node(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """每个训练在全景树中只展示一个合并：优先成功态，否则取创建时间最新的一条（忽略内部排序字段）。"""
-    if not candidates:
-        return []
-    succ = [m for m in candidates if str(m.get("status") or "").strip().lower() == "succeeded"]
-    pool = succ if succ else candidates
-    best = max(pool, key=lambda m: float(m.get("_ts", 0) or 0.0))
-    return [{"id": best["id"], "label": best["label"], "status": best["status"]}]
-
-
 def _project_key(project_title: str) -> str:
     return project_title if project_title else "未命名项目"
 
 
 @router.get("/overview/pipeline")
 async def get_pipeline_tree(root: WorkspaceRoot) -> dict[str, Any]:
-    """四层（展示）：项目 → 数据集（版本）→ 训练 → 合并（每训练仅一条合并，优先成功再按时间）。"""
+    """四层（展示）：项目 → 数据集（版本）→ 训练 → 合并（每训练至多一条合并记录）。"""
     conn = get_connection(root.resolve())
 
     v_rows = conn.execute(
@@ -76,9 +52,14 @@ async def get_pipeline_tree(root: WorkspaceRoot) -> dict[str, Any]:
         "FROM dws_datasets WHERE status = 'succeeded' ORDER BY created_at"
     ).fetchall()
     t_rows = conn.execute(
-        "SELECT id, status, request_json, created_at FROM dws_training_jobs_persist ORDER BY created_at"
+        """
+        SELECT t.id, t.status, t.request_json, t.created_at,
+               m.id AS merge_job_id, m.status AS merge_status, m.request_json AS merge_request_json
+        FROM dws_trains t
+        LEFT JOIN dws_merges m ON m.id = t.merge_id
+        ORDER BY t.created_at
+        """
     ).fetchall()
-    m_rows = conn.execute("SELECT id, status, request_json, created_at FROM dws_merge_jobs ORDER BY created_at").fetchall()
 
     versions_by_id = {str(r["id"]): r for r in (v_rows or [])}
     train_relpath_to_vid: dict[str, str] = {}
@@ -86,24 +67,6 @@ async def get_pipeline_tree(root: WorkspaceRoot) -> dict[str, Any]:
         tr = str(r["train_relpath"] or "").strip()
         if tr:
             train_relpath_to_vid[tr] = str(r["id"])
-
-    merges_by_tid: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for r in m_rows or []:
-        mid = str(r["id"])
-        reqm = _req_dict(r["request_json"])
-        tid = str(reqm.get("training_job_id") or "").strip()
-        if not tid:
-            continue
-        merges_by_tid[tid].append(
-            {
-                "id": mid,
-                "label": _merge_label(mid, reqm),
-                "status": str(r["status"] or "").strip() or "unknown",
-                "_ts": _created_at_ts(r["created_at"]),
-            }
-        )
-
-    merges_by_tid = {tid: _pick_single_merge_node(lst) for tid, lst in merges_by_tid.items()}
 
     v_to_train: dict[str, list[dict[str, Any]]] = defaultdict(list)
     orphan_trainings: list[dict[str, Any]] = []
@@ -113,11 +76,22 @@ async def get_pipeline_tree(root: WorkspaceRoot) -> dict[str, Any]:
         tid = str(r["id"])
         st = str(r["status"] or "").strip() or "unknown"
         reqt = _req_dict(r["request_json"])
+        mid = str(r["merge_job_id"] or "").strip()
+        merge_nodes: list[dict[str, Any]] = []
+        if mid:
+            reqm = _req_dict(r["merge_request_json"])
+            merge_nodes = [
+                {
+                    "id": mid,
+                    "label": _merge_label(mid, reqm),
+                    "status": str(r["merge_status"] or "").strip() or "unknown",
+                }
+            ]
         job = {
             "id": tid,
             "label": _train_label(tid, reqt),
             "status": st,
-            "merges": merges_by_tid.get(tid, []),
+            "merges": merge_nodes,
         }
 
         vid = str(reqt.get("dataset_version_id") or "").strip()
@@ -134,18 +108,6 @@ async def get_pipeline_tree(root: WorkspaceRoot) -> dict[str, Any]:
 
         orphan_trainings.append(job)
         assigned_tid.add(tid)
-
-    for tid in merges_by_tid:
-        if tid in assigned_tid:
-            continue
-        rows = merges_by_tid[tid]
-        job = {
-            "id": tid,
-            "label": f"训练 {tid[:8]}（无训练记录）",
-            "status": "unknown",
-            "merges": rows,
-        }
-        orphan_trainings.append(job)
 
     projects_map: dict[str, dict[str, Any]] = {}
     project_order: list[str] = []

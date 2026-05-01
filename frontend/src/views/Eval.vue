@@ -51,7 +51,7 @@ function mergedPathMatchesTrainingJob(pathRaw: string, trainingJobId: string): b
   const tid = trainingJobId.trim();
   if (!tid) return false;
   const suffix = `/merged-workshop/${tid}`;
-  return p.endsWith(suffix) || p === `output${suffix}`;
+  return p.endsWith(suffix);
 }
 
 function applyPrefillJobId() {
