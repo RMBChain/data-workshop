@@ -10,7 +10,7 @@ export default defineConfig({
       '.seetacloud.com',  // 允许所有 seetacloud.com 的子域名
       'localhost',
       '127.0.0.1'
-    ]
+    ],
     proxy: {
       "/api": {
         target: "http://127.0.0.1:8702",
