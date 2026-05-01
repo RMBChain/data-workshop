@@ -4,11 +4,92 @@ import json
 import logging
 import sqlite3
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 _lock = threading.Lock()
 _log = logging.getLogger("workshop.db")
+
+_DWS_TRAINS_COLUMNS: frozenset[str] = frozenset(
+    {
+        "id",
+        "status",
+        "created_at",
+        "finished_at",
+        "return_code",
+        "error_message",
+        "request_json",
+        "log_path",
+        "merge_id",
+    }
+)
+
+_DWS_MERGES_COLUMNS: frozenset[str] = frozenset(
+    {
+        "id",
+        "training_job_id",
+        "status",
+        "created_at",
+        "finished_at",
+        "log_path",
+        "error_message",
+        "request_json",
+        "zip_relpath",
+        "export_updated_at",
+        "merged_model_relpath",
+    }
+)
+
+_DWS_DATASETS_COLUMNS: frozenset[str] = frozenset(
+    {
+        "id",
+        "status",
+        "progress",
+        "error_message",
+        "finished_at",
+        "label_studio_project_id",
+        "label_studio_project_title",
+        "note",
+        "name",
+        "rel_dir",
+        "train_relpath",
+        "val_relpath",
+        "test_relpath",
+        "created_at",
+        "label_studio_raw_json",
+    }
+)
+
+
+_SCHEMA_CHECKS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("dws_trains", _DWS_TRAINS_COLUMNS),
+    ("dws_merges", _DWS_MERGES_COLUMNS),
+    ("dws_datasets", _DWS_DATASETS_COLUMNS),
+)
+
+
+def _table_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {str(r[1]) for r in rows or []}
+
+
+def _assert_fresh_schema(conn: sqlite3.Connection) -> None:
+    """仅接受与当前 DDL 一致的库；旧文件无增量迁移，须删库重建。"""
+    for tname, required in _SCHEMA_CHECKS:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (tname,),
+        ).fetchone()
+        if not exists:
+            continue
+        missing = required - _table_column_names(conn, tname)
+        if missing:
+            raise RuntimeError(
+                f"workshop.db 中 {tname} 与当前版本不一致（缺少列: "
+                f"{', '.join(sorted(missing))}"
+                "）。本版本仅支持全新建库，请删除工作区 state/workshop.db 后重启。"
+            )
 
 
 def get_db_path(workspace: Path) -> Path:
@@ -74,7 +155,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             label_studio_raw_json TEXT
         );
 
-        CREATE TABLE IF NOT EXISTS dws_training_jobs_persist (
+        CREATE TABLE IF NOT EXISTS dws_trains (
             id TEXT PRIMARY KEY,
             status TEXT,
             created_at TEXT,
@@ -82,23 +163,21 @@ def init_schema(conn: sqlite3.Connection) -> None:
             return_code INTEGER,
             error_message TEXT,
             request_json TEXT,
-            log_path TEXT
+            log_path TEXT,
+            merge_id TEXT
         );
 
-        CREATE TABLE IF NOT EXISTS dws_merge_jobs (
+        CREATE TABLE IF NOT EXISTS dws_merges (
             id TEXT PRIMARY KEY,
+            training_job_id TEXT NOT NULL,
             status TEXT,
             created_at TEXT,
             finished_at TEXT,
             log_path TEXT,
             error_message TEXT,
-            request_json TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS dws_merge_export_zips (
-            training_job_id TEXT PRIMARY KEY,
-            zip_relpath TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
+            request_json TEXT,
+            zip_relpath TEXT,
+            export_updated_at TEXT,
             merged_model_relpath TEXT
         );
 
@@ -123,19 +202,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
         """
     )
-    for alter in (
-        "ALTER TABLE dws_datasets ADD COLUMN label_studio_project_id INTEGER",
-        "ALTER TABLE dws_datasets ADD COLUMN label_studio_project_title TEXT",
-        "ALTER TABLE dws_datasets ADD COLUMN status TEXT NOT NULL DEFAULT 'succeeded'",
-        "ALTER TABLE dws_datasets ADD COLUMN progress REAL DEFAULT 1.0",
-        "ALTER TABLE dws_datasets ADD COLUMN error_message TEXT",
-        "ALTER TABLE dws_datasets ADD COLUMN finished_at TEXT",
-        "ALTER TABLE dws_datasets ADD COLUMN label_studio_raw_json TEXT",
-    ):
-        try:
-            conn.execute(alter)
-        except sqlite3.OperationalError:
-            pass
+    _assert_fresh_schema(conn)
     conn.commit()
 
 
@@ -181,14 +248,41 @@ def json_dumps(v: Any) -> str:
     return json.dumps(v, ensure_ascii=False)
 
 
+def _dedupe_train_ids(training_job_ids: list[str]) -> list[str]:
+    return list(dict.fromkeys([str(x).strip() for x in training_job_ids if str(x).strip()]))
+
+
+def _merge_export_col_map(
+    conn: sqlite3.Connection,
+    training_job_ids: list[str],
+    column: str,
+) -> dict[str, str | None]:
+    if column not in ("zip_relpath", "merged_model_relpath"):
+        raise ValueError("invalid column")
+    ids = _dedupe_train_ids(training_job_ids)
+    if not ids:
+        return {}
+    ph = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT training_job_id, {column} FROM dws_merges WHERE training_job_id IN ({ph})",
+        ids,
+    ).fetchall()
+    found: dict[str, str] = {}
+    for row in rows or []:
+        jid = str(row[0]).strip()
+        v = row[1]
+        s = str(v).strip().replace("\\", "/") if v is not None and str(v).strip() else ""
+        if jid and s:
+            found[jid] = s
+    return {i: found.get(i) for i in ids}
+
+
 def merge_export_zip_upsert(
     conn: sqlite3.Connection,
     training_job_id: str,
     zip_relpath: str,
     merged_model_relpath: str | None = None,
 ) -> None:
-    from datetime import datetime, timezone
-
     tid = (training_job_id or "").strip()
     if not tid:
         return
@@ -199,17 +293,13 @@ def merge_export_zip_upsert(
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     conn.execute(
         """
-        INSERT INTO dws_merge_export_zips(
-          training_job_id, zip_relpath, updated_at, merged_model_relpath
-        ) VALUES(?,?,?,?)
-        ON CONFLICT(training_job_id) DO UPDATE SET
-          zip_relpath = excluded.zip_relpath,
-          updated_at = excluded.updated_at,
-          merged_model_relpath = COALESCE(
-            excluded.merged_model_relpath, dws_merge_export_zips.merged_model_relpath
-          )
+        UPDATE dws_merges SET
+          zip_relpath = ?,
+          export_updated_at = ?,
+          merged_model_relpath = COALESCE(?, merged_model_relpath)
+        WHERE training_job_id = ?
         """,
-        (tid, rel, now, merged),
+        (rel, now, merged, tid),
     )
     conn.commit()
 
@@ -219,7 +309,7 @@ def merge_export_zip_get(conn: sqlite3.Connection, training_job_id: str) -> str 
     if not tid:
         return None
     r = conn.execute(
-        "SELECT zip_relpath FROM dws_merge_export_zips WHERE training_job_id = ?",
+        "SELECT zip_relpath FROM dws_merges WHERE training_job_id = ?",
         (tid,),
     ).fetchone()
     if not r or r[0] is None:
@@ -229,83 +319,16 @@ def merge_export_zip_get(conn: sqlite3.Connection, training_job_id: str) -> str 
 
 
 def merge_export_zip_map(conn: sqlite3.Connection, training_job_ids: list[str]) -> dict[str, str | None]:
-    ids = list(dict.fromkeys([str(x).strip() for x in training_job_ids if str(x).strip()]))
-    if not ids:
-        return {}
-    placeholders = ",".join("?" * len(ids))
-    rows = conn.execute(
-        f"SELECT training_job_id, zip_relpath FROM dws_merge_export_zips WHERE training_job_id IN ({placeholders})",
-        ids,
-    ).fetchall()
-    found: dict[str, str] = {}
-    for row in rows or []:
-        jid = str(row[0]).strip()
-        z = str(row[1]).strip().replace("\\", "/") if row[1] else ""
-        if jid and z:
-            found[jid] = z
-    return {jid: found.get(jid) for jid in ids}
+    return _merge_export_col_map(conn, training_job_ids, "zip_relpath")
 
 
 def merge_jobs_delete_all_for_training_id(conn: sqlite3.Connection, training_job_id: str) -> None:
-    """删除该训练关联的全部 dws_merge_jobs 行（request_json.training_job_id 匹配）。"""
+    """新建合并前：解除训练与合并行的关联并删除该训练下所有 `dws_merges` 行。"""
     tid = (training_job_id or "").strip()
     if not tid:
         return
-    try:
-        conn.execute(
-            "DELETE FROM dws_merge_jobs WHERE json_extract(request_json, '$.training_job_id') = ?",
-            (tid,),
-        )
-    except sqlite3.OperationalError:
-        rows = conn.execute("SELECT id, request_json FROM dws_merge_jobs").fetchall()
-        to_del: list[str] = []
-        for r in rows or []:
-            try:
-                raw = r["request_json"] or "{}"
-                o = json.loads(raw) if isinstance(raw, str) else {}
-            except json.JSONDecodeError:
-                o = {}
-            t = str((o or {}).get("training_job_id") or "").strip() if isinstance(o, dict) else ""
-            if t == tid:
-                to_del.append(str(r["id"]))
-        for old_id in to_del:
-            conn.execute("DELETE FROM dws_merge_jobs WHERE id = ?", (old_id,))
-
-
-def merge_jobs_prune_others_for_training(
-    conn: sqlite3.Connection, training_job_id: str, keep_job_id: str
-) -> None:
-    """同一训练下仅保留 keep_job_id 一条 dws_merge_jobs 记录（按 request_json.training_job_id 匹配）。"""
-    tid = (training_job_id or "").strip()
-    kid = (keep_job_id or "").strip()
-    if not tid or not kid:
-        return
-    try:
-        conn.execute(
-            """
-            DELETE FROM dws_merge_jobs
-            WHERE id != ?
-              AND json_extract(request_json, '$.training_job_id') = ?
-            """,
-            (kid, tid),
-        )
-    except sqlite3.OperationalError:
-        rows = conn.execute("SELECT id, request_json FROM dws_merge_jobs").fetchall()
-        to_del: list[str] = []
-        for r in rows or []:
-            rid = str(r["id"])
-            if rid == kid:
-                continue
-            try:
-                raw = r["request_json"] or "{}"
-                o = json.loads(raw) if isinstance(raw, str) else {}
-            except json.JSONDecodeError:
-                o = {}
-            t = str((o or {}).get("training_job_id") or "").strip() if isinstance(o, dict) else ""
-            if t == tid:
-                to_del.append(rid)
-        for old_id in to_del:
-            conn.execute("DELETE FROM dws_merge_jobs WHERE id = ?", (old_id,))
+    conn.execute("UPDATE dws_trains SET merge_id = NULL WHERE id = ?", (tid,))
+    conn.execute("DELETE FROM dws_merges WHERE training_job_id = ?", (tid,))
 
 
 def merge_job_persist_upsert(
@@ -318,24 +341,33 @@ def merge_job_persist_upsert(
     error_message: str | None,
     request: dict[str, Any] | None,
 ) -> None:
-    """将合并任务写入 `dws_merge_jobs`；若带 training_job_id 则同训练下仅保留本条（旧记录删除）。"""
+    """写入 `dws_merges` 并将 `dws_trains.merge_id` 指向该行（request 须含 training_job_id）。"""
     jid = (job_id or "").strip()
     if not jid:
         return
     req_json = json_dumps(request) if request is not None else "{}"
+    req_dict = request if isinstance(request, dict) else {}
+    t_train = str(req_dict.get("training_job_id") or "").strip()
+    if not t_train:
+        return
     conn.execute(
         """
-        INSERT INTO dws_merge_jobs (id, status, created_at, finished_at, log_path, error_message, request_json)
-        VALUES (?,?,?,?,?,?,?)
+        INSERT INTO dws_merges (
+          id, training_job_id, status, created_at, finished_at,
+          log_path, error_message, request_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
+          training_job_id = excluded.training_job_id,
           status = excluded.status,
+          created_at = excluded.created_at,
           finished_at = excluded.finished_at,
-          log_path = COALESCE(excluded.log_path, dws_merge_jobs.log_path),
+          log_path = COALESCE(excluded.log_path, log_path),
           error_message = excluded.error_message,
           request_json = excluded.request_json
         """,
         (
             jid,
+            t_train,
             (status or "").strip() or "unknown",
             created_at_s,
             finished_at_s,
@@ -344,104 +376,59 @@ def merge_job_persist_upsert(
             req_json,
         ),
     )
-    req_dict = request if isinstance(request, dict) else {}
-    t_train = str(req_dict.get("training_job_id") or "").strip()
-    if t_train:
-        merge_jobs_prune_others_for_training(conn, t_train, jid)
+    conn.execute(
+        "UPDATE dws_trains SET merge_id = ? WHERE id = ?",
+        (jid, t_train),
+    )
     conn.commit()
 
 
 def merge_job_get_latest_by_training_id(
     conn: sqlite3.Connection, training_job_id: str
 ) -> dict[str, Any] | None:
-    """取该 `training_job_id` 下最近一次合并任务（`request_json.training_job_id` 匹配）。"""
+    """取该训练当前关联的合并任务（`dws_trains.merge_id` → `dws_merges`）。"""
     tid = (training_job_id or "").strip()
     if not tid:
         return None
-    try:
-        row = conn.execute(
-            """
-            SELECT id, status, created_at, finished_at, log_path, error_message, request_json
-            FROM dws_merge_jobs
-            WHERE json_extract(request_json, '$.training_job_id') = ?
-            ORDER BY created_at DESC
-            LIMIT 1
-            """,
-            (tid,),
-        ).fetchone()
-    except sqlite3.OperationalError:
-        return None
-    if not row:
-        return None
-    return row_to_dict(row)  # type: ignore[arg-type]
+    return merge_job_latest_row_per_training_id_map(conn, [tid]).get(tid)
 
 
 def merge_job_latest_row_per_training_id_map(
     conn: sqlite3.Connection, training_job_ids: list[str]
 ) -> dict[str, dict[str, Any]]:
-    """每个 training_job_id 对应 `dws_merge_jobs` 中最新一条（按 created_at），含任意 status。"""
-    ids = list(dict.fromkeys([str(x).strip() for x in training_job_ids if str(x).strip()]))
+    """每个训练 job 至多一条关联合并（经 merge_id JOIN）。"""
+    ids = _dedupe_train_ids(training_job_ids)
     if not ids:
         return {}
-    placeholders = ",".join("?" * len(ids))
+    ph = ",".join("?" * len(ids))
     out: dict[str, dict[str, Any]] = {}
-    try:
-        rows = conn.execute(
-            f"""
-            SELECT id, status, created_at, finished_at, log_path, error_message, request_json
-            FROM (
-              SELECT id, status, created_at, finished_at, log_path, error_message, request_json,
-                row_number() OVER (
-                  PARTITION BY json_extract(request_json, '$.training_job_id')
-                  ORDER BY created_at DESC
-                ) AS rn
-              FROM dws_merge_jobs
-              WHERE json_extract(request_json, '$.training_job_id') IN ({placeholders})
-            ) AS sub
-            WHERE sub.rn = 1
-            """,
-            ids,
-        ).fetchall()
-    except sqlite3.OperationalError:
-        for tid in ids:
-            row = merge_job_get_latest_by_training_id(conn, tid)
-            if row:
-                out[tid] = row
-        return out
+    rows = conn.execute(
+        f"""
+        SELECT t.id AS _train_id,
+               m.id AS id,
+               m.status AS status,
+               m.created_at AS created_at,
+               m.finished_at AS finished_at,
+               m.log_path AS log_path,
+               m.error_message AS error_message,
+               m.request_json AS request_json
+        FROM dws_trains t
+        INNER JOIN dws_merges m ON m.id = t.merge_id
+        WHERE t.id IN ({ph})
+          AND t.merge_id IS NOT NULL
+          AND trim(t.merge_id) != ''
+        """,
+        ids,
+    ).fetchall()
     for row in rows or []:
         d = row_to_dict(row)  # type: ignore[arg-type]
-        raw = d.get("request_json") or "{}"
-        try:
-            obj = json.loads(raw) if isinstance(raw, str) else {}
-        except json.JSONDecodeError:
-            obj = {}
-        tid = str((obj or {}).get("training_job_id") or "").strip() if isinstance(obj, dict) else ""
-        if tid:
-            out[tid] = d
+        tid = str(d.pop("_train_id"))
+        out[tid] = d
     return out
 
 
 def merge_export_merged_path_map(
     conn: sqlite3.Connection, training_job_ids: list[str]
 ) -> dict[str, str | None]:
-    """已打包时记录的「合并后模型」工作区相对目录；新列缺失或旧行均为 NULL 时无值。"""
-    ids = list(dict.fromkeys([str(x).strip() for x in training_job_ids if str(x).strip()]))
-    if not ids:
-        return {}
-    placeholders = ",".join("?" * len(ids))
-    try:
-        rows = conn.execute(
-            f"SELECT training_job_id, merged_model_relpath FROM dws_merge_export_zips "
-            f"WHERE training_job_id IN ({placeholders})",
-            ids,
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return {jid: None for jid in ids}
-    found: dict[str, str] = {}
-    for row in rows or []:
-        jid = str(row[0]).strip()
-        r = row[1]
-        s = str(r).strip().replace("\\", "/") if r is not None else ""
-        if jid and s:
-            found[jid] = s
-    return {jid: found.get(jid) for jid in ids}
+    """已打包时记录的「合并后模型」工作区相对目录。"""
+    return _merge_export_col_map(conn, training_job_ids, "merged_model_relpath")

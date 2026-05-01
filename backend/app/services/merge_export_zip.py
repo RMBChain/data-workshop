@@ -16,7 +16,7 @@ def _safe_filename_part(job_id: str) -> str:
 
 
 def create_and_record_merged_zip(workspace: Path, training_job_id: str, output_relpath: str) -> str | None:
-    """将合并输出目录打成 zip，写入 dws_merge_export_zips。返回工作区相对路径；跳过或失败时返回 None。"""
+    """将合并输出目录打成 zip，更新 `dws_merges` 上对应训练关联合并行的 zip 列。返回工作区相对路径；跳过或失败时返回 None。"""
     tid = (training_job_id or "").strip()
     if not tid:
         _log.warning("合并 zip 跳过：training_job_id 为空")

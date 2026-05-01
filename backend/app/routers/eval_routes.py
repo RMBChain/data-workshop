@@ -55,7 +55,7 @@ def _val_jsonl_and_dataset_id_for_lora(
         return _DEFAULT_VAL_JSONL, None
     conn = get_connection(workspace)
     rows = conn.execute(
-        "SELECT request_json FROM dws_training_jobs_persist WHERE status = 'succeeded' "
+        "SELECT request_json FROM dws_trains WHERE status = 'succeeded' "
         "ORDER BY CAST(created_at AS REAL) DESC"
     ).fetchall()
     for row in rows or []:
