@@ -166,6 +166,7 @@
 **持久化**
 - **SQLite**（单文件）
 - **路径**：固定在 **`{workspace}/state/workshop.db`**，`{workspace}` 即 **`WORKSHOP_WORKSPACE_ROOT`**（默认仓库下 **`working_data`**）；无单独环境变量覆盖数据库路径。
+- **表名**：业务表均以 **`dws_`** 为前缀（与 `backend/app/db.py` 一致），含 `dws_app_kv`、`dws_datasets`、`dws_training_jobs_persist`、`dws_merge_jobs`、`dws_merge_export_zips`、`dws_eval_jobs`、`dws_inference_sessions`。
 - **Docker**：见 **`devops/docker-compose.yml`**（示例中设置 **`WORKSHOP_WORKSPACE_ROOT=/workspace/project/working_data`**，库与同目录产出一并落在宿主 **`working_data/`**）。
 
 **运行**

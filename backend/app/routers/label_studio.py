@@ -12,7 +12,7 @@ from backend.app.services import label_studio_api as ls
 
 router = APIRouter(tags=["label-studio"])
 
-# 持久化在 SQLite app_kv 表（与「活跃数据集」等键值同表）
+# 持久化在 SQLite dws_app_kv 表（与「活跃数据集」等键值同表）
 _KV_LABEL_STUDIO_BASE_URL = "label_studio.ui_base_url"
 _KV_LABEL_STUDIO_API_TOKEN = "label_studio.ui_api_token"
 
@@ -29,7 +29,7 @@ class LabelStudioConnectionBody(BaseModel):
 
 @router.get("/label-studio/connection")
 async def get_label_studio_connection() -> dict[str, Any]:
-    """从数据库 app_kv 读取界面保存的基址与 Token；基址未设置时回退为配置默认。"""
+    """从数据库 dws_app_kv 读取界面保存的基址与 Token；基址未设置时回退为配置默认。"""
     settings = get_settings()
     root = settings.workspace_root.resolve()
     conn = get_connection(root)
@@ -37,13 +37,17 @@ async def get_label_studio_connection() -> dict[str, Any]:
     if not raw_base:
         raw_base = (settings.label_studio_url or "").strip()
     base_url = raw_base.rstrip("/")
-    token = app_kv_get(conn, _KV_LABEL_STUDIO_API_TOKEN) or ""
+    stored_tok = app_kv_get(conn, _KV_LABEL_STUDIO_API_TOKEN)
+    if stored_tok is None:
+        token = (settings.label_studio_api_token or "").strip()
+    else:
+        token = stored_tok
     return {"base_url": base_url, "token": token}
 
 
 @router.put("/label-studio/connection")
 async def put_label_studio_connection(body: LabelStudioConnectionBody) -> dict[str, Any]:
-    """将连接设置写入数据库 app_kv。"""
+    """将连接设置写入数据库 dws_app_kv。"""
     settings = get_settings()
     root = settings.workspace_root.resolve()
     conn = get_connection(root)

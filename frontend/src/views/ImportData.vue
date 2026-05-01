@@ -17,6 +17,7 @@ type DatasetVersionRow = {
   id: string;
   label_studio_project_id?: number | null;
   name?: string | null;
+  status?: string | null;
   train_count?: number | null;
   val_count?: number | null;
   created_at?: string;

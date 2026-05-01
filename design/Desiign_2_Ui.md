@@ -64,7 +64,7 @@
 
 ### 3.1 数据导入
 
-**目的**：从 Label Studio 经 API 拉取项目；展示导入后的元数据与可解析图片路径。连接基址与 Token 可 **`PUT /api/label-studio/connection`** 持久化到 SQLite（`app_kv`），界面回显用 **`GET .../connection`**。
+**目的**：从 Label Studio 经 API 拉取项目；展示导入后的元数据与可解析图片路径。连接基址与 Token 可 **`PUT /api/label-studio/connection`** 持久化到 SQLite（`dws_app_kv`），界面回显用 **`GET .../connection`**。
 
 | 区域 | 组件/行为 |
 |------|-----------|

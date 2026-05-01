@@ -40,7 +40,7 @@ def _sqlite_persist_success_maps(
     conn: sqlite3.Connection,
     training_job_ids: list[str],
 ) -> tuple[dict[str, str], dict[str, str], dict[str, dict[str, Any]]]:
-    """SQLite `merge_jobs` 中 status=succeeded 的最新记录：lora 首路径 -> 输出目录、training_job_id -> 输出目录；以及每 tid 最新一行（任意 status）。"""
+    """SQLite `dws_merge_jobs` 中 status=succeeded 的最新记录：lora 首路径 -> 输出目录、training_job_id -> 输出目录；以及每 tid 最新一行（任意 status）。"""
     latest = merge_job_latest_row_per_training_id_map(conn, training_job_ids)
     lora_to_out: dict[str, str] = {}
     tid_to_out: dict[str, str] = {}

@@ -51,37 +51,30 @@ def init_schema(conn: sqlite3.Connection) -> None:
     """以 DDL 为唯一真实来源，创建缺失的表。"""
     conn.executescript(
         """
-        CREATE TABLE IF NOT EXISTS app_kv (
+        CREATE TABLE IF NOT EXISTS dws_app_kv (
             k TEXT PRIMARY KEY,
             v TEXT
         );
 
-        CREATE TABLE IF NOT EXISTS dataset_build_jobs (
+        CREATE TABLE IF NOT EXISTS dws_datasets (
             id TEXT PRIMARY KEY,
             status TEXT NOT NULL,
-            ls_import_id TEXT,
-            created_at TEXT,
-            finished_at TEXT,
-            error_message TEXT,
             progress REAL DEFAULT 0,
-            result_version_id TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS dw_dataset (
-            id TEXT PRIMARY KEY,
+            error_message TEXT,
+            finished_at TEXT,
             ls_import_id TEXT,
             label_studio_project_id INTEGER,
             label_studio_project_title TEXT,
             note TEXT,
             name TEXT,
-            rel_dir TEXT NOT NULL,
+            rel_dir TEXT,
             train_relpath TEXT,
             val_relpath TEXT,
             test_relpath TEXT,
             created_at TEXT NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS training_jobs_persist (
+        CREATE TABLE IF NOT EXISTS dws_training_jobs_persist (
             id TEXT PRIMARY KEY,
             status TEXT,
             created_at TEXT,
@@ -92,7 +85,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             log_path TEXT
         );
 
-        CREATE TABLE IF NOT EXISTS merge_jobs (
+        CREATE TABLE IF NOT EXISTS dws_merge_jobs (
             id TEXT PRIMARY KEY,
             status TEXT,
             created_at TEXT,
@@ -102,14 +95,14 @@ def init_schema(conn: sqlite3.Connection) -> None:
             request_json TEXT
         );
 
-        CREATE TABLE IF NOT EXISTS merge_export_zips (
+        CREATE TABLE IF NOT EXISTS dws_merge_export_zips (
             training_job_id TEXT PRIMARY KEY,
             zip_relpath TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             merged_model_relpath TEXT
         );
 
-        CREATE TABLE IF NOT EXISTS eval_jobs (
+        CREATE TABLE IF NOT EXISTS dws_eval_jobs (
             id TEXT PRIMARY KEY,
             status TEXT,
             created_at TEXT,
@@ -120,7 +113,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             summary_json TEXT
         );
 
-        CREATE TABLE IF NOT EXISTS inference_sessions (
+        CREATE TABLE IF NOT EXISTS dws_inference_sessions (
             id TEXT PRIMARY KEY,
             created_at TEXT,
             updated_at TEXT,
@@ -131,8 +124,12 @@ def init_schema(conn: sqlite3.Connection) -> None:
         """
     )
     for alter in (
-        "ALTER TABLE dw_dataset ADD COLUMN label_studio_project_id INTEGER",
-        "ALTER TABLE dw_dataset ADD COLUMN label_studio_project_title TEXT",
+        "ALTER TABLE dws_datasets ADD COLUMN label_studio_project_id INTEGER",
+        "ALTER TABLE dws_datasets ADD COLUMN label_studio_project_title TEXT",
+        "ALTER TABLE dws_datasets ADD COLUMN status TEXT NOT NULL DEFAULT 'succeeded'",
+        "ALTER TABLE dws_datasets ADD COLUMN progress REAL DEFAULT 1.0",
+        "ALTER TABLE dws_datasets ADD COLUMN error_message TEXT",
+        "ALTER TABLE dws_datasets ADD COLUMN finished_at TEXT",
     ):
         try:
             conn.execute(alter)
@@ -168,13 +165,13 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def app_kv_get(conn: sqlite3.Connection, k: str) -> str | None:
-    r = conn.execute("SELECT v FROM app_kv WHERE k = ?", (k,)).fetchone()
+    r = conn.execute("SELECT v FROM dws_app_kv WHERE k = ?", (k,)).fetchone()
     return r[0] if r else None
 
 
 def app_kv_set(conn: sqlite3.Connection, k: str, v: str) -> None:
     conn.execute(
-        "INSERT INTO app_kv(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+        "INSERT INTO dws_app_kv(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
         (k, v),
     )
 
@@ -201,14 +198,14 @@ def merge_export_zip_upsert(
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     conn.execute(
         """
-        INSERT INTO merge_export_zips(
+        INSERT INTO dws_merge_export_zips(
           training_job_id, zip_relpath, updated_at, merged_model_relpath
         ) VALUES(?,?,?,?)
         ON CONFLICT(training_job_id) DO UPDATE SET
           zip_relpath = excluded.zip_relpath,
           updated_at = excluded.updated_at,
           merged_model_relpath = COALESCE(
-            excluded.merged_model_relpath, merge_export_zips.merged_model_relpath
+            excluded.merged_model_relpath, dws_merge_export_zips.merged_model_relpath
           )
         """,
         (tid, rel, now, merged),
@@ -221,7 +218,7 @@ def merge_export_zip_get(conn: sqlite3.Connection, training_job_id: str) -> str 
     if not tid:
         return None
     r = conn.execute(
-        "SELECT zip_relpath FROM merge_export_zips WHERE training_job_id = ?",
+        "SELECT zip_relpath FROM dws_merge_export_zips WHERE training_job_id = ?",
         (tid,),
     ).fetchone()
     if not r or r[0] is None:
@@ -236,7 +233,7 @@ def merge_export_zip_map(conn: sqlite3.Connection, training_job_ids: list[str]) 
         return {}
     placeholders = ",".join("?" * len(ids))
     rows = conn.execute(
-        f"SELECT training_job_id, zip_relpath FROM merge_export_zips WHERE training_job_id IN ({placeholders})",
+        f"SELECT training_job_id, zip_relpath FROM dws_merge_export_zips WHERE training_job_id IN ({placeholders})",
         ids,
     ).fetchall()
     found: dict[str, str] = {}
@@ -249,17 +246,17 @@ def merge_export_zip_map(conn: sqlite3.Connection, training_job_ids: list[str]) 
 
 
 def merge_jobs_delete_all_for_training_id(conn: sqlite3.Connection, training_job_id: str) -> None:
-    """删除该训练关联的全部 merge_jobs 行（request_json.training_job_id 匹配）。"""
+    """删除该训练关联的全部 dws_merge_jobs 行（request_json.training_job_id 匹配）。"""
     tid = (training_job_id or "").strip()
     if not tid:
         return
     try:
         conn.execute(
-            "DELETE FROM merge_jobs WHERE json_extract(request_json, '$.training_job_id') = ?",
+            "DELETE FROM dws_merge_jobs WHERE json_extract(request_json, '$.training_job_id') = ?",
             (tid,),
         )
     except sqlite3.OperationalError:
-        rows = conn.execute("SELECT id, request_json FROM merge_jobs").fetchall()
+        rows = conn.execute("SELECT id, request_json FROM dws_merge_jobs").fetchall()
         to_del: list[str] = []
         for r in rows or []:
             try:
@@ -271,13 +268,13 @@ def merge_jobs_delete_all_for_training_id(conn: sqlite3.Connection, training_job
             if t == tid:
                 to_del.append(str(r["id"]))
         for old_id in to_del:
-            conn.execute("DELETE FROM merge_jobs WHERE id = ?", (old_id,))
+            conn.execute("DELETE FROM dws_merge_jobs WHERE id = ?", (old_id,))
 
 
 def merge_jobs_prune_others_for_training(
     conn: sqlite3.Connection, training_job_id: str, keep_job_id: str
 ) -> None:
-    """同一训练下仅保留 keep_job_id 一条 merge_jobs 记录（按 request_json.training_job_id 匹配）。"""
+    """同一训练下仅保留 keep_job_id 一条 dws_merge_jobs 记录（按 request_json.training_job_id 匹配）。"""
     tid = (training_job_id or "").strip()
     kid = (keep_job_id or "").strip()
     if not tid or not kid:
@@ -285,14 +282,14 @@ def merge_jobs_prune_others_for_training(
     try:
         conn.execute(
             """
-            DELETE FROM merge_jobs
+            DELETE FROM dws_merge_jobs
             WHERE id != ?
               AND json_extract(request_json, '$.training_job_id') = ?
             """,
             (kid, tid),
         )
     except sqlite3.OperationalError:
-        rows = conn.execute("SELECT id, request_json FROM merge_jobs").fetchall()
+        rows = conn.execute("SELECT id, request_json FROM dws_merge_jobs").fetchall()
         to_del: list[str] = []
         for r in rows or []:
             rid = str(r["id"])
@@ -307,7 +304,7 @@ def merge_jobs_prune_others_for_training(
             if t == tid:
                 to_del.append(rid)
         for old_id in to_del:
-            conn.execute("DELETE FROM merge_jobs WHERE id = ?", (old_id,))
+            conn.execute("DELETE FROM dws_merge_jobs WHERE id = ?", (old_id,))
 
 
 def merge_job_persist_upsert(
@@ -320,19 +317,19 @@ def merge_job_persist_upsert(
     error_message: str | None,
     request: dict[str, Any] | None,
 ) -> None:
-    """将合并任务写入 `merge_jobs`；若带 training_job_id 则同训练下仅保留本条（旧记录删除）。"""
+    """将合并任务写入 `dws_merge_jobs`；若带 training_job_id 则同训练下仅保留本条（旧记录删除）。"""
     jid = (job_id or "").strip()
     if not jid:
         return
     req_json = json_dumps(request) if request is not None else "{}"
     conn.execute(
         """
-        INSERT INTO merge_jobs (id, status, created_at, finished_at, log_path, error_message, request_json)
+        INSERT INTO dws_merge_jobs (id, status, created_at, finished_at, log_path, error_message, request_json)
         VALUES (?,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET
           status = excluded.status,
           finished_at = excluded.finished_at,
-          log_path = COALESCE(excluded.log_path, merge_jobs.log_path),
+          log_path = COALESCE(excluded.log_path, dws_merge_jobs.log_path),
           error_message = excluded.error_message,
           request_json = excluded.request_json
         """,
@@ -364,7 +361,7 @@ def merge_job_get_latest_by_training_id(
         row = conn.execute(
             """
             SELECT id, status, created_at, finished_at, log_path, error_message, request_json
-            FROM merge_jobs
+            FROM dws_merge_jobs
             WHERE json_extract(request_json, '$.training_job_id') = ?
             ORDER BY created_at DESC
             LIMIT 1
@@ -381,7 +378,7 @@ def merge_job_get_latest_by_training_id(
 def merge_job_latest_row_per_training_id_map(
     conn: sqlite3.Connection, training_job_ids: list[str]
 ) -> dict[str, dict[str, Any]]:
-    """每个 training_job_id 对应 `merge_jobs` 中最新一条（按 created_at），含任意 status。"""
+    """每个 training_job_id 对应 `dws_merge_jobs` 中最新一条（按 created_at），含任意 status。"""
     ids = list(dict.fromkeys([str(x).strip() for x in training_job_ids if str(x).strip()]))
     if not ids:
         return {}
@@ -397,7 +394,7 @@ def merge_job_latest_row_per_training_id_map(
                   PARTITION BY json_extract(request_json, '$.training_job_id')
                   ORDER BY created_at DESC
                 ) AS rn
-              FROM merge_jobs
+              FROM dws_merge_jobs
               WHERE json_extract(request_json, '$.training_job_id') IN ({placeholders})
             ) AS sub
             WHERE sub.rn = 1
@@ -433,7 +430,7 @@ def merge_export_merged_path_map(
     placeholders = ",".join("?" * len(ids))
     try:
         rows = conn.execute(
-            f"SELECT training_job_id, merged_model_relpath FROM merge_export_zips "
+            f"SELECT training_job_id, merged_model_relpath FROM dws_merge_export_zips "
             f"WHERE training_job_id IN ({placeholders})",
             ids,
         ).fetchall()

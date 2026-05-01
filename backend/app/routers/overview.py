@@ -73,12 +73,12 @@ async def get_pipeline_tree(root: WorkspaceRoot) -> dict[str, Any]:
 
     v_rows = conn.execute(
         "SELECT id, label_studio_project_title, name, train_relpath, created_at "
-        "FROM dw_dataset ORDER BY created_at"
+        "FROM dws_datasets WHERE status = 'succeeded' ORDER BY created_at"
     ).fetchall()
     t_rows = conn.execute(
-        "SELECT id, status, request_json, created_at FROM training_jobs_persist ORDER BY created_at"
+        "SELECT id, status, request_json, created_at FROM dws_training_jobs_persist ORDER BY created_at"
     ).fetchall()
-    m_rows = conn.execute("SELECT id, status, request_json, created_at FROM merge_jobs ORDER BY created_at").fetchall()
+    m_rows = conn.execute("SELECT id, status, request_json, created_at FROM dws_merge_jobs ORDER BY created_at").fetchall()
 
     versions_by_id = {str(r["id"]): r for r in (v_rows or [])}
     train_relpath_to_vid: dict[str, str] = {}
