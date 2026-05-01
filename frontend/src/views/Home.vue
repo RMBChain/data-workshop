@@ -13,26 +13,12 @@ type HomeFlowStep = {
 };
 
 const pipelineSteps: HomeFlowStep[] = [
-  {
-    key: "import-data",
-    label: "数据集",
-    to: "/importData",
-    desc: "从 Label Studio 拉取标注并生成训练用数据集版本。",
-  },
-  { key: "train", label: "微调", to: "/train", desc: "配置并启动微调或全量训练任务。" },
-  { key: "playground", label: "验证", to: "/playground", desc: "在线试跑模型输出，快速验证效果。" },
-  { key: "merge", label: "合并", to: "/merge", desc: "将 LoRA 权重与基座模型合并导出。" },
-  { key: "eval", label: "评测", to: "/eval", desc: "在固定集上评估模型指标与样例。" },
-  { key: "export", label: "导出", to: "/export", desc: "打包模型与相关产物以便部署或分发。" },
-];
-
-const features: { path: string; title: string; desc: string }[] = [
-  { path: "/importData", title: "数据集", desc: "从 Label Studio 拉取标注并生成训练用数据集版本。" },
-  { path: "/train", title: "微调", desc: "配置并启动微调或全量训练任务。" },
-  { path: "/playground", title: "验证", desc: "在线试跑模型输出，快速验证效果。" },
-  { path: "/merge", title: "合并", desc: "将 LoRA 权重与基座模型合并导出。" },
-  { path: "/eval", title: "评测", desc: "在固定集上评估模型指标与样例。" },
-  { path: "/export", title: "导出", desc: "打包模型与相关产物以便部署或分发。" },
+  { key: "import-data",  label: "数据集", to: "/importData", desc: "拉取标注并生成数据集" },
+  { key: "train", label: "微调", to: "/train", desc: "配置并启动微调或全量训练任务" },
+  { key: "verify", label: "验证", to: "/train", desc: "在线试跑模型输出，快速验证效果" },
+  { key: "merge", label: "合并", to: "/train", desc: "将 LoRA 权重与基座模型合并" },
+  { key: "eval", label: "评测", to: "/train", desc: "在固定集上评估模型指标与样例" },
+  { key: "export", label: "导出", to: "/train", desc: "打包模型以便部署或分发" },
 ];
 </script>
 

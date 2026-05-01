@@ -1,11 +1,11 @@
 <script setup lang="ts">
+import { PlusOutlined, ReloadOutlined } from "@ant-design/icons-vue";
 import { message } from "ant-design-vue";
 import { computed, onMounted, ref } from "vue";
 import { apiErrorDetail, http } from "../api/http";
 import TrainJobCard from "../components/train/TrainJobCard.vue";
 import TrainJobNameModal from "../components/train/TrainJobNameModal.vue";
 import TrainMergeLogModal from "../components/train/TrainMergeLogModal.vue";
-import TrainPageHeader from "../components/train/TrainPageHeader.vue";
 import TrainVerifyEvalModals from "../components/train/TrainVerifyEvalModals.vue";
 import TrainingFormPanel from "../components/TrainingFormPanel.vue";
 import {
@@ -41,6 +41,7 @@ function onEvalModalClosed() {
 }
 
 const jobs = ref<Record<string, unknown>[]>([]);
+const jobsLoading = ref(true);
 const currentJobId = ref<string | null>(null);
 
 const jobNameEditOpen = ref(false);
@@ -61,7 +62,7 @@ const {
   mergeStatusByJobId,
   mergeOutputPathByJobId,
   loadMergeStatus,
-  mergeSubmitting,
+  mergeSubmittingJobId,
   mergeLogModalOpen,
   mergeLogModalText,
   mergeLogLoading,
@@ -79,17 +80,27 @@ function mergedPathRowFor(record: Record<string, unknown>): {
   return { value, pathTooltip };
 }
 
+let refreshJobsSeq = 0;
+
 async function refreshJobs() {
-  const [r, pathsR] = await Promise.all([
-    http.get("/api/training/jobs"),
-    http.get("/api/system/paths").catch(() => ({ data: {} })),
-  ]);
-  jobs.value = r.data.items;
-  const wr = (pathsR as { data?: { workspace_root?: unknown } }).data?.workspace_root;
-  if (typeof wr === "string" && wr.trim()) {
-    workspaceRootAbs.value = wr.trim();
+  const seq = ++refreshJobsSeq;
+  jobsLoading.value = true;
+  try {
+    const [r, pathsR] = await Promise.all([
+      http.get("/api/training/jobs"),
+      http.get("/api/system/paths").catch(() => ({ data: {} })),
+    ]);
+    jobs.value = r.data.items;
+    const wr = (pathsR as { data?: { workspace_root?: unknown } }).data?.workspace_root;
+    if (typeof wr === "string" && wr.trim()) {
+      workspaceRootAbs.value = wr.trim();
+    }
+    await loadMergeStatus();
+  } finally {
+    if (seq === refreshJobsSeq) {
+      jobsLoading.value = false;
+    }
   }
-  await loadMergeStatus();
 }
 
 function openTrainingJobNameEditor(record: Record<string, unknown>) {
@@ -162,16 +173,47 @@ function mergeUiStatusForRecord(record: Record<string, unknown>): MergeUiStatus 
 
 <template>
   <div>
-    <TrainPageHeader @new-train="openNewTrainModal" />
+    <div class="train-page-header">
+      <div class="train-page-header__title-row">
+        <a-typography-title :level="4">微调</a-typography-title>
+        <a-tooltip title="刷新" placement="bottomRight" :auto-adjust-overflow="false">
+          <a-button
+            type="text"
+            class="train-page-header__icon-btn"
+            aria-label="刷新"
+            @click="refreshJobs"
+          >
+            <template #icon>
+              <ReloadOutlined />
+            </template>
+          </a-button>
+        </a-tooltip>
+        <a-tooltip title="新建训练" placement="bottom">
+          <a-button
+            type="text"
+            class="train-page-header__icon-btn"
+            aria-label="新建训练"
+            @click="openNewTrainModal"
+          >
+            <template #icon>
+              <PlusOutlined />
+            </template>
+          </a-button>
+        </a-tooltip>
+      </div>
+    </div>
 
-    <div v-if="jobRows.length" class="train-job-card-grid">
+    <a-spin v-if="jobsLoading" :spinning="true" tip="正在加载训练任务…">
+      <div class="train-jobs-loading-placeholder" />
+    </a-spin>
+    <div v-else-if="jobRows.length" class="train-job-card-grid">
       <TrainJobCard
         v-for="record in jobRows"
         :key="String(record.id)"
         :record="record"
         :merge-ui-status="mergeUiStatusForRecord(record)"
         :merged-path-row="mergedPathRowFor(record)"
-        :merge-submitting="mergeSubmitting"
+        :merge-submitting="mergeSubmittingJobId === String(record.id ?? '').trim()"
         @edit-name="openTrainingJobNameEditor"
         @delete="deleteJobById"
         @train="selectJob"
@@ -212,6 +254,37 @@ function mergeUiStatusForRecord(record: Record<string, unknown>): MergeUiStatus 
 </template>
 
 <style scoped>
+.train-jobs-loading-placeholder {
+  min-height: 160px;
+}
+.train-page-header__icon-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  font-size: 18px;
+  color: rgba(0, 0, 0, 0.45);
+}
+.train-page-header__icon-btn:hover {
+  color: var(--ant-primary-color, #1677ff);
+}
+.train-page-header__title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  max-width: 100%;
+  min-width: 0;
+}
+.train-page-header__title-row :deep(h4) {
+  margin: 0;
+  padding: 0;
+  line-height: 1.35;
+}
+.train-page-header {
+  margin-bottom: 12px;
+}
 .train-job-card-grid {
   margin-top: 4px;
   margin-bottom: 16px;

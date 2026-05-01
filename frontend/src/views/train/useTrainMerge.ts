@@ -28,7 +28,8 @@ export function useTrainMerge() {
     }
   }
 
-  const mergeSubmitting = ref(false);
+  /** 正在处理「从训练卡发起合并」的训练任务 id；仅该卡片的合并按钮显示 loading */
+  const mergeSubmittingJobId = ref<string | null>(null);
   let trainPageMergePoller: ReturnType<typeof setInterval> | null = null;
   let trainPageMergePollId: string | null = null;
   /** 当前 `trainPageMergePoller` 对应的训练任务 id（用于避免与日志轮询重复请求） */
@@ -120,7 +121,7 @@ export function useTrainMerge() {
     const tid = String(record.id ?? "").trim();
     if (!tid) return;
 
-    mergeSubmitting.value = true;
+    mergeSubmittingJobId.value = tid;
     try {
       const [candidatesRes, statusRes] = await Promise.all([
         http.get("/api/merge/training-candidates"),
@@ -221,7 +222,7 @@ export function useTrainMerge() {
     } catch (e: unknown) {
       message.error(apiErrorDetail(e) ?? String(e));
     } finally {
-      mergeSubmitting.value = false;
+      mergeSubmittingJobId.value = null;
     }
   }
 
@@ -234,7 +235,7 @@ export function useTrainMerge() {
     mergeStatusByJobId,
     mergeOutputPathByJobId,
     loadMergeStatus,
-    mergeSubmitting,
+    mergeSubmittingJobId,
     mergeLogModalOpen,
     mergeLogModalText,
     mergeLogModalTrainingJobId,

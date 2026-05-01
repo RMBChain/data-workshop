@@ -40,11 +40,16 @@ def _is_merged_workshop_relpath(rel: str) -> bool:
     p = rel.replace("\\", "/")
     if ".." in Path(p).parts:
         return False
-    return p == "output/merged-workshop" or p.startswith("output/merged-workshop/")
+    return (
+        p == "merged"
+        or p.startswith("merged/")
+        or p == "output/merged-workshop"
+        or p.startswith("output/merged-workshop/")
+    )
 
 
 def clear_merged_workshop_output_dir(workspace: Path, output_relpath: str) -> None:
-    """合并子进程启动前：整目录删除，不保留多版本/历史（仅 `output/merged-workshop/...`）。"""
+    """合并子进程启动前：整目录删除，不保留多版本/历史（仅 `merged/...`；兼容旧版 `output/merged-workshop/...`）。"""
     rel = _mw_rel_norm(output_relpath)
     if not _is_merged_workshop_relpath(rel):
         return
@@ -105,7 +110,7 @@ def _remove_history_subdirs_and_temp_files(model_dir: Path) -> None:
 
 
 def cleanup_merged_workshop_dir_after_success(workspace: Path, output_relpath: str) -> None:
-    """合并成功后：在 `output/merged-workshop/{tid}` 内清理分片/备份残留（不删 index 中仍引用的分片）。"""
+    """合并成功后：在 `merged/{tid}` 内清理分片/备份残留（不删 index 中仍引用的分片）；兼容旧路径。"""
     rel = _mw_rel_norm(output_relpath)
     if not _is_merged_workshop_relpath(rel):
         return
@@ -149,24 +154,24 @@ def _merge_jobs_log_dir() -> Path:
 
 def _merge_output_relpath(body: MergeJobCreate, merge_job_id: str) -> tuple[str, str | None]:
     """返回 (工作区相对输出目录, 错误信息)。
-    有 training_job_id 时为 output/merged-workshop/{该 id}；无 training_job_id 时为 output/merged-workshop/{merge_job_id}。"""
+    有 training_job_id 时为 merged/{该 id}；无 training_job_id 时为 merged/{merge_job_id}。"""
     tid0 = (body.training_job_id or "").strip() if body.training_job_id else ""
     if tid0:
         seg = tid0.replace("\\", "/").strip()
         if not seg or ".." in seg or "/" in seg:
             return "", "training_job_id 无效（不允许含路径分隔符或 ..）"
-        rel = f"output/merged-workshop/{seg}".replace("\\", "/")
+        rel = f"merged/{seg}".replace("\\", "/")
         return rel, None
-    return f"output/merged-workshop/{merge_job_id}".replace("\\", "/"), None
+    return f"merged/{merge_job_id}".replace("\\", "/"), None
 
 
 class MergeJobCreate(BaseModel):
     base_model_path: str = Field(..., description="基座：ModelScope id 或工作区内相对路径或绝对本地目录")
     lora_paths: list[str] = Field(..., min_length=1)
     output_path: str = Field(
-        "output/merged-workshop",
+        "merged",
         min_length=1,
-        description="忽略；合并产物目录为 output/merged-workshop/{training_job_id 或 merge_job_id}",
+        description="忽略；合并产物目录为 merged/{training_job_id 或 merge_job_id}",
     )
     merge_lora_only: bool = Field(
         True,
@@ -543,7 +548,7 @@ class MergeJobManager:
                 try:
                     cleanup_merged_workshop_dir_after_success(self._workspace, post_zip_out)
                 except Exception:
-                    _merge_log.exception("合并成功后清理 output/merged-workshop 失败")
+                    _merge_log.exception("合并成功后清理 merged 输出目录失败")
 
         threading.Thread(target=_wait, daemon=True).start()
         return job
