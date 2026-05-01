@@ -267,11 +267,14 @@ async def _async_collect_lines_from_label_studio(
     vdir: Path,
     img_dir: Path,
     add_image_token: bool,
-) -> tuple[list[dict[str, Any]], int, int, int, str | None]:
-    """从 Label Studio API 拉取任务并生成 JSONL 行；临时文件在 vdir/_ls_staging，结束后删除。"""
+) -> tuple[list[dict[str, Any]], int, int, int, str | None, str | None]:
+    """从 Label Studio API 拉取任务并生成 JSONL 行；临时文件在 vdir/_ls_staging，结束后删除。
+
+    返回最后一个元素为从 LS 同步的任务列表 JSON（含 project_id），供入库 ``label_studio_raw_json``。
+    """
     pid = job.ls_project_id
     if pid is None:
-        return [], 0, 0, 0, None
+        return [], 0, 0, 0, None, None
     base = (job.label_studio_base or "").rstrip("/")
     token = job.label_studio_token or ""
     staging = vdir / "_ls_staging"
@@ -280,6 +283,13 @@ async def _async_collect_lines_from_label_studio(
 
     tasks = await ls_api.iter_project_tasks(base, token, int(pid))
     n = len(tasks)
+    ls_raw_json = json_dumps(
+        {
+            "label_studio_project_id": int(pid),
+            "task_count": n,
+            "tasks": tasks,
+        }
+    )
     lines: list[dict[str, Any]] = []
     skipped_resolve = 0
     skipped_build = 0
@@ -357,7 +367,7 @@ async def _async_collect_lines_from_label_studio(
     except OSError:
         pass
 
-    return lines, skipped_resolve, skipped_build, n, resolved_title
+    return lines, skipped_resolve, skipped_build, n, resolved_title, ls_raw_json
 
 
 class DatasetBuildManager:
@@ -479,7 +489,7 @@ class DatasetBuildManager:
             _db_update_job(self._workspace, job_id, "failed", job.error_message, 1.0)
             return
 
-        lines, skipped_resolve, skipped_build, n_src, resolved_proj_title = asyncio.run(
+        lines, skipped_resolve, skipped_build, n_src, resolved_proj_title, ls_raw_json = asyncio.run(
             _async_collect_lines_from_label_studio(
                 self._workspace, job, vdir, img_dir, add_image_token
             )
@@ -506,7 +516,14 @@ class DatasetBuildManager:
             job.status = "failed"
             job.error_message = "没有可用的图片样本，请检查 Label Studio 任务中的图片路径与网络可达性"
             job.finished_at = time.time()
-            _db_update_job(self._workspace, job_id, "failed", job.error_message, 1.0)
+            _db_update_job(
+                self._workspace,
+                job_id,
+                "failed",
+                job.error_message,
+                1.0,
+                label_studio_raw_json=ls_raw_json,
+            )
             log.error(
                 "数据集构建失败 job_id=%s: 无有效样本 (源任务行=%d skip_resolve=%d skip_build=%d)",
                 job_id,
@@ -592,7 +609,8 @@ class DatasetBuildManager:
                 rel_dir = ?,
                 train_relpath = ?,
                 val_relpath = ?,
-                test_relpath = NULL
+                test_relpath = NULL,
+                label_studio_raw_json = ?
             WHERE id = ?
             """,
             (
@@ -604,6 +622,7 @@ class DatasetBuildManager:
                 rel_dir,
                 tr_rel,
                 va_rel,
+                ls_raw_json,
                 job_id,
             ),
         )
@@ -636,11 +655,34 @@ def _db_update_job(
     status: str,
     err: str | None,
     progress: float,
+    *,
+    label_studio_raw_json: str | None = None,
 ) -> None:
     conn = get_connection(workspace)
     terminal = status in ("failed", "succeeded", "cancelled")
     fin = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) if terminal else None
-    if fin:
+    if label_studio_raw_json is not None:
+        if fin:
+            conn.execute(
+                """
+                UPDATE dws_datasets
+                SET status = ?, error_message = ?, progress = ?, finished_at = ?,
+                    label_studio_raw_json = ?
+                WHERE id = ?
+                """,
+                (status, err, progress, fin, label_studio_raw_json, job_id),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE dws_datasets
+                SET status = ?, error_message = ?, progress = ?, finished_at = NULL,
+                    label_studio_raw_json = ?
+                WHERE id = ?
+                """,
+                (status, err, progress, label_studio_raw_json, job_id),
+            )
+    elif fin:
         conn.execute(
             """
             UPDATE dws_datasets
