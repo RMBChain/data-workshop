@@ -1,0 +1,85 @@
+"""
+数据工坊：在工作区内将单路 LoRA 合并进基座并保存为 HF 目录（纯 CPU，供推理加载）。
+多路 LoRA 的依赖关系复杂，MVP 仅对第一个有效路径做 merge。
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+
+def _resolve_base(p: str) -> str:
+    q = Path(p)
+    if q.is_dir():
+        return str(q.resolve())
+    from modelscope import snapshot_download
+
+    return snapshot_download(p)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--base", required=True, help="基座：ModelScope id 或本地目录")
+    ap.add_argument("--lora", required=True, action="append", dest="loras", help="LoRA 目录（可多次）")
+    ap.add_argument("--output", required=True, help="输出目录（工作区内或绝对路径）")
+    ap.add_argument("--extra", default="[]", help="JSON 列表：多路时忽略除第一个以外的说明（预留）")
+    args = ap.parse_args()
+
+    import torch
+    from peft import PeftModel
+    from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+
+    loras: list[str] = list(args.loras)
+    if len(loras) > 1:
+        print(
+            f"注意: 当前合并仅对第一个 LoRA 生效: {loras[0]}（共 {len(loras)} 个入参，其余忽略）",
+            file=sys.stderr,
+        )
+    lora_p = Path(loras[0]).resolve()
+    if not lora_p.is_dir():
+        print(f"错误: LoRA 目录不存在: {lora_p}", file=sys.stderr)
+        return 1
+    for name in ("adapter_config.json", "adapter_model.safetensors"):
+        if not (lora_p / name).is_file():
+            print(f"错误: LoRA 缺少 {name}", file=sys.stderr)
+            return 1
+
+    out = Path(args.output).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+
+    base = _resolve_base(args.base)
+    print(f"加载基座: {base}")
+    model = Qwen3VLForConditionalGeneration.from_pretrained(
+        base,
+        torch_dtype=torch.float32,
+        trust_remote_code=True,
+    )
+    model = model.to("cpu")
+    print(f"加载 LoRA: {lora_p}")
+    model = PeftModel.from_pretrained(model, str(lora_p))
+    print("合并并卸载 LoRA 适配器层…")
+    merged = model.merge_and_unload()
+    merged.save_pretrained(str(out), safe_serialization=True)
+    processor = AutoProcessor.from_pretrained(base, trust_remote_code=True)
+    processor.save_pretrained(str(out))
+    (out / "workshop_merge_meta.json").write_text(
+        json.dumps(
+            {
+                "base": args.base,
+                "lora_used": str(lora_p),
+                "lora_ignored": [str(x) for x in loras[1:]],
+                "extra_parsed": json.loads(args.extra or "[]"),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    print(f"完成: {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

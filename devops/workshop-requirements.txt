@@ -1,0 +1,9 @@
+# 供 devops/Dockerfile.workshop 使用；须与 backend/requirements.txt 保持一致
+fastapi>=0.115
+uvicorn[standard]>=0.32
+python-multipart
+pyyaml
+httpx
+pydantic-settings>=2.0
+bitsandbytes>=0.43.0
+psutil>=5.9

@@ -1,0 +1,393 @@
+<script setup lang="ts">
+import { message, Modal } from "ant-design-vue";
+import { onMounted, onUnmounted, ref, computed } from "vue";
+import { useRouter } from "vue-router";
+import { http } from "../api/http";
+
+const router = useRouter();
+const imports = ref<
+  { id: string; project_title?: string | null; batch_name?: string | null; task_count: number; created_at: string }[]
+>([]);
+const selectedBatch = ref<string | null>(null);
+const buildNote = ref("");
+const trainRatio = ref(80);
+const valRatio = ref(10);
+const testRatio = ref(10);
+const seed = ref<number | null>(null);
+const addImageToken = ref(true);
+const buildJob = ref<Record<string, unknown> | null>(null);
+const pollT = ref<ReturnType<typeof setInterval> | null>(null);
+const versions = ref<Record<string, unknown>[]>([]);
+const activeVersion = ref<string | null>(null);
+const preview = ref<unknown>(null);
+const autoImageLabel = computed(() => "自动补全 <image> 提示");
+
+type VersionDataPayload = {
+  version_id: string;
+  meta: unknown;
+  train_samples: unknown[];
+  val_samples: unknown[];
+  test_samples: unknown[];
+};
+const versionViewOpen = ref(false);
+const versionViewLoading = ref(false);
+const versionViewTitle = ref("");
+const versionViewPayload = ref<VersionDataPayload | null>(null);
+
+function formatJson(v: unknown): string {
+  try {
+    return JSON.stringify(v, null, 2);
+  } catch {
+    return String(v);
+  }
+}
+
+async function openVersionDataView(versionId: string) {
+  versionViewTitle.value = `数据集 · ${versionId}`;
+  versionViewOpen.value = true;
+  versionViewLoading.value = true;
+  versionViewPayload.value = null;
+  try {
+    const r = await http.get(`/api/datasets/versions/${encodeURIComponent(versionId)}/data`, {
+      params: { per_split: 8 },
+    });
+    versionViewPayload.value = r.data as VersionDataPayload;
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { detail?: string } } };
+    message.error(err.response?.data?.detail ?? "加载失败");
+    versionViewOpen.value = false;
+  } finally {
+    versionViewLoading.value = false;
+  }
+}
+
+/** 轮询间隔（毫秒）；1s 会使 uvicorn 访问日志很密 */
+const DATASET_JOB_POLL_MS = 2500;
+/** 超过该时长仍无终态则停止轮询（正常构建一般远小于此；避免异常卡死一直请求） */
+const DATASET_JOB_POLL_MAX_MS = 60 * 60 * 1000;
+
+onMounted(() => {
+  void refreshImports();
+  void refreshVersions();
+});
+
+onUnmounted(() => {
+  if (pollT.value) {
+    clearInterval(pollT.value);
+    pollT.value = null;
+  }
+});
+
+async function refreshImports() {
+  const r = await http.get("/api/imports");
+  imports.value = r.data.items;
+  if (imports.value.length) {
+    if (!selectedBatch.value || !imports.value.some((i) => i.id === selectedBatch.value)) {
+      selectedBatch.value = imports.value[0].id;
+    }
+  } else {
+    selectedBatch.value = null;
+  }
+}
+
+function deleteCurrentBatch() {
+  if (!selectedBatch.value) {
+    message.warning("请选择要删除的批次");
+    return;
+  }
+  const id = selectedBatch.value;
+  Modal.confirm({
+    title: "删除该源导入批次？",
+    content:
+      "将删除该批次在工作区中的原始导入数据与任务记录。已由此批次生成的「数据集版本」会保留在列表中，仅解除与批次的关联。此操作不可恢复。",
+    okText: "删除",
+    okType: "danger",
+    cancelText: "取消",
+    async onOk() {
+      const r = await http.delete(`/api/imports/${encodeURIComponent(id)}`);
+      if (r.data?.warning) {
+        message.warning(String(r.data.warning));
+      } else {
+        message.success("已删除");
+      }
+      await refreshImports();
+    },
+  });
+}
+
+async function refreshVersions() {
+  const r = await http.get("/api/datasets/versions");
+  versions.value = r.data.items;
+  activeVersion.value = r.data.active_version_id;
+}
+
+async function activateVersion(versionId: string) {
+  try {
+    await http.post(`/api/datasets/versions/${encodeURIComponent(versionId)}/rollback`);
+    message.success("已激活该版本");
+    await refreshVersions();
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { detail?: string } } };
+    message.error(err.response?.data?.detail ?? "激活失败");
+  }
+}
+
+function deleteVersion(versionId: string) {
+  Modal.confirm({
+    title: "删除数据集版本？",
+    content:
+      "将永久删除该版本对应的 versions/ 目录（含 train/val/test.jsonl 和 meta.json）及数据库记录。若为当前活跃版本，激活标记将被清除。此操作不可恢复。",
+    okText: "删除",
+    okType: "danger",
+    cancelText: "取消",
+    async onOk() {
+      try {
+        const r = await http.delete(`/api/datasets/versions/${encodeURIComponent(versionId)}`);
+        if (r.data?.warning) {
+          message.warning(String(r.data.warning));
+        } else {
+          message.success("版本已删除");
+        }
+        await refreshVersions();
+      } catch (e: unknown) {
+        const err = e as { response?: { data?: { detail?: string } } };
+        message.error(err.response?.data?.detail ?? "删除失败");
+      }
+    },
+  });
+}
+
+async function startBuild() {
+  if (!selectedBatch.value) {
+    message.warning("请选择导入批次");
+    return;
+  }
+  try {
+    const r = await http.post("/api/datasets/build", {
+      import_batch_id: selectedBatch.value,
+      add_image_token: addImageToken.value,
+      train_ratio: trainRatio.value,
+      val_ratio: valRatio.value,
+      test_ratio: testRatio.value,
+      random_seed: seed.value,
+      note: buildNote.value || null,
+    });
+    const jid = r.data.job_id as string;
+    buildJob.value = { id: jid, status: "pending" };
+    if (pollT.value) clearInterval(pollT.value);
+    const buildPollStart = Date.now();
+    pollT.value = setInterval(() => {
+      void (async () => {
+        if (Date.now() - buildPollStart > DATASET_JOB_POLL_MAX_MS) {
+          if (pollT.value) clearInterval(pollT.value);
+          pollT.value = null;
+          message.warning("构建状态长时间未结束，已停止轮询。请查看「版本」或刷新后重试。");
+          return;
+        }
+        try {
+          const st = await http.get(`/api/datasets/jobs/${jid}`);
+          buildJob.value = st.data;
+          if (["succeeded", "failed", "cancelled"].includes(String(st.data.status))) {
+            if (pollT.value) clearInterval(pollT.value);
+            pollT.value = null;
+            if (st.data.status === "succeeded") {
+              message.success("数据集已生成");
+              await refreshVersions();
+            } else if (st.data.status === "failed") {
+              const em = (st.data as { error_message?: string }).error_message;
+              message.error(em && String(em).trim() ? em : "数据集构建失败");
+            }
+          }
+        } catch (e: unknown) {
+          if (pollT.value) clearInterval(pollT.value);
+          pollT.value = null;
+          const err = e as { response?: { status?: number } };
+          if (err.response?.status === 404) {
+            message.error("构建任务已不存在，已停止轮询。");
+          } else {
+            message.error("获取构建状态失败，已停止轮询。");
+          }
+        }
+      })();
+    }, DATASET_JOB_POLL_MS);
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { detail?: string } } };
+    message.error(err.response?.data?.detail ?? "失败");
+  }
+}
+
+async function loadPreview() {
+  try {
+    const r = await http.get("/api/datasets/preview", { params: {} });
+    preview.value = r.data.sample;
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { detail?: string } } };
+    message.error(err.response?.data?.detail ?? "无预览");
+  }
+}
+
+function goTrain() {
+  void router.push("/train");
+}
+</script>
+
+<template>
+  <div>
+    <a-typography-title :level="4">数据集</a-typography-title>
+    <a-alert
+      type="info"
+      show-icon
+      message="将导入数据转为 SFT 对话格式（qwen-vl 模板族），并划分训练/验证/测试。产物位于工作区 versions/。"
+      style="margin-bottom: 12px"
+    />
+    <a-form layout="vertical">
+      <a-row :gutter="[16, 16]">
+        <a-col  :span="6">
+          <a-form-item label="源导入批次">
+            <a-select
+              v-model:value="selectedBatch"
+              :options="
+                imports.map((i) => {
+                  const project = i.project_title?.trim() || '—';
+                  const batch = (i.batch_name != null && String(i.batch_name).trim()) || '—';
+                  return {
+                    value: i.id,
+                    label: `#${project} # ${batch} # ${i.task_count} 条`,
+                  };
+                })
+              "
+              style="width: 100%"
+              :disabled="!imports.length"
+              placeholder="无批次时请先到「数据导入」"
+            />
+          </a-form-item>
+        </a-col>
+        <a-col :span="3">
+          <a-form-item :label="autoImageLabel">
+            <a-switch v-model:checked="addImageToken" />
+          </a-form-item>
+        </a-col>
+        <a-col  :span="2">
+          <a-form-item label="随机种子（可空）">
+            <a-input-number v-model:value="seed" style="width: 100%" />
+          </a-form-item>
+        </a-col>
+        <a-col  :span="5">
+          <a-form-item label="划分比例（训练/验证/测试）">
+            <a-input-number v-model:value="trainRatio" :min="0" :max="100" /> /
+            <a-input-number v-model:value="valRatio" :min="0" :max="100" /> /
+            <a-input-number v-model:value="testRatio" :min="0" :max="100" />
+          </a-form-item>
+        </a-col>
+        <a-col  :span="2">
+          <a-form-item label="备注">
+            <a-input v-model:value="buildNote" />
+          </a-form-item>
+        </a-col>
+        <a-col :span="5">
+          <a-form-item style="padding-top: 28px">
+            <a-button type="primary" @click="startBuild">生成数据集</a-button>
+            <a-button style="margin-left: 8px" @click="loadPreview">预览一条样本</a-button>
+            <a-button type="link" @click="goTrain">去训练</a-button>
+          </a-form-item>
+        </a-col>
+      </a-row>
+    </a-form>
+    <a-typography-paragraph v-if="buildJob"
+      >当前构建任务：{{ String((buildJob as { id?: string }).id) }} ·
+      {{ String((buildJob as { status?: string }).status) }}</a-typography-paragraph
+    >
+    <a-typography-title :level="5">版本</a-typography-title>
+    <a-table
+      :columns="[
+        { title: 'ID', dataIndex: 'id', key: 'id', ellipsis: true },
+        { title: '时间', dataIndex: 'created_at', key: 'created_at' },
+        { title: '项目名称', dataIndex: 'project_title', key: 'project_title', ellipsis: true },
+        { title: '批次名称', dataIndex: 'batch_name', key: 'batch_name', ellipsis: true },
+        { title: '训练', dataIndex: 'train_count', key: 'train_count', width: 72 },
+        { title: '验证', dataIndex: 'val_count', key: 'val_count', width: 72 },
+        { title: '测试', dataIndex: 'test_count', key: 'test_count', width: 72 },
+        { title: '备注', dataIndex: 'note', key: 'note' },
+        { title: '激活', dataIndex: 'is_active', key: 'is_active', width: 80 },
+        {
+          title: '操作',
+          key: 'action',
+          width: 200,
+        },
+      ]"
+      :data-source="versions as Record<string, unknown>[]"
+      :pagination="false"
+      size="small"
+      row-key="id"
+    >
+      <template #bodyCell="{ column, record }">
+        <template v-if="column.key === 'is_active'">
+          <a-tag v-if="record && typeof record === 'object' && (record as any).is_active" color="success">活跃</a-tag>
+          <a v-else-if="record && typeof record === 'object'" @click="activateVersion((record as any).id)">设为活跃</a>
+        </template>
+        <template v-else-if="column.key === 'action' && record && typeof record === 'object'">
+          <a-space>
+            <a @click="openVersionDataView(String((record as any).id))">查看</a>
+            <a @click="deleteVersion((record as any).id)" style="color: #ff4d4f">删除</a>
+          </a-space>
+        </template>
+        <span v-else>{{ record?.[column.dataIndex as string] ?? '-' }}</span>
+      </template>
+    </a-table>
+    <a-typography-title :level="5" style="margin-top: 16px">样本预览</a-typography-title>
+    <pre v-if="preview" style="max-height: 240px; overflow: auto; font-size: 12px">{{
+      JSON.stringify(preview, null, 2)
+    }}</pre>
+    <a-typography-paragraph v-else type="secondary">未加载</a-typography-paragraph>
+
+    <a-modal
+      v-model:open="versionViewOpen"
+      :title="versionViewTitle"
+      width="min(960px, 96vw)"
+      :footer="null"
+      destroy-on-close
+    >
+      <a-spin :spinning="versionViewLoading">
+        <a-tabs v-if="versionViewPayload">
+          <a-tab-pane key="meta" tab="元数据">
+            <pre
+              class="dataset-version-view-pre"
+            >{{ versionViewPayload.meta != null ? formatJson(versionViewPayload.meta) : '（无 meta.json 或无法解析）' }}</pre>
+          </a-tab-pane>
+          <a-tab-pane key="train" :tab="`训练样本 (${versionViewPayload.train_samples.length})`">
+            <pre class="dataset-version-view-pre">{{
+              versionViewPayload.train_samples.length
+                ? formatJson(versionViewPayload.train_samples)
+                : '（无样本或 train.jsonl 不存在）'
+            }}</pre>
+          </a-tab-pane>
+          <a-tab-pane key="val" :tab="`验证样本 (${versionViewPayload.val_samples.length})`">
+            <pre class="dataset-version-view-pre">{{
+              versionViewPayload.val_samples.length
+                ? formatJson(versionViewPayload.val_samples)
+                : '（无样本或 val.jsonl 不存在）'
+            }}</pre>
+          </a-tab-pane>
+          <a-tab-pane key="test" :tab="`测试样本 (${versionViewPayload.test_samples.length})`">
+            <pre class="dataset-version-view-pre">{{
+              versionViewPayload.test_samples.length
+                ? formatJson(versionViewPayload.test_samples)
+                : '（无样本或 test.jsonl 不存在）'
+            }}</pre>
+          </a-tab-pane>
+        </a-tabs>
+      </a-spin>
+    </a-modal>
+  </div>
+</template>
+
+<style scoped>
+.dataset-version-view-pre {
+  margin: 0;
+  max-height: 70vh;
+  overflow: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+</style>

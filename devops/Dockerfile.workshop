@@ -1,0 +1,14 @@
+# 基于 ms-swift CPU 镜像；请先构建基础镜像：
+#   docker build -f devops/swift4.03-cpu.dockerfile -t swift4.03-cpu:latest .
+FROM swift4.03-cpu:latest
+
+WORKDIR /workspace/project
+
+COPY devops/workshop-requirements.txt /tmp/workshop-requirements.txt
+ARG PYPI_INDEX=https://mirrors.aliyun.com/pypi/simple/
+RUN uv pip install -r /tmp/workshop-requirements.txt -i ${PYPI_INDEX}
+
+ENV PYTHONPATH=/workspace/project
+EXPOSE 8000
+
+CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
