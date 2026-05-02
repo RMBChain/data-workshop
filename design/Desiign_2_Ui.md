@@ -9,7 +9,7 @@
 | 目标 | 说明 |
 |------|------|
 | 减少认知负担 | 主流程按「数据 → 数据集 → 训练 → 试跑/评测」顺排，次要能力（合并、导出、系统信息）副栏或顶栏可达。 |
-| 与约束一致 | 全路径强调 **CPU 跑训练/推理**；若展示 GPU 探测信息，需附**不参与本工具主路径**的说明（见 §8）。 |
+| 与实现一致 | 训练/评测资源短轮询为 **CPU、内存**；**GPU/CUDA** 等以 **系统信息** 页的探测结果为准（与后端 `system_routes` 一致）。 |
 | 可观测性 | 训练与评测页突出日志、曲线、资源占用；长任务有队列与状态机反馈。 |
 | 轻量不简陋 | 空状态、加载、失败、取消均有明确文案与可恢复操作。 |
 
@@ -37,7 +37,7 @@
 └──────────┴───────────────────────────────────────────────────┘
 ```
 
-- **顶栏「资源信息」**：打开 **`ResourceInfoFloating`**（悬浮层），展示 **CPU / 内存** 等短时刷新数据（调用 `GET /api/system/resources`），与训练页资源区同类信息。  
+- **顶栏「资源信息」**：打开 **`ResourceInfoFloating`**（悬浮层），展示 **`GET /api/system/resources`** 返回的 **CPU、内存** 及小型时序图；**GPU / CUDA** 见 **`/system-info`**（`GET /api/system/info`）。  
 - **系统信息**：独立路由 **`/system-info`**（`SystemInfo.vue`），展示 Python/Torch/路径等（`GET /api/system/info`、`/api/system/paths`）。  
 - **底栏**：当前实现未固定底栏；可选后续增加工作区路径提示。
 
@@ -179,8 +179,7 @@
 - **ECharts** 与当前选中任务联动。
 
 **资源（训练页）**
-- **顶栏「资源信息」** 或 **页内卡片**：调用 **`GET /api/system/resources`**。
-- **附**：CPU 执行说明文案。
+- **顶栏「资源信息」** 或 **页内卡片**：调用 **`GET /api/system/resources`**（仅 CPU / 内存；与 `ResourceInfoFloating` 同源）。
 
 #### 训练日志区（滚动与跟随）
 
@@ -193,7 +192,7 @@
 | 高亮与复制 | **ERROR / WARNING** 行关键词高亮（颜色区分即可）；提供 **复制全部日志**。极长日志时可先 **纯文本滚动** 保证流畅，高亮可用虚拟列表或分段渲染逐步增强。 |
 | 任务结束 | 任务 **成功/失败/取消** 后停止轮询；保留最终日志，仍可按上述规则滚动查看。 |
 
-**顶栏提醒**：`Alert` 类型 info：训练与推理均在 **纯 CPU** 上执行，速度受本机 CPU/内存影响。
+**表单顶部提示**（与 `TrainingFormPanel.vue` 一致）：`a-alert type="info"` 简述 **默认 LoRA 推荐区间**（rank、epoch、warmup、各步数等），并提示 **显存紧张** 时可下调 **`max_length` / batch / 视觉负载**或考虑 **QLoRA**。
 
 ---
 
@@ -269,8 +268,8 @@
 
 | 展示项 | 注意 |
 |--------|------|
-| Python、PyTorch 等 | `GET /api/system/info`；CPU/是否有 CUDA 等。 |
-| GPU 信息 | 若显示：旁注 **仅环境探测，不参与本工具内训练/推理**（与需求一致）。 |
+| Python、PyTorch、CUDA 可见性 | `GET /api/system/info`；含 `torch_cuda_available`、`gpu_note`（环境探测说明）。 |
+| GPU 列表 | 若有：NVML 或 PyTorch 枚举；与 **资源浮动层**展示的 CPU/内存互补。 |
 | 路径 | `GET /api/system/paths` 与工作区实际布局一致（默认 `working_data` 等）。 |
 
 当前实现为 **独立页 `/system-info`**；**顶栏「资源信息」** 走 **`/api/system/resources`**，与本节互补。

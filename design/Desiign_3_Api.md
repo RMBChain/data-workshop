@@ -54,7 +54,8 @@
 - 训练日志：另支持 **SSE**（见 §5）。
 
 **资源**
-- **`GET /api/system/resources`**：**短轮询**。
+- **`GET /api/system/resources`**：**短轮询**（CPU、内存，见 §13）。
+- **GPU / CUDA / Torch**：见 **`GET /api/system/info`**（§13）。
 
 ### 1.5 工作区与路径安全
 
@@ -256,8 +257,8 @@
 
 | 方法 | 路径 | 说明 | 状态 |
 |------|------|------|------|
-| GET | `/api/system/resources` | CPU、内存等 | **已实现** |
-| GET | `/api/system/info` | Python、PyTorch、CUDA 探测等 | **已实现** |
+| GET | `/api/system/resources` | **CPU 使用率、内存**（`psutil`）；不含 GPU 时序 | **已实现** |
+| GET | `/api/system/info` | Python、Torch 版本、`torch_cuda_available`、`gpu_note`、CPU 核线程/频率、**GPU 列表**（NVML 或 Torch） | **已实现** |
 | GET | `/api/system/paths` | 缓存路径、工作区提示等 | **已实现** |
 
 ---

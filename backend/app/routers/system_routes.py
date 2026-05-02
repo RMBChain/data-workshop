@@ -177,7 +177,7 @@ async def system_info() -> dict[str, Any]:
         "platform": platform.platform(),
         "torch": torch_ver,
         "torch_cuda_available": bool(cuda),
-        "gpu_note": "若检测到 CUDA 设备，仅作环境探测；本工具内训练/推理主路径在纯 CPU 上执行（与需求一致）。",
+        "gpu_note": "CUDA / GPU 信息来自当前运行环境的 PyTorch 与驱动探测，供部署与健康检查参考。",
     }
     base.update(_collect_static_hardware())
     return base
