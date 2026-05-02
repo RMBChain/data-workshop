@@ -2,17 +2,19 @@
 import { DeleteOutlined } from "@ant-design/icons-vue";
 import { message } from "ant-design-vue";
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { apiErrorDetail, http } from "../api/http";
+import { apiErrorDetail, http } from "../../api/http";
 
-const props = withDefaults(
-  defineProps<{
-    /** 在 Modal 等场景中嵌入时为 true，不显示页面级标题（由外层 Modal 标题承担） */
-    embedded?: boolean;
-    /** 打开时优先选中与该训练任务 id 匹配的已登记模型 */
-    prefillJobId?: string | null;
-  }>(),
-  { embedded: false, prefillJobId: null },
-);
+const verifyOpen = defineModel<boolean>("verifyOpen", { required: true });
+
+const { verifyPrefillJobId } = defineProps<{
+  verifyPrefillJobId: string | null;
+}>();
+
+const emit = defineEmits<{
+  verifyClosed: [];
+}>();
+
+const modalBody = { maxHeight: "calc(100vh - 140px)", overflow: "auto", paddingTop: "12px" };
 
 const DEFAULT_BASE = "Qwen/Qwen3-VL-2B-Instruct";
 
@@ -35,7 +37,7 @@ const IMAGE_ACCEPT =
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const imageFile = ref<File | null>(null);
 const imageObjectUrl = ref<string | null>(null);
-const prompt = ref("你好");
+const prompt = ref("描述图片中的内容。并用json格式返回。");
 const maxNew = ref(256);
 const loading = ref(false);
 const loadModelLoading = ref(false);
@@ -121,16 +123,13 @@ onBeforeUnmount(() => {
 });
 
 function applyPrefillJobId() {
-  const jid = (props.prefillJobId ?? "").trim();
+  const jid = (verifyPrefillJobId ?? "").trim();
   if (!jid || !models.value.length) return;
   const match = models.value.find((m) => m.job_id === jid);
   if (match) modelId.value = match.id;
 }
 
-watch(
-  () => props.prefillJobId,
-  () => applyPrefillJobId(),
-);
+watch(() => verifyPrefillJobId, () => applyPrefillJobId());
 
 watch(modelId, () => {
   const id = modelId.value;
@@ -171,7 +170,7 @@ async function loadModels() {
     adapter.value = "";
     return;
   }
-  const jid = (props.prefillJobId ?? "").trim();
+  const jid = (verifyPrefillJobId ?? "").trim();
   const match = jid ? models.value.find((m) => m.job_id === jid) : undefined;
   modelId.value = match?.id ?? models.value[0].id;
 }
@@ -234,112 +233,122 @@ async function send() {
 </script>
 
 <template>
-  <div>
-    <a-typography-title v-if="!embedded" :level="4">LoRA 验证</a-typography-title>
-    <a-alert
-      type="info"
-      show-icon
-      message="LoRA 在基座之上推理。终端里「Loading weights」是把已缓存的基座从磁盘读入内存（首次约数十秒），不是重新联网下模型；同一进程内再次推理会快很多。下拉里每条训练成功任务使用「该次成功时步数最大的 checkpoint」对应路径，同目录下后续新 checkpoint 不会自动切换。"
-      style="margin-bottom: 12px"
-    />
-    <a-row :gutter="16">
-      <a-col :span="10">
-        <a-form layout="vertical">
-          <a-form-item label="训练成功的任务（LoRA）">
-            <a-select
-              v-model:value="modelId"
-              :options="models.map((m) => ({ value: m.id, label: m.label }))"
-              :filter-option="filterTrainingOption"
-              show-search
-              allow-clear
-              style="width: 100%"
-            />
-          </a-form-item>
-          <a-form-item label="基座模型/合并目录（随上项自动填充）">
-            <a-input v-model:value="base" disabled />
-          </a-form-item>
-          <a-form-item label="LoRA 相对路径（随上项自动填充，合并模型为空）">
-            <a-input v-model:value="adapter" disabled placeholder="—" />
-          </a-form-item>
-          <a-space>
-            <a-button type="primary" :loading="loadModelLoading" @click="loadSelectedModel">加载模型</a-button>
-            <a-button :loading="unloadModelLoading" @click="unloadSelectedModel">卸载模型</a-button>
-          </a-space>
-          <a-divider />
-          <a-row :gutter="16" class="playground-image-token-row">
-            <a-col :span="12">
-              <a-form-item label="图片（单张，可拖拽或点击选择）">
-                <input
-                  ref="fileInputRef"
-                  type="file"
-                  class="playground-image-input"
-                  :accept="IMAGE_ACCEPT"
-                  @change="onImageChange"
-                />
-                <div
-                  class="playground-image-drop"
-                  :class="{ 'playground-image-drop--filled': imageFile }"
-                  @dragover="onDragOverImage"
-                  @drop="onDropImage"
-                >
-                  <template v-if="!imageFile">
-                    <div class="playground-image-empty" @click="triggerFileInput">
-                      <span class="playground-image-empty__hint">将图片拖到这里，或点击选择</span>
-                      <span class="playground-image-empty__sub">仅 1 张，png / jpg / webp / gif / bmp，约 25MB 内</span>
-                    </div>
-                  </template>
-                  <div v-else class="playground-image-filled">
-                    <a-image
-                      v-if="imageObjectUrl"
-                      class="playground-image-thumb"
-                      :src="imageObjectUrl"
-                      :width="96"
-                      :height="96"
-                      alt=""
-                      :preview="true"
-                    />
-                    <div class="playground-image-filled__meta">
-                      <div class="playground-image-filled__name" :title="imageFile.name">
-                        {{ imageFile.name }}
+  <a-modal
+    v-model:open="verifyOpen"
+    title="LoRA 验证"
+    width="min(1200px, 96vw)"
+    :footer="null"
+    destroy-on-close
+    :body-style="modalBody"
+    @cancel="emit('verifyClosed')"
+  >
+    <div>
+      <a-alert
+        type="info"
+        show-icon
+        message="LoRA 在基座之上推理。终端里「Loading weights」是把已缓存的基座从磁盘读入内存（首次约数十秒），不是重新联网下模型；同一进程内再次推理会快很多。下拉里每条训练成功任务使用「该次成功时步数最大的 checkpoint」对应路径，同目录下后续新 checkpoint 不会自动切换。"
+        style="margin-bottom: 12px"
+      />
+      <a-row :gutter="16">
+        <a-col :span="10">
+          <a-form layout="vertical">
+            <a-form-item label="训练成功的任务（LoRA）">
+              <a-select
+                v-model:value="modelId"
+                :options="models.map((m) => ({ value: m.id, label: m.label }))"
+                :filter-option="filterTrainingOption"
+                show-search
+                allow-clear
+                disabled
+                style="width: 100%"
+              />
+            </a-form-item>
+            <a-form-item label="基座模型/合并目录（随上项自动填充）">
+              <a-input v-model:value="base" disabled />
+            </a-form-item>
+            <a-form-item label="LoRA 相对路径（随上项自动填充，合并模型为空）">
+              <a-input v-model:value="adapter" disabled placeholder="—" />
+            </a-form-item>
+            <a-space>
+              <a-button type="primary" :loading="loadModelLoading" @click="loadSelectedModel">加载模型</a-button>
+              <a-button :loading="unloadModelLoading" @click="unloadSelectedModel">卸载模型</a-button>
+            </a-space>
+            <a-divider />
+            <a-row :gutter="16" class="playground-image-token-row">
+              <a-col :span="12">
+                <a-form-item label="图片（单张，可拖拽或点击选择）">
+                  <input
+                    ref="fileInputRef"
+                    type="file"
+                    class="playground-image-input"
+                    :accept="IMAGE_ACCEPT"
+                    @change="onImageChange"
+                  />
+                  <div
+                    class="playground-image-drop"
+                    :class="{ 'playground-image-drop--filled': imageFile }"
+                    @dragover="onDragOverImage"
+                    @drop="onDropImage"
+                  >
+                    <template v-if="!imageFile">
+                      <div class="playground-image-empty" @click="triggerFileInput">
+                        <span class="playground-image-empty__hint">将图片拖到这里，或点击选择</span>
+                        <span class="playground-image-empty__sub">仅 1 张，png / jpg / webp / gif / bmp，约 25MB 内</span>
                       </div>
-                      <a-space :size="4" wrap>
-                        <a-button type="link" size="small" class="playground-image-filled__change" @click="triggerFileInput">
-                          更换
-                        </a-button>
-                        <a-button
-                          type="link"
-                          danger
-                          size="small"
-                          class="playground-image-filled__remove"
-                          @click="clearImage"
-                        >
-                          <template #icon><DeleteOutlined /></template>
-                          删除
-                        </a-button>
-                      </a-space>
+                    </template>
+                    <div v-else class="playground-image-filled">
+                      <a-image
+                        v-if="imageObjectUrl"
+                        class="playground-image-thumb"
+                        :src="imageObjectUrl"
+                        :width="96"
+                        :height="96"
+                        alt=""
+                        :preview="true"
+                      />
+                      <div class="playground-image-filled__meta">
+                        <div class="playground-image-filled__name" :title="imageFile.name">
+                          {{ imageFile.name }}
+                        </div>
+                        <a-space :size="4" wrap>
+                          <a-button type="link" size="small" class="playground-image-filled__change" @click="triggerFileInput">
+                            更换
+                          </a-button>
+                          <a-button
+                            type="link"
+                            danger
+                            size="small"
+                            class="playground-image-filled__remove"
+                            @click="clearImage"
+                          >
+                            <template #icon><DeleteOutlined /></template>
+                            删除
+                          </a-button>
+                        </a-space>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </a-form-item>
-            </a-col>
-            <a-col :span="12">
-              <a-form-item label="max_new_tokens">
-                <a-input-number v-model:value="maxNew" :min="8" :max="4096" style="width: 100%" />
-              </a-form-item>
-            </a-col>
-          </a-row>
-          <a-form-item label="提示词">
-            <a-textarea v-model:value="prompt" :rows="4" />
-          </a-form-item>
-          <a-button type="primary" :loading="loading" @click="send">发送</a-button>
-        </a-form>
-      </a-col>
-      <a-col :span="10">
-        <a-typography-title :level="5">回答</a-typography-title>
-        <a-textarea v-model:value="reply" :rows="18" readonly placeholder="多模态输出将显示在这里" />
-      </a-col>
-    </a-row>
-  </div>
+                </a-form-item>
+              </a-col>
+              <a-col :span="12">
+                <a-form-item label="max_new_tokens">
+                  <a-input-number v-model:value="maxNew" :min="8" :max="4096" style="width: 100%" />
+                </a-form-item>
+              </a-col>
+            </a-row>
+            <a-form-item label="提示词">
+              <a-textarea v-model:value="prompt" :rows="4" />
+            </a-form-item>
+            <a-button type="primary" :loading="loading" @click="send">发送</a-button>
+          </a-form>
+        </a-col>
+        <a-col :span="10">
+          <a-typography-title :level="5">回答</a-typography-title>
+          <a-textarea v-model:value="reply" :rows="18" readonly placeholder="多模态输出将显示在这里" />
+        </a-col>
+      </a-row>
+    </div>
+  </a-modal>
 </template>
 
 <style scoped>

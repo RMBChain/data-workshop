@@ -6,7 +6,9 @@ import { apiErrorDetail, http } from "../api/http";
 import TrainJobCard from "../components/train/TrainJobCard.vue";
 import TrainJobNameModal from "../components/train/TrainJobNameModal.vue";
 import TrainMergeLogModal from "../components/train/TrainMergeLogModal.vue";
-import TrainVerifyEvalModals from "../components/train/TrainVerifyEvalModals.vue";
+import TrainMergeStartModal from "../components/train/TrainMergeStartModal.vue";
+import TrainEvalModal from "../components/train/TrainEvalModal.vue";
+import TrainVerifyModal from "../components/train/TrainVerifyModal.vue";
 import TrainingFormPanel from "../components/TrainingFormPanel.vue";
 import {
   mergeMergedOutputPathText,
@@ -14,6 +16,7 @@ import {
   trainingJobNameText,
 } from "./train/trainFormatters";
 import type { MergeUiStatus } from "./train/trainTypes";
+import type { TrainCardMergeOverrides } from "./train/useTrainMerge";
 import { useTrainMerge } from "./train/useTrainMerge";
 
 const verifyModalOpen = ref(false);
@@ -169,6 +172,34 @@ function mergeUiStatusForRecord(record: Record<string, unknown>): MergeUiStatus 
   const id = String(record.id ?? "").trim();
   return mergeStatusByJobId.value[id] ?? "none";
 }
+
+const mergeStartModalOpen = ref(false);
+const mergeStartModalRecord = ref<Record<string, unknown> | null>(null);
+
+function onTrainJobMerge(record: Record<string, unknown>) {
+  if (mergeUiStatusForRecord(record) === "merging") {
+    void runMergeFromTrainCard(record);
+    return;
+  }
+  mergeStartModalRecord.value = record;
+  mergeStartModalOpen.value = true;
+}
+
+function onMergeStartConfirm(payload: TrainCardMergeOverrides) {
+  const rec = mergeStartModalRecord.value;
+  if (!rec) return;
+  void runMergeFromTrainCard(rec, payload);
+}
+
+function dismissTrainFollowupModals() {
+  verifyModalOpen.value = false;
+  verifyPrefillJobId.value = null;
+  evalModalOpen.value = false;
+  evalPrefillJobId.value = null;
+  mergeStartModalOpen.value = false;
+  mergeStartModalRecord.value = null;
+  mergeLogModalOpen.value = false;
+}
 </script>
 
 <template>
@@ -219,7 +250,7 @@ function mergeUiStatusForRecord(record: Record<string, unknown>): MergeUiStatus 
         @train="selectJob"
         @verify="openVerifyModal"
         @eval="openEvalModal"
-        @merge="runMergeFromTrainCard"
+        @merge="onTrainJobMerge"
       />
     </div>
     <a-empty v-else description="暂无训练任务。请点击右上角「+」新建训练。" style="margin-bottom: 16px" />
@@ -231,13 +262,22 @@ function mergeUiStatusForRecord(record: Record<string, unknown>): MergeUiStatus 
       @save="saveTrainingJobName"
     />
 
-    <TrainVerifyEvalModals
+    <TrainVerifyModal
       v-model:verify-open="verifyModalOpen"
-      v-model:eval-open="evalModalOpen"
       :verify-prefill-job-id="verifyPrefillJobId"
-      :eval-prefill-job-id="evalPrefillJobId"
       @verify-closed="onVerifyModalClosed"
+    />
+
+    <TrainEvalModal
+      v-model:eval-open="evalModalOpen"
+      :eval-prefill-job-id="evalPrefillJobId"
       @eval-closed="onEvalModalClosed"
+    />
+
+    <TrainMergeStartModal
+      v-model:open="mergeStartModalOpen"
+      :record="mergeStartModalRecord"
+      @start="onMergeStartConfirm"
     />
 
     <TrainMergeLogModal v-model:open="mergeLogModalOpen" :loading="mergeLogLoading" :text="mergeLogModalText" />
@@ -249,6 +289,7 @@ function mergeUiStatusForRecord(record: Record<string, unknown>): MergeUiStatus 
       :job-name-prefill="jobNamePrefillForForm"
       :new-train-open-seq="newTrainOpenSeq"
       @refresh-jobs="refreshJobs"
+      @train-followups-dismiss="dismissTrainFollowupModals"
     />
   </div>
 </template>

@@ -79,7 +79,7 @@ class TrainJobCreate(BaseModel):
     tuner_backend: str = ""
     merge_lora: bool = False
     adapters: str = Field(default="", description="逗号分隔的 adapter 路径，传给 swift --adapters")
-    # 与 ms-swift 一致；仅「继续训练」时写入，为相对仓库根目录的 checkpoint 路径
+    # 与 ms-swift 一致；断点续训（手动指定）时写入，为相对工作区根目录的 checkpoint 路径
     resume_from_checkpoint: str | None = Field(default=None, description="从该 checkpoint 目录继续，如 train/.../checkpoint-8")
     # 仅用于列表/展示，不参与 train.py 命令行
     job_name: str = Field(default="", description="展示用：训练任务名称")
@@ -572,11 +572,18 @@ class TrainingJobManager:
         threading.Thread(target=_wait, daemon=True).start()
         return self._jobs[job_id]
 
-    def start_params_saved_job(self, job_id: str) -> TrainJob | None:
-        """将 parameters_saved 任务启动为真实训练（同 create_job 子进程）。"""
+    def start_job_training(self, job_id: str) -> TrainJob | None:
+        """对已落库的同一训练 id 拉起子进程：仅保存参数、或已成功/失败/取消后的再次开训。调用前应先写入最新表单参数。"""
+        jid = (job_id or "").strip()
+        if not jid:
+            return None
+        from backend.app.services.merge_job_manager import get_merge_manager
+
+        startable = ("parameters_saved", "succeeded", "failed", "cancelled")
+        get_merge_manager().clear_training_merge_association(jid)
         with self._lock:
-            job = self._jobs.get(job_id)
-            if not job or job.status != "parameters_saved" or not isinstance(job.request, dict):
+            job = self._jobs.get(jid)
+            if not job or job.status not in startable or not isinstance(job.request, dict):
                 return None
         try:
             body = TrainJobCreate.model_validate(job.request)
@@ -585,21 +592,25 @@ class TrainingJobManager:
         rfc = body.resume_from_checkpoint
         if not (isinstance(rfc, str) and rfc.strip()):
             body = body.model_copy(update={"output_dir": "train/"})
-        body = _resolve_output_dir_for_new_job(body, job_id)
+        body = _resolve_output_dir_for_new_job(body, jid)
         jobs_dir = self._workspace / "output" / "workshop-jobs"
         jobs_dir.mkdir(parents=True, exist_ok=True)
-        log_path = jobs_dir / f"{job_id}.log"
+        log_path = jobs_dir / f"{jid}.log"
         with self._lock:
-            j = self._jobs.get(job_id)
-            if not j or j.status != "parameters_saved":
+            j = self._jobs.get(jid)
+            if not j or j.status not in startable or not isinstance(j.request, dict):
                 return None
             j.log_path = log_path
             j.status = "pending"
+            j.finished_at = None
+            j.return_code = None
+            j.error_message = None
+            j.process = None
             req = body.model_dump()
             req["workshop_training_started_at"] = time.time()
             j.request = req
-        self._save_job_to_db(self._jobs[job_id])
-        return self._spawn_train_worker(job_id, body)
+        self._save_job_to_db(self._jobs[jid])
+        return self._spawn_train_worker(jid, body)
 
     def create_job(self, body: TrainJobCreate) -> TrainJob:
         job_id = str(uuid.uuid4())
@@ -670,7 +681,7 @@ class TrainingJobManager:
             out_rel: str | None = None
             if j.request and isinstance(j.request.get("output_dir"), str):
                 out_rel = j.request["output_dir"]
-            # 多个任务可共享同一 output_dir（如「继续训练」新旧两条记录）；仅当再无其它任务引用时才删目录
+            # 多个任务可共享同一 output_dir；仅当再无其它任务引用时才删目录
             out_key = _norm_output_dir_key(str(out_rel)) if out_rel else ""
             share_with_others = False
             if out_key:
@@ -704,20 +715,6 @@ class TrainingJobManager:
             j.request["job_name"] = name
         self._save_job_to_db(j)
         return j
-
-    def retry_job(self, job_id: str) -> TrainJob | None:
-        """失败/取消后的「继续训练」：同一套超参 + 同一 output_dir，从最新 checkpoint 恢复。"""
-        j = self.get_job(job_id)
-        if not j or not j.request:
-            return None
-        if j.status not in ("failed", "cancelled"):
-            return None
-        body = TrainJobCreate.model_validate(j.request)
-        ckpt = _latest_checkpoint_relpath(self._workspace, body.output_dir)
-        if not ckpt:
-            return None
-        body = body.model_copy(update={"resume_from_checkpoint": ckpt})
-        return self.create_job(body)
 
     def _build_command(self, body: TrainJobCreate) -> list[str]:
         exe = sys.executable

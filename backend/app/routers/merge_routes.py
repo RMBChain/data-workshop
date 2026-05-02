@@ -6,13 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
 
 from backend.app.db import (
     get_connection,
-    merge_export_merged_path_map,
-    merge_export_zip_get,
-    merge_export_zip_map,
     merge_job_get_latest_by_training_id,
 )
 from backend.app.deps import WorkspaceRoot
@@ -75,8 +71,7 @@ async def list_merge_training_candidates(root: WorkspaceRoot) -> dict[str, Any]:
 async def get_merge_training_status(root: WorkspaceRoot) -> dict[str, Any]:
     """各训练 job_id 对应的 LoRA 合并态：未合并 / 合并中 / 已取消 / 失败 / 成功。
     内存中最新 MergeJob 优先；无内存记录时以 SQLite `dws_merges`（训练行 merge_id）持久化结果为准（不扫磁盘）。
-    output_path_by_job_id：成功时来自合并任务 request.output_path、打包表 merged_model_relpath 等。
-    zip_path_by_job_id：合并成功且已打包入库时非 null（工作区相对路径）。"""
+    output_path_by_job_id：成功时来自合并任务 request.output_path 等。"""
     t_all = time.perf_counter()
     conn = get_connection(root.resolve())
     t_rows = time.perf_counter()
@@ -86,34 +81,14 @@ async def get_merge_training_status(root: WorkspaceRoot) -> dict[str, Any]:
     m = get_merge_manager()
     by_jid, output_by_jid = training_merge_status_by_job_id(root, rows, m, conn)
     ms_status = (time.perf_counter() - t_status) * 1000
-    t_db = time.perf_counter()
-    jids = [str(r.get("job_id") or "").strip() for r in rows if str(r.get("job_id") or "").strip()]
-    zip_by = merge_export_zip_map(conn, jids)
-    merged_path_by = merge_export_merged_path_map(conn, jids)
-    ms_db = (time.perf_counter() - t_db) * 1000
-    for jid in jids:
-        if not jid:
-            continue
-        if not zip_by.get(jid):
-            continue
-        st = by_jid.get(jid, "none")
-        if st == "none":
-            by_jid[jid] = "success"
-        o = output_by_jid.get(jid)
-        if o is not None and str(o).strip():
-            continue
-        mp = merged_path_by.get(jid)
-        if mp and str(mp).strip():
-            output_by_jid[jid] = str(mp).strip().replace("\\", "/")
     ms_total = (time.perf_counter() - t_all) * 1000
     merging_n = sum(1 for s in by_jid.values() if s == "merging")
     _merge_route_log.info(
         "GET /merge/training-status: rows=%d list_rows_ms=%.1f status_compute_ms=%.1f "
-        "sqlite_ms=%.1f total_ms=%.1f merging=%d workspace=%s",
+        "total_ms=%.1f merging=%d workspace=%s",
         len(rows),
         ms_rows,
         ms_status,
-        ms_db,
         ms_total,
         merging_n,
         root.resolve(),
@@ -121,7 +96,6 @@ async def get_merge_training_status(root: WorkspaceRoot) -> dict[str, Any]:
     return {
         "status_by_job_id": by_jid,
         "output_path_by_job_id": output_by_jid,
-        "zip_path_by_job_id": zip_by,
     }
 
 
@@ -188,18 +162,6 @@ async def get_merge_logs_for_training_job(root: WorkspaceRoot, training_job_id: 
         (time.perf_counter() - t0) * 1000,
     )
     return {"text": "", "truncated": False, "merge_job_id": mid}
-
-
-@router.get("/merge/training-jobs/{training_job_id}/export-zip")
-async def download_merge_export_zip(root: WorkspaceRoot, training_job_id: str) -> FileResponse:
-    conn = get_connection(root.resolve())
-    rel = merge_export_zip_get(conn, training_job_id)
-    if not rel:
-        raise HTTPException(status_code=404, detail="暂无导出包，请先成功完成合并")
-    path = resolve_under_workspace(root, rel)
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="导出文件不存在，请重新合并")
-    return FileResponse(str(path), filename=path.name, media_type="application/zip")
 
 
 @router.get("/merge/jobs/{job_id}")

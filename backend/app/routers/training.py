@@ -13,12 +13,7 @@ from backend.app.deps import WorkspaceRoot, get_workspace_root
 from backend.app.db import get_connection
 from backend.app.routers.datasets import _version_split_counts
 from backend.app.services import modelscope_manager as mscm
-from backend.app.services.job_manager import (
-    TrainJobCreate,
-    TrainingJobManager,
-    _latest_checkpoint_relpath,
-    get_training_manager,
-)
+from backend.app.services.job_manager import TrainJobCreate, TrainingJobManager, get_training_manager
 from backend.app.services.training_metrics import (
     build_training_stages,
     parse_training_log_metrics,
@@ -165,16 +160,18 @@ async def create_params_only_training_job(request: Request) -> dict:
 
 @router.post("/training/jobs/{job_id}/start")
 async def start_training_from_params_job(job_id: str) -> dict:
-    """将 parameters_saved 任务按当前 request 启训练，与开始训练不重复建 id。"""
+    """将已有任务按当前库内 request 启训练（不新建 id）；须先 POST /training/form-params 写入最新表单。"""
     m = _manager_singleton()
     j0 = m.get_job(job_id)
     if not j0:
         raise HTTPException(status_code=404, detail="任务不存在")
-    if j0.status != "parameters_saved":
+    if j0.status in ("pending", "running"):
         raise HTTPException(
             status_code=400,
-            detail="该任务不是「仅保存参数」待启动状态。请直接用「开始训练」从当前表单创建新任务。",
+            detail="该任务仍在排队或训练中，无法再次开始。请先取消或等待结束后再试。",
         )
+    if j0.status not in ("parameters_saved", "succeeded", "failed", "cancelled"):
+        raise HTTPException(status_code=400, detail="当前任务状态不可从此入口启动训练")
     req0 = j0.request or {}
     mod = req0.get("model")
     mid = (str(mod) if mod is not None else "").strip()
@@ -184,7 +181,7 @@ async def start_training_from_params_job(job_id: str) -> dict:
             detail="请先在「设置 → 模型管理」中成功下载至少一个模型，并在表单中选择该模型。",
         )
     _require_model_downloaded_in_hub(mid)
-    job = m.start_params_saved_job(job_id)
+    job = m.start_job_training(job_id)
     if not job:
         raise HTTPException(status_code=400, detail="无法启动训练，请检查任务参数后重试。")
     req = job.request or {}
@@ -254,35 +251,6 @@ async def delete_training_job(job_id: str) -> dict:
     if not ok:
         raise HTTPException(status_code=400, detail="仅可删除已结束且非运行中任务，或请先用取消。")
     return {"ok": True}
-
-
-@router.post("/training/jobs/{job_id}/retry")
-async def retry_training_job(root: WorkspaceRoot, job_id: str) -> dict:
-    """与 UI「继续训练」一致：在相同 output_dir 上从最新 checkpoint 恢复，而非清空目录重训。"""
-    m = _manager_singleton()
-    old = m.get_job(job_id)
-    if not old or not old.request:
-        raise HTTPException(status_code=404, detail="原任务不存在或参数缺失")
-    if old.status not in ("failed", "cancelled"):
-        raise HTTPException(status_code=400, detail="仅失败或已取消的任务可继续训练")
-    mod = old.request.get("model")
-    if isinstance(mod, str):
-        _require_model_downloaded_in_hub(mod)
-    body = TrainJobCreate.model_validate(old.request)
-    if not _latest_checkpoint_relpath(root, body.output_dir):
-        raise HTTPException(
-            status_code=400,
-            detail="输出目录中未找到可恢复的 checkpoint（如 checkpoint-8）。若尚未产生断点，请重新发起训练。",
-        )
-    j = m.retry_job(job_id)
-    if not j:
-        raise HTTPException(status_code=400, detail="无法继续训练（请重试或检查输出目录与 checkpoint）")
-    return {
-        "id": j.id,
-        "status": j.status,
-        "log_path": str(j.log_path) if j.log_path else None,
-        "error_message": j.error_message,
-    }
 
 
 @router.get("/training/jobs/{job_id}/metrics")

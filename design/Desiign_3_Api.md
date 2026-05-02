@@ -71,7 +71,7 @@
 
 - 库路径固定为 **`{workspace_root}/state/workshop.db`**（由 **`workspace_root`** 推导，不提供单独数据库路径的环境变量）。
 - 大文件、JSONL、权重、日志全文仍落盘工作区；库内为批次、版本、任务状态与索引。
-- 业务表名均带前缀 **`dws_`**，与 `backend/app/db.py` 中 DDL 一致：`dws_app_kv`、`dws_datasets`、`dws_trains`、`dws_merge_jobs`、`dws_merge_export_zips`、`dws_eval_jobs`、`dws_inference_sessions`。
+- 业务表名均带前缀 **`dws_`**，与 `backend/app/db.py` 中 DDL 一致：`dws_app_kv`、`dws_datasets`、`dws_trains`、`dws_merges`、`dws_eval_jobs`、`dws_inference_sessions`。
 
 ### 1.7 调用 ms-swift（CLI 子进程）
 
@@ -220,10 +220,9 @@
 | POST | `/api/merge/jobs/{job_id}/cancel` | 取消 | **已实现** |
 | POST | `/api/merge/jobs/{job_id}/validate` | 合并后校验 | **已实现** |
 | GET | `/api/merge/training-candidates` | 训练产物候选 | **已实现** |
-| GET | `/api/merge/training-status` | 训练状态聚合 | **已实现** |
+| GET | `/api/merge/training-status` | 各训练任务的合并 UI 态及成功时的 `output_path_by_job_id`（`status_by_job_id` 同响应）；合并产物为工作区内目录，不提供 zip 包下载 | **已实现** |
 | GET | `/api/merge/training-jobs/{training_job_id}/train-run-logs` | 训练 run 日志 | **已实现** |
-| GET | `/api/merge/training-jobs/{training_job_id}/logs` | 训练日志 | **已实现** |
-| GET | `/api/merge/training-jobs/{training_job_id}/export-zip` | 导出 zip | **已实现** |
+| GET | `/api/merge/training-jobs/{training_job_id}/logs` | 合并任务日志 | **已实现** |
 
 ---
 
@@ -247,7 +246,7 @@
 | GET | `/api/exports/artifacts` | 汇总 HF 兼容权重路径（需求 §6） | **规划** |
 
 当前导出由以下分散接口承担（非单一汇总路由）：
-- **合并**：相关 **zip** 导出路由（见 §10）。
+- **合并**：无单独打包下载；产物目录为工作区相对路径（如 `merged/{training_job_id}`），由界面或文件系统直接使用。
 - **评测**：报告 **export** 路由（见 §11）。
 - **训练**：**YAML export**、产物路径类接口（见 §7）。
 

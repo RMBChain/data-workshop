@@ -5,6 +5,12 @@ import type { MergeUiStatus } from "./trainTypes";
 import { MERGE_DEFAULT_BASE } from "./trainTypes";
 import { mergeOutputRelForTrainingJob, parseMergeUiStatus } from "./trainFormatters";
 
+/** 与训练卡合并确认框一致，对应 POST /api/merge/jobs 中的 base_model_path、merge_lora_only */
+export type TrainCardMergeOverrides = {
+  base_model_path: string;
+  merge_lora_only: boolean;
+};
+
 export function useTrainMerge() {
   const mergeStatusByJobId = ref<Record<string, MergeUiStatus>>({});
   /** 仅合并成功时由 GET /api/merge/training-status 的 output_path_by_job_id 提供实际输出路径 */
@@ -116,8 +122,11 @@ export function useTrainMerge() {
     mergePollTrainingJobId.value = null;
   }
 
-  /** 与 Merge.vue 卡片「合并成全量模型」一致：`merge_lora_only: true` + 轮询合并任务 */
-  async function runMergeFromTrainCard(record: Record<string, unknown>) {
+  /** 与合并页卡片逻辑一致；可在确认框中传入基座与 merge_lora_only */
+  async function runMergeFromTrainCard(
+    record: Record<string, unknown>,
+    overrides?: TrainCardMergeOverrides,
+  ) {
     const tid = String(record.id ?? "").trim();
     if (!tid) return;
 
@@ -156,16 +165,18 @@ export function useTrainMerge() {
 
       stopTrainPageMergePoll();
 
-      const trainBase =
+      const trainBaseDefault =
         typeof row.train_base_model === "string" && row.train_base_model.trim()
           ? row.train_base_model.trim()
           : MERGE_DEFAULT_BASE;
+      const baseModelPath = (overrides?.base_model_path ?? trainBaseDefault).trim() || MERGE_DEFAULT_BASE;
+      const mergeLoraOnly = overrides?.merge_lora_only ?? true;
 
       const createRes = await http.post("/api/merge/jobs", {
-        base_model_path: trainBase,
+        base_model_path: baseModelPath,
         lora_paths: [path],
         output_path: mergeOutputRelForTrainingJob(tid),
-        merge_lora_only: true,
+        merge_lora_only: mergeLoraOnly,
         training_job_id: tid,
       });
       const mergeJobId = String(createRes.data?.id ?? "").trim();

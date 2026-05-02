@@ -40,6 +40,8 @@ function openResourceInfoModal() {
 }
 const emit = defineEmits<{
   (e: "refresh-jobs"): void;
+  /** 在当前任务上点开始训练前：收起验证 / 评测 / 合并等侧栏弹层 */
+  (e: "train-followups-dismiss"): void;
 }>();
 
 const router = useRouter();
@@ -843,18 +845,10 @@ async function startTraining() {
     return;
   }
   const cid = (currentJobId.value ?? "").trim();
-  const listRow = cid
-    ? (props.jobs.find((j) => (j as { id?: string }).id === cid) as { status?: string } | undefined)
-    : undefined;
-  const useStartFromSaved =
-    Boolean(cid) &&
-    (listRow?.status === "parameters_saved" ||
-      (!listRow && jobStatus.value === "parameters_saved"));
-
   submitting.value = true;
   try {
-    if (useStartFromSaved) {
-      // 后端 /start 只读库里已存的 request；表单里选的模型若不先写入，仍为旧任务里的空 model。
+    if (cid) {
+      emit("train-followups-dismiss");
       await http.post("/api/training/form-params", buildTrainJobRequestBody(), {
         params: { job_id: cid },
       });
@@ -911,18 +905,6 @@ async function cancelJob() {
   message.success("已请求取消");
   await refreshLogs();
   emit("refresh-jobs");
-}
-
-async function continueTraining() {
-  if (!currentJobId.value) return;
-  try {
-    const r = await http.post<{ id: string }>(`/api/training/jobs/${currentJobId.value}/retry`);
-    currentJobId.value = r.data.id;
-    message.success("已从断点继续训练（新任务）");
-    emit("refresh-jobs");
-  } catch (e: unknown) {
-    message.error(apiErrorDetail(e) ?? String(e));
-  }
 }
 
 watch(
@@ -1024,7 +1006,6 @@ watch(
             >开始训练</a-button
           >
           <a-button size="small" :disabled="!currentJobId" @click="cancelJob">停止</a-button>
-          <a-button size="small" :disabled="!currentJobId" @click="continueTraining">继续训练</a-button>
           <a-button size="small" @click="applyYaml">从 YAML 导入配置</a-button>
           <a-button size="small" @click="downloadYaml">导出 YAML 配置</a-button>
           <a-button size="small" @click="openResourceInfoModal">资源信息</a-button>
@@ -1668,7 +1649,7 @@ watch(
                 <template #label>
                   <span style="display: inline-flex; align-items: center; gap: 4px">
                     resume_from_checkpoint
-                    <a-tooltip title="断点目录（工作区相对路径）。「继续训练」会自动填入最新 checkpoint。">
+                    <a-tooltip title="断点目录（工作区相对路径）；训练子进程通过 --resume_from_checkpoint 传给 ms-swift，需手动填写。">
                       <QuestionCircleOutlined
                         style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
                         aria-label="resume 说明"

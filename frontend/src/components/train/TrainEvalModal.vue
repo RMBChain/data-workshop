@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import { message } from "ant-design-vue";
-import { computed, onMounted, ref, watch } from "vue";
-import { http } from "../api/http";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { http } from "../../api/http";
 
-const props = withDefaults(
-  defineProps<{
-    /** 在 Modal 等场景中嵌入时为 true，不显示页面级标题 */
-    embedded?: boolean;
-    /** 与训练任务 id 一致时，优先选中 `merged/{id}` 对应的合并产物 */
-    prefillJobId?: string | null;
-  }>(),
-  { embedded: false, prefillJobId: null },
-);
+const evalOpen = defineModel<boolean>("evalOpen", { required: true });
+
+const props = defineProps<{
+  evalPrefillJobId: string | null;
+}>();
+
+const emit = defineEmits<{
+  evalClosed: [];
+}>();
+
+const modalBody = { maxHeight: "calc(100vh - 140px)", overflow: "auto", paddingTop: "12px" };
 
 type MergedModelRow = {
   id: string;
@@ -34,7 +36,7 @@ const bleu = ref(true);
 const rouge = ref(true);
 const job = ref<Record<string, unknown> | null>(null);
 const items = ref<Record<string, unknown>[]>([]);
-let t: ReturnType<typeof setInterval> | null = null;
+let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 function filterMergedOption(input: string, option: { value?: string | null }) {
   const q = input.trim().toLowerCase();
@@ -57,7 +59,7 @@ function mergedPathMatchesTrainingJob(pathRaw: string, trainingJobId: string): b
 }
 
 function applyPrefillJobId() {
-  const tid = (props.prefillJobId ?? "").trim();
+  const tid = (props.evalPrefillJobId ?? "").trim();
   if (!tid || !mergedModels.value.length) return;
   const hit = mergedModels.value.find((m) => mergedPathMatchesTrainingJob(m.path, tid));
   if (hit) selectedMergedPath.value = hit.path;
@@ -120,8 +122,15 @@ onMounted(() => {
   void loadMergedModels();
 });
 
+onBeforeUnmount(() => {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+});
+
 watch(
-  () => props.prefillJobId,
+  () => props.evalPrefillJobId,
   () => applyPrefillJobId(),
 );
 
@@ -143,12 +152,13 @@ async function start() {
   });
   const jid = r.data.job_id as string;
   job.value = { id: jid, status: "pending" };
-  if (t) clearInterval(t);
-  t = setInterval(async () => {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
     const s = await http.get(`/api/eval/jobs/${jid}`);
     job.value = s.data;
     if (s.data.status === "succeeded") {
-      if (t) clearInterval(t);
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = null;
       const it = await http.get(`/api/eval/jobs/${jid}/items`, { params: { page: 1, page_size: 50 } });
       items.value = it.data.items;
       message.success("评测完成");
@@ -158,74 +168,83 @@ async function start() {
 </script>
 
 <template>
-  <div>
-    <a-typography-title v-if="!embedded" :level="4">评测</a-typography-title>
-    <a-alert
-      type="info"
-      show-icon
-      message="评测合并后的LoRA模型。"
-      style="margin-bottom: 12px"
-    />
-    <a-form layout="vertical" style="max-width: 480px">
-      <a-form-item label="通过 LoRA 合并的模型">
-        <a-select
-          v-model:value="selectedMergedPath"
-          allow-clear
-          show-search
-          :filter-option="filterMergedOption"
-          :loading="mergedModelsLoading"
-          :options="
-            mergedModels.map((m) => ({
-              value: m.path,
-              label: m.label,
-            }))
-          "
-          placeholder="选择合并产物后自动填充下方验证集路径"
-        />
-      </a-form-item>
-      <a-form-item label="验证集 JSONL（工作区相对）">
-        <a-input
-          v-model:value="dataPath"
-          placeholder="选择上方合并模型后，按该次合并所用训练的数据集版本自动填入 val"
-        />
-        <a-typography-text
-          v-if="selectedMergedModel?.dataset_version_id || selectedMergedModel?.merge_job_id"
-          type="secondary"
-          style="display: block; margin-top: 6px; font-size: 12px"
-        >
-          <template v-if="selectedMergedModel?.merge_job_id"
-            >合并任务 id：{{ selectedMergedModel.merge_job_id }} ·
-          </template>
-          <template v-if="selectedMergedModel?.dataset_version_id"
-            >数据集版本 id：{{ selectedMergedModel.dataset_version_id }}（val 来自该版本在库中的 <code>val</code> 路径）</template
+  <a-modal
+    v-model:open="evalOpen"
+    title="评测"
+    width="min(1200px, 96vw)"
+    :footer="null"
+    destroy-on-close
+    :body-style="modalBody"
+    @cancel="emit('evalClosed')"
+  >
+    <div>
+      <a-alert
+        type="info"
+        show-icon
+        message="评测合并后的LoRA模型。"
+        style="margin-bottom: 12px"
+      />
+      <a-form layout="vertical" style="max-width: 480px">
+        <a-form-item label="通过 LoRA 合并的模型">
+          <a-select
+            v-model:value="selectedMergedPath"
+            allow-clear
+            show-search
+            :filter-option="filterMergedOption"
+            :loading="mergedModelsLoading"
+            :options="
+              mergedModels.map((m) => ({
+                value: m.path,
+                label: m.label,
+              }))
+            "
+            placeholder="选择合并产物后自动填充下方验证集路径"
+          />
+        </a-form-item>
+        <a-form-item label="验证集 JSONL（工作区相对）">
+          <a-input
+            v-model:value="dataPath"
+            placeholder="选择上方合并模型后，按该次合并所用训练的数据集版本自动填入 val"
+          />
+          <a-typography-text
+            v-if="selectedMergedModel?.dataset_version_id || selectedMergedModel?.merge_job_id"
+            type="secondary"
+            style="display: block; margin-top: 6px; font-size: 12px"
           >
-        </a-typography-text>
-        <a-typography-text v-if="dataPathFull" type="secondary" style="display: block; margin-top: 6px"
-          >完整路径：{{ dataPathFull }}</a-typography-text
-        >
-      </a-form-item>
-      <a-form-item label="指标">
-        <a-checkbox v-model:checked="acc">准确率</a-checkbox>
-        <a-checkbox v-model:checked="bleu">BLEU</a-checkbox>
-        <a-checkbox v-model:checked="rouge">ROUGE</a-checkbox>
-      </a-form-item>
-      <a-button type="primary" @click="start">开始评测</a-button>
-    </a-form>
-    <a-typography-paragraph v-if="job" style="margin-top: 12px"
-      >状态：{{ String((job as { status?: string }).status) }} 概览：{{
-        JSON.stringify((job as { summary?: unknown }).summary)
-      }}</a-typography-paragraph
-    >
-    <a-table
-      v-if="items.length"
-      :columns="[
-        { title: '序号', dataIndex: 'index', key: 'i', width: 60 },
-        { title: '说明', dataIndex: 'message', key: 'm' },
-      ]"
-      :data-source="items as Record<string, unknown>[]"
-      :pagination="false"
-      size="small"
-      row-key="index"
-    />
-  </div>
+            <template v-if="selectedMergedModel?.merge_job_id"
+              >合并任务 id：{{ selectedMergedModel.merge_job_id }} ·
+            </template>
+            <template v-if="selectedMergedModel?.dataset_version_id"
+              >数据集版本 id：{{ selectedMergedModel.dataset_version_id }}（val 来自该版本在库中的 <code>val</code> 路径）</template
+            >
+          </a-typography-text>
+          <a-typography-text v-if="dataPathFull" type="secondary" style="display: block; margin-top: 6px"
+            >完整路径：{{ dataPathFull }}</a-typography-text
+          >
+        </a-form-item>
+        <a-form-item label="指标">
+          <a-checkbox v-model:checked="acc">准确率</a-checkbox>
+          <a-checkbox v-model:checked="bleu">BLEU</a-checkbox>
+          <a-checkbox v-model:checked="rouge">ROUGE</a-checkbox>
+        </a-form-item>
+        <a-button type="primary" @click="start">开始评测</a-button>
+      </a-form>
+      <a-typography-paragraph v-if="job" style="margin-top: 12px"
+        >状态：{{ String((job as { status?: string }).status) }} 概览：{{
+          JSON.stringify((job as { summary?: unknown }).summary)
+        }}</a-typography-paragraph
+      >
+      <a-table
+        v-if="items.length"
+        :columns="[
+          { title: '序号', dataIndex: 'index', key: 'i', width: 60 },
+          { title: '说明', dataIndex: 'message', key: 'm' },
+        ]"
+        :data-source="items as Record<string, unknown>[]"
+        :pagination="false"
+        size="small"
+        row-key="index"
+      />
+    </div>
+  </a-modal>
 </template>

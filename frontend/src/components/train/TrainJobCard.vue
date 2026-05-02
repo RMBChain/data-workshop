@@ -4,7 +4,6 @@ import type { MergeUiStatus } from "../../views/train/trainTypes";
 import { MERGE_STATUS_LABEL } from "../../views/train/trainTypes";
 import {
   formatJobStatus,
-  mergeConfirmDescription,
   mergeStatusTagColor,
   trainingJobCardMeta,
   trainingJobNameTitle,
@@ -101,21 +100,7 @@ function jobId(): string {
         →
         <a-button type="link" @click="$emit('verify', jobId())">验证</a-button>
         →
-        <a-popconfirm
-          v-if="mergeUiStatus !== 'merging'"
-          title="确认合并当前训练结果"
-          ok-text="确定合并"
-          cancel-text="取消"
-          placement="topLeft"
-          :overlay-style="{ maxWidth: 'min(92vw, 480px)' }"
-          @confirm="$emit('merge', record)"
-        >
-          <template #description>
-            <div class="train-merge-confirm-desc">{{ mergeConfirmDescription(record) }}</div>
-          </template>
-          <a-button type="link" :loading="mergeSubmitting" @click.stop>合并</a-button>
-        </a-popconfirm>
-        <a-button v-else type="link" :loading="mergeSubmitting" @click.stop="$emit('merge', record)">
+        <a-button type="link" :loading="mergeSubmitting" @click.stop="$emit('merge', record)">
           合并
         </a-button>
         →
@@ -197,13 +182,6 @@ function jobId(): string {
   min-height: 0;
   height: auto;
   line-height: inherit;
-}
-.train-merge-confirm-desc {
-  white-space: pre-line;
-  font-size: 12px;
-  line-height: 1.55;
-  color: rgba(0, 0, 0, 0.65);
-  max-width: 440px;
 }
 .train-job-card-meta-label {
   flex-shrink: 0;

@@ -4,7 +4,6 @@ import json
 import logging
 import sqlite3
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -35,9 +34,6 @@ _DWS_MERGES_COLUMNS: frozenset[str] = frozenset(
         "log_path",
         "error_message",
         "request_json",
-        "zip_relpath",
-        "export_updated_at",
-        "merged_model_relpath",
     }
 )
 
@@ -175,10 +171,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             finished_at TEXT,
             log_path TEXT,
             error_message TEXT,
-            request_json TEXT,
-            zip_relpath TEXT,
-            export_updated_at TEXT,
-            merged_model_relpath TEXT
+            request_json TEXT
         );
 
         CREATE TABLE IF NOT EXISTS dws_eval_jobs (
@@ -250,76 +243,6 @@ def json_dumps(v: Any) -> str:
 
 def _dedupe_train_ids(training_job_ids: list[str]) -> list[str]:
     return list(dict.fromkeys([str(x).strip() for x in training_job_ids if str(x).strip()]))
-
-
-def _merge_export_col_map(
-    conn: sqlite3.Connection,
-    training_job_ids: list[str],
-    column: str,
-) -> dict[str, str | None]:
-    if column not in ("zip_relpath", "merged_model_relpath"):
-        raise ValueError("invalid column")
-    ids = _dedupe_train_ids(training_job_ids)
-    if not ids:
-        return {}
-    ph = ",".join("?" * len(ids))
-    rows = conn.execute(
-        f"SELECT training_job_id, {column} FROM dws_merges WHERE training_job_id IN ({ph})",
-        ids,
-    ).fetchall()
-    found: dict[str, str] = {}
-    for row in rows or []:
-        jid = str(row[0]).strip()
-        v = row[1]
-        s = str(v).strip().replace("\\", "/") if v is not None and str(v).strip() else ""
-        if jid and s:
-            found[jid] = s
-    return {i: found.get(i) for i in ids}
-
-
-def merge_export_zip_upsert(
-    conn: sqlite3.Connection,
-    training_job_id: str,
-    zip_relpath: str,
-    merged_model_relpath: str | None = None,
-) -> None:
-    tid = (training_job_id or "").strip()
-    if not tid:
-        return
-    rel = (zip_relpath or "").strip().replace("\\", "/")
-    if not rel:
-        return
-    merged = (merged_model_relpath or "").strip().replace("\\", "/") or None
-    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    conn.execute(
-        """
-        UPDATE dws_merges SET
-          zip_relpath = ?,
-          export_updated_at = ?,
-          merged_model_relpath = COALESCE(?, merged_model_relpath)
-        WHERE training_job_id = ?
-        """,
-        (rel, now, merged, tid),
-    )
-    conn.commit()
-
-
-def merge_export_zip_get(conn: sqlite3.Connection, training_job_id: str) -> str | None:
-    tid = (training_job_id or "").strip()
-    if not tid:
-        return None
-    r = conn.execute(
-        "SELECT zip_relpath FROM dws_merges WHERE training_job_id = ?",
-        (tid,),
-    ).fetchone()
-    if not r or r[0] is None:
-        return None
-    s = str(r[0]).strip().replace("\\", "/")
-    return s or None
-
-
-def merge_export_zip_map(conn: sqlite3.Connection, training_job_ids: list[str]) -> dict[str, str | None]:
-    return _merge_export_col_map(conn, training_job_ids, "zip_relpath")
 
 
 def merge_jobs_delete_all_for_training_id(conn: sqlite3.Connection, training_job_id: str) -> None:
@@ -425,10 +348,3 @@ def merge_job_latest_row_per_training_id_map(
         tid = str(d.pop("_train_id"))
         out[tid] = d
     return out
-
-
-def merge_export_merged_path_map(
-    conn: sqlite3.Connection, training_job_ids: list[str]
-) -> dict[str, str | None]:
-    """已打包时记录的「合并后模型」工作区相对目录。"""
-    return _merge_export_col_map(conn, training_job_ids, "merged_model_relpath")

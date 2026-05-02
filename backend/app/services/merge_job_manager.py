@@ -179,7 +179,7 @@ class MergeJobCreate(BaseModel):
     )
     training_job_id: str | None = Field(
         None,
-        description="可选。对应训练任务 job_id；合并成功后将 zip 路径写入关联的 `dws_merges` 行",
+        description="可选。对应训练任务 job_id；合并成功后写入关联的 `dws_merges` 行",
     )
 
 
@@ -279,8 +279,8 @@ class MergeJobManager:
         # RLock：_wait、cancel 在持锁时调用 _persist_merge_job（其内再次 acquire）；用 Lock 会自死锁。
         self._lock = threading.RLock()
 
-    def _retire_merge_jobs_for_training(self, training_job_id: str) -> None:
-        """新建合并前：同一训练下结束进程、清内存并删库内旧记录，只保留即将创建的新任务。"""
+    def clear_training_merge_association(self, training_job_id: str) -> None:
+        """该训练关联的合并：结束内存中子进程并删除 dws_merges / merge_id（新开合并或再开训练前调用）。"""
         tid = (training_job_id or "").strip()
         if not tid:
             return
@@ -348,7 +348,7 @@ class MergeJobManager:
     def create_job(self, body: MergeJobCreate) -> MergeJob:
         tid_in = (body.training_job_id or "").strip() if body.training_job_id else ""
         if tid_in:
-            self._retire_merge_jobs_for_training(tid_in)
+            self.clear_training_merge_association(tid_in)
         job_id = str(uuid.uuid4())
         out_rel, out_err = _merge_output_relpath(body, job_id)
         if out_err:
@@ -479,6 +479,13 @@ class MergeJobManager:
             log_path,
         )
 
+        def _append_merge_job_log(line: str) -> None:
+            try:
+                with open(log_path, "a", encoding="utf-8") as lf:
+                    lf.write(line if line.endswith("\n") else f"{line}\n")
+            except OSError as exc:
+                _merge_log.warning("合并日志追加失败 merge_job_id=%s: %s", job_id, exc)
+
         def _pump() -> None:
             assert proc.stdout is not None
             try:
@@ -493,9 +500,8 @@ class MergeJobManager:
         def _wait() -> None:
             threading.Thread(target=_pump, daemon=True).start()
             code = proc.wait()
-            post_zip_tid: str | None = None
-            post_zip_out: str | None = None
-            final_status = "unknown"
+            cleanup_merged_out: str | None = None
+            dur_s = 0.0
             with self._lock:
                 j = self._jobs.get(job_id)
                 if not j:
@@ -517,36 +523,32 @@ class MergeJobManager:
                         dur_s,
                     )
                     return
-                if code == 0:
-                    j.status = "succeeded"
-                    final_status = "succeeded"
-                    req = j.request or {}
-                    tid = req.get("training_job_id")
-                    post_zip_tid = str(tid).strip() if tid else None
-                    op = req.get("output_path")
-                    post_zip_out = str(op).strip() if op else None
-                else:
+                req = j.request or {}
+                op = req.get("output_path")
+                out_rel = str(op).strip() if op else None
+                if code != 0:
                     j.status = "failed"
-                    final_status = "failed"
                     j.error_message = f"进程退出码 {code}"
+                    self._persist_merge_job(j)
+                    _merge_log.info(
+                        "合并任务结束: merge_job_id=%s status=failed return_code=%s duration_s=%.1f",
+                        job_id,
+                        code,
+                        dur_s,
+                    )
+                    return
+                j.status = "succeeded"
                 self._persist_merge_job(j)
-            _merge_log.info(
-                "合并任务结束: merge_job_id=%s status=%s return_code=%s duration_s=%.1f",
-                job_id,
-                final_status,
-                code,
-                dur_s,
-            )
-            if code == 0 and post_zip_tid and post_zip_out:
-                try:
-                    from backend.app.services.merge_export_zip import create_and_record_merged_zip
+                cleanup_merged_out = out_rel
+                _merge_log.info(
+                    "合并任务结束: merge_job_id=%s status=succeeded duration_s=%.1f",
+                    job_id,
+                    dur_s,
+                )
 
-                    create_and_record_merged_zip(self._workspace, post_zip_tid, post_zip_out)
-                except Exception:
-                    logging.getLogger("workshop.merge").exception("合并成功后打包 zip 失败")
-            if code == 0 and post_zip_out:
+            if cleanup_merged_out:
                 try:
-                    cleanup_merged_workshop_dir_after_success(self._workspace, post_zip_out)
+                    cleanup_merged_workshop_dir_after_success(self._workspace, cleanup_merged_out)
                 except Exception:
                     _merge_log.exception("合并成功后清理 merged 输出目录失败")
 

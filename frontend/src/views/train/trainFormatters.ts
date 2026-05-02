@@ -86,6 +86,14 @@ export function formatTrainingDuration(record: Record<string, unknown>): string 
   return formatElapsedSecondsZh(end - start);
 }
 
+/** 卡片「训练开始时间」：未开训（仅保存参数）为「—」；已开训与 formatTrainingDuration 起点一致 */
+export function formatTrainingJobCardStart(record: Record<string, unknown>): string {
+  const status = typeof record.status === "string" ? record.status : String(record.status ?? "");
+  if (status === "parameters_saved") return "—";
+  const req = trainingRequest(record);
+  return formatJobTime(req?.workshop_training_started_at ?? record.created_at);
+}
+
 /** 与后端 `TrainJob.status` 对齐，表格展示用中文 */
 export function formatJobStatus(status: unknown): string {
   const s = typeof status === "string" ? status.trim() : String(status ?? "").trim();
@@ -225,7 +233,6 @@ export function mergeConfirmDescription(record: Record<string, unknown>): string
       ? `LoRA 产出路径（合并使用该训练的 LoRA）：${lora}`
       : "LoRA 路径由服务端按该训练任务解析";
   return [
-    "请确认：合并仅针对「本卡片」当前训练任务的结果，与其它训练任务无关。",
     `任务名称：${name}`,
     `${loraHint}。`,
     `合并产物写入：${outRel}`,
@@ -251,14 +258,14 @@ export function trainingJobCardMeta(
     { label: "项目", value: trainingDatasetTooltipField(record.project_title) },
     { label: "训练集", value: formatJobSplitCount(record.train_count) },
     { label: "验证集", value: formatJobSplitCount(record.val_count) },
+    { label: "训练开始时间", value: formatTrainingJobCardStart(record) },
+    { label: "训练结束时间", value: formatJobEnd(record.finished_at, status) },
+    { label: "训练用时", value: formatTrainingDuration(record) },
     {
       label: "LoRA 输出路径",
       value: outRun,
       pathTooltip: outRun !== "—" && outTooltip ? outTooltip : outRun !== "—" ? outRun : undefined,
     },
-    { label: "训练开始时间", value: formatJobTime(record.created_at) },
-    { label: "训练结束时间", value: formatJobEnd(record.finished_at, status) },
-    { label: "训练用时", value: formatTrainingDuration(record) },
     {
       label: "合并后模型路径",
       value: mergedPathRow.value,

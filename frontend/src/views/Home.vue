@@ -2,7 +2,7 @@
 import { RouterLink } from "vue-router";
 import DataImportGlobalPreview from "../components/DataImportGlobalPreview.vue";
 
-type HomeFlowTo = "/importData" | "/train" | "/playground" | "/merge" | "/eval" | "/export";
+type HomeFlowTo = "/importData" | "/train";
 
 type HomeFlowStep = {
   key: string;
