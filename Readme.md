@@ -1,5 +1,62 @@
-# quicek start
-- label studio
+# 介绍
+
+**Data Workshop（数据工坊）** 是一套围绕 **[ms-swift](https://github.com/modelscope/ms-swift)** 的 **Web 操作台**：用浏览器完成数据集准备与管理、训练、模型合并、推理与评测等流程，由 **FastAPI** 后端调度脚本与任务，产出与任务状态落在可配置的**工作区目录**下（默认仓库内 `working_data`，数据库为 `<workspace>/state/workshop.db`）；路径等可通过环境变量 **`WORKSHOP_` 前缀**覆盖（如 `WORKSHOP_WORKSPACE_ROOT`、`WORKSHOP_REPO_ROOT`，详见 `backend/app/config.py`）。
+
+- **前端**：`frontend/` — Vite、Vue 3、TypeScript、Ant Design Vue、Vue Router。
+- **后端**：`backend/app/` — FastAPI，`/api` 下提供数据集、训练、合并、评测、模型与系统等相关接口。
+- **设计稿**：`design/ui/` 下列出主要界面示意图（下文「画面」）。
+
+更详细的本地/云主机环境、依赖与启动命令见本文 **Quick start** 章节。
+
+# 画面
+- 首页
+![首页](design/ui/1.Home.bmp)
+- 
+- 数据集
+![数据集](design/ui/2.datasets.bmp)
+- 
+- 训练中心
+![训练中心](design/ui/3.train.bmp)
+
+- 训练中心 · 训练
+![训练流程 · 训练](design/ui/3.train1train.bmp)
+
+- 训练中心 · 验证
+![训练流程 · 验证](design/ui/3.train2verfy.bmp)
+
+- 训练中心 · 合并
+![训练流程 · 合并](design/ui/3.train3merge.bmp)
+
+- 训练中心 · 评测
+![训练流程 · 评测](design/ui/3_train4eval.bmp)
+
+- 模型管理
+![模型管理](design/ui/4.modelManagement.bmp)
+
+# Quick start
+## 环境(autodl.com)
+- Miniconda3
+- python 3.10.8
+- ubuntu22.04
+- cuda 11.8
+
+## 主机信息
+- CPU ：12 核心
+- 内存：62 GB
+- GPU ：NVIDIA GeForce RTX 4080 SUPER, 1
+- 系 统 盘/               ：1% 53M/30G
+- 数 据 盘/root/autodl-tmp：1% 12K/50G
+
+## 登录信息（免密登录）
+- ssh -p 17531 root@connect.bjb1.seetacloud.com
+
+## 下载代码
+```bash
+cd /
+git clone git@git-spooner:68a7e1d75ca26351a77c73b9/llm-train-learning/data-workshop.git
+```
+
+## label studio
 ```bash
 docker pull heartexlabs/label-studio:20260421.012345-main-a5c6f37
 docker rm -f label-studio
@@ -16,48 +73,8 @@ curl http://39.101.168.205:8080
 
 ```
 
-- backend
-```bash
-cd /data-workshop
-conda activate data-workshop-py3.10
-uv run uvicorn backend.app.main:app --app-dir /data-workshop --host "0.0.0.0" --port "8702" --reload
-
-```
-
-- frontend
-```bash
-cd /data-workshop/frontend
-npm run dev -- --host 0.0.0.0 --port 6006
-
-curl https://u871016-c7kl-88856538.bjb1.seetacloud.com:8443/
-```
-
-# 环境(autodl.com)
-- Miniconda3
-- python 3.10.8
-- ubuntu22.04
-- cuda 11.8
-
-# 主机信息
-- CPU ：12 核心
-- 内存：62 GB
-- GPU ：NVIDIA GeForce RTX 4080 SUPER, 1
-- 系 统 盘/               ：1% 53M/30G
-- 数 据 盘/root/autodl-tmp：1% 12K/50G
-
-# 登录信息（已设置免密登录）
-- ssh -p 17531 root@connect.bjb1.seetacloud.com
-
-
-# 代码
-- 下载代码
-```bash
-cd /
-git clone git@git-spooner:68a7e1d75ca26351a77c73b9/llm-train-learning/data-workshop.git
-```
-
-# 配置软件依赖
-- backend
+## backend
+- 创建环境
 ```bash
 cd /data-workshop
 conda deactivate 
@@ -95,26 +112,22 @@ uv pip install "pydantic-settings>=2.0"   -i ${PYPI_INDEX}
 uv pip install "psutil>=5.9"   -i ${PYPI_INDEX}
 ```
 
-- frontend
+- 运行
 ```bash
-rm -rf ~/.nvm
-git clone https://gitclone.com/github.com/nvm-sh/nvm.git ~/.nvm && cd ~/.nvm && git checkout `git describe --abbrev=0 --tags`
-echo 'export NVM_DIR="$HOME/.nvm"' >> ~/.bashrc
-echo '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"' >> ~/.bashrc
-echo '[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"' >> ~/.bashrc
-
-source ~/.bashrc
-nvm ls-remote
-nvm install 24.15.0
-nvm alias default 24.15.0
-nvm use 24.15.0
-
-cd /data-workshop/frontend
-npm install
+cd /data-workshop
+conda activate data-workshop-py3.10
+uv run uvicorn backend.app.main:app --app-dir /data-workshop --host "0.0.0.0" --port "8702" --reload
 
 ```
 
+## frontend
+```bash
+cd /data-workshop/frontend
+nvm use 24.15.0
+npm install
+npm run dev -- --host 0.0.0.0 --port 6006
 
+curl http://localhost:6006
+curl https://u871016-c7kl-88856538.bjb1.seetacloud.com:8443/
 
-
-
+```
