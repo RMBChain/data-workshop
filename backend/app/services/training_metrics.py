@@ -1,13 +1,187 @@
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 from typing import Any
 
+from backend.app.services.paths import resolve_under_workspace
 
-def parse_training_log_metrics(log: str) -> dict[str, Any]:
+
+def _parse_metrics_from_train_api_on_log(log: str) -> dict[str, list[dict[str, float | int]]]:
     """
-    从训练日志中尽力抽取 loss / lr 序列，供 ECharts 使用。
-    不同 ms-swift 版本输出格式可能不同，采用宽松模式匹配。
+    从 scripts/train.py 注入的 [train_api] on_log 行解析 loss / lr / eval_loss。
+    使用 global_step 作为横轴，与 HuggingFace/ms-swift 日志一致。
+    """
+    train_loss: list[dict[str, float | int]] = []
+    eval_loss: list[dict[str, float | int]] = []
+    lr: list[dict[str, float | int]] = []
+    # 数值可为 2.53、'2.533'、5e-05、9.55e-06 等
+    _num = r"['\"]?([0-9.eE+\-]+)['\"]?"
+    for line in log.splitlines():
+        if "[train_api] on_log" not in line or "global_step=" not in line:
+            continue
+        m_gs = re.search(r"global_step=(\d+)", line)
+        if not m_gs:
+            continue
+        gs = int(m_gs.group(1))
+        m_loss = re.search(rf"['\"]loss['\"]\s*:\s*{_num}", line)
+        if m_loss:
+            try:
+                train_loss.append({"step": gs, "value": float(m_loss.group(1))})
+            except ValueError:
+                pass
+        else:
+            m_tl = re.search(rf"['\"]train_loss['\"]\s*:\s*{_num}", line)
+            if m_tl:
+                try:
+                    train_loss.append({"step": gs, "value": float(m_tl.group(1))})
+                except ValueError:
+                    pass
+        m_lr = re.search(rf"['\"]learning_rate['\"]\s*:\s*{_num}", line)
+        if m_lr:
+            try:
+                lr.append({"step": gs, "value": float(m_lr.group(1))})
+            except ValueError:
+                pass
+        m_ev = re.search(rf"['\"]eval_loss['\"]\s*:\s*{_num}", line)
+        if m_ev:
+            try:
+                eval_loss.append({"step": gs, "value": float(m_ev.group(1))})
+            except ValueError:
+                pass
+    return {"train_loss": train_loss, "eval_loss": eval_loss, "learning_rate": lr}
+
+
+def _as_float(v: Any) -> float | None:
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        try:
+            return float(v.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _logging_jsonl_path_from_log(log: str) -> str | None:
+    """ms-swift 在日志中打印 logging.jsonl 绝对路径（每步指标比 on_log 更全）。"""
+    last: str | None = None
+    for line in log.splitlines():
+        m = re.search(
+            r"The logging file will be saved in:\s*(.+\.jsonl)\s*$",
+            line,
+            re.IGNORECASE,
+        )
+        if m:
+            last = m.group(1).strip()
+    return last
+
+
+def _resolve_logging_jsonl_path(workspace: Path, path_str: str) -> Path | None:
+    raw = (path_str or "").strip()
+    if not raw.endswith(".jsonl"):
+        return None
+    p = Path(raw)
+    root = workspace.resolve()
+    try:
+        if p.is_absolute():
+            r = p.resolve()
+            r.relative_to(root)
+            return r
+        return resolve_under_workspace(workspace, raw.replace("\\", "/").lstrip("/"))
+    except ValueError:
+        return None
+
+
+def _json_record_step(rec: dict[str, Any]) -> int | None:
+    gs = rec.get("global_step")
+    if isinstance(gs, int):
+        return gs
+    if isinstance(gs, float) and gs == int(gs):
+        return int(gs)
+    cs = rec.get("current_steps")
+    if isinstance(cs, int):
+        return cs
+    if isinstance(cs, float) and cs == int(cs):
+        return int(cs)
+    gsm = rec.get("global_step/max_steps")
+    if isinstance(gsm, str) and "/" in gsm:
+        left = gsm.split("/", 1)[0].strip()
+        try:
+            return int(left)
+        except ValueError:
+            pass
+    return None
+
+
+def _series_from_logging_jsonl(
+    path: Path,
+    *,
+    max_lines: int = 100_000,
+) -> dict[str, list[dict[str, float | int]]]:
+    loss_by: dict[int, float] = {}
+    lr_by: dict[int, float] = {}
+    eval_by: dict[int, float] = {}
+    n = 0
+    try:
+        with path.open(encoding="utf-8", errors="replace") as f:
+            for line in f:
+                n += 1
+                if n > max_lines:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                step = _json_record_step(rec)
+                if step is None or step < 0:
+                    continue
+                ev = _as_float(rec.get("eval_loss"))
+                if ev is not None:
+                    eval_by[step] = ev
+                lv = _as_float(rec.get("loss"))
+                if lv is not None:
+                    loss_by[step] = lv
+                lrv = _as_float(rec.get("learning_rate"))
+                if lrv is not None:
+                    lr_by[step] = lrv
+    except OSError:
+        pass
+
+    def _sorted_list(d: dict[int, float]) -> list[dict[str, float | int]]:
+        return [{"step": s, "value": v} for s, v in sorted(d.items())]
+
+    return {
+        "train_loss": _sorted_list(loss_by),
+        "eval_loss": _sorted_list(eval_by),
+        "learning_rate": _sorted_list(lr_by),
+    }
+
+
+def _merge_points_by_step(
+    base: list[dict[str, float | int]],
+    override: list[dict[str, float | int]],
+) -> list[dict[str, float | int]]:
+    """同 step 时 override 覆盖 base（on_log 与终端摘要一致）。"""
+    merged: dict[int, float] = {int(x["step"]): float(x["value"]) for x in base}
+    for x in override:
+        merged[int(x["step"])] = float(x["value"])
+    return [{"step": s, "value": v} for s, v in sorted(merged.items())]
+
+
+def _parse_training_log_metrics_legacy(log: str) -> dict[str, Any]:
+    """
+    无 [train_api] on_log 时的回退：仅匹配带引号的 loss / learning_rate 键，避免 eval_loss 被当成 train。
     """
     train_loss: list[dict[str, float | int]] = []
     eval_loss: list[dict[str, float | int]] = []
@@ -15,7 +189,7 @@ def parse_training_log_metrics(log: str) -> dict[str, Any]:
     idx = 0
     for i, line in enumerate(log.splitlines()):
         m = re.search(
-            r"(?:train|training)?\D*(?:loss)[:\s=]+([0-9eE+.\-]+)",
+            r"['\"](?:train_)?loss['\"]\s*:\s*['\"]?([0-9.eE+\-]+)['\"]?",
             line,
             re.IGNORECASE,
         )
@@ -25,7 +199,11 @@ def parse_training_log_metrics(log: str) -> dict[str, Any]:
                 idx += 1
             except ValueError:
                 pass
-        m2 = re.search(r"(?:eval|val|validation)\D*(?:loss)[:\s=]+([0-9eE+.\-]+)", line, re.IGNORECASE)
+        m2 = re.search(
+            r"['\"]eval_loss['\"]\s*:\s*['\"]?([0-9.eE+\-]+)['\"]?",
+            line,
+            re.IGNORECASE,
+        )
         if m2:
             try:
                 eval_loss.append({"step": i, "value": float(m2.group(1))})
@@ -42,7 +220,7 @@ def parse_training_log_metrics(log: str) -> dict[str, Any]:
             g = m3.group(1) or m3.group(2)
             if g:
                 try:
-                    lr.append({"step": i, "value": float(g)})
+                    lr.append({"step": idx - 1 if idx else 0, "value": float(g)})
                 except ValueError:
                     pass
     return {
@@ -50,6 +228,50 @@ def parse_training_log_metrics(log: str) -> dict[str, Any]:
         "eval_loss": eval_loss[:500],
         "learning_rate": lr[:500],
     }
+
+
+def parse_training_log_metrics(
+    log: str,
+    *,
+    workspace: Path | None = None,
+) -> dict[str, Any]:
+    """
+    从训练日志抽取 loss / lr 序列，供 ECharts 使用。
+    ms-swift 的 logging.jsonl 含逐步指标；[train_api] on_log 仅在有 logging_steps 时打印，二者合并。
+    """
+    on_log = _parse_metrics_from_train_api_on_log(log)
+    jsonl_series: dict[str, list[dict[str, float | int]]] = {
+        "train_loss": [],
+        "eval_loss": [],
+        "learning_rate": [],
+    }
+    if workspace is not None:
+        path_hint = _logging_jsonl_path_from_log(log)
+        if path_hint:
+            jp = _resolve_logging_jsonl_path(workspace, path_hint)
+            if jp is not None and jp.is_file():
+                jsonl_series = _series_from_logging_jsonl(jp)
+
+    has_jsonl = bool(
+        jsonl_series["train_loss"] or jsonl_series["learning_rate"] or jsonl_series["eval_loss"],
+    )
+    has_on_log = bool(
+        on_log["train_loss"] or on_log["learning_rate"] or on_log["eval_loss"],
+    )
+
+    if has_jsonl or has_on_log:
+        return {
+            "train_loss": _merge_points_by_step(
+                jsonl_series["train_loss"], on_log["train_loss"],
+            )[:500],
+            "eval_loss": _merge_points_by_step(
+                jsonl_series["eval_loss"], on_log["eval_loss"],
+            )[:500],
+            "learning_rate": _merge_points_by_step(
+                jsonl_series["learning_rate"], on_log["learning_rate"],
+            )[:500],
+        }
+    return _parse_training_log_metrics_legacy(log)
 
 
 def _strip_ansi(s: str) -> str:

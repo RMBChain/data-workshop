@@ -595,7 +595,9 @@ class TrainingJobManager:
                 return None
             j.log_path = log_path
             j.status = "pending"
-            j.request = body.model_dump()
+            req = body.model_dump()
+            req["workshop_training_started_at"] = time.time()
+            j.request = req
         self._save_job_to_db(self._jobs[job_id])
         return self._spawn_train_worker(job_id, body)
 
@@ -609,12 +611,15 @@ class TrainingJobManager:
         jobs_dir.mkdir(parents=True, exist_ok=True)
         log_path = jobs_dir / f"{job_id}.log"
 
+        t0 = time.time()
+        req = body.model_dump()
+        req["workshop_training_started_at"] = t0
         job = TrainJob(
             id=job_id,
             status="pending",
-            created_at=time.time(),
+            created_at=t0,
             log_path=log_path,
-            request=body.model_dump(),
+            request=req,
         )
 
         train_py = self._repo_root / "backend" / "scripts" / "train.py"

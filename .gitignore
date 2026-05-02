@@ -6,3 +6,4 @@ __pycache__/
 /frontend/dist/
 /working-dir
 /.cache
+/working_data

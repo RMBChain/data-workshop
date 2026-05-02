@@ -27,6 +27,65 @@ export function formatJobEnd(finished: unknown, status: string | undefined): str
   return "—";
 }
 
+function parseUnixSeconds(t: unknown): number | null {
+  if (t == null || t === "") return null;
+  const n = typeof t === "number" ? t : Number(t);
+  if (Number.isNaN(n)) return null;
+  return n;
+}
+
+/** 训练时长展示：秒起向上取整为整秒；用于卡片「训练用时」 */
+export function formatElapsedSecondsZh(totalSec: number): string {
+  const s0 = Math.max(0, Math.floor(totalSec));
+  if (s0 < 60) return `${s0}秒`;
+  if (s0 < 3600) {
+    const m = Math.floor(s0 / 60);
+    const s = s0 % 60;
+    return s === 0 ? `${m}分钟` : `${m}分${s}秒`;
+  }
+  if (s0 < 86400) {
+    const h = Math.floor(s0 / 3600);
+    const rem = s0 % 3600;
+    const m = Math.floor(rem / 60);
+    const s = rem % 60;
+    if (m === 0 && s === 0) return `${h}小时`;
+    if (s === 0) return `${h}小时${m}分`;
+    return `${h}小时${m}分${s}秒`;
+  }
+  const d = Math.floor(s0 / 86400);
+  const remd = s0 % 86400;
+  const h = Math.floor(remd / 3600);
+  const remh = remd % 3600;
+  const m = Math.floor(remh / 60);
+  const s = remh % 60;
+  const parts: string[] = [`${d}天`];
+  if (h > 0) parts.push(`${h}小时`);
+  if (m > 0) parts.push(`${m}分`);
+  if (s > 0) parts.push(`${s}秒`);
+  return parts.join("");
+}
+
+/** 自训练启动至结束（或当前时刻若仍在训练）的用时；未开训或未开始时为「—」 */
+export function formatTrainingDuration(record: Record<string, unknown>): string {
+  const status = typeof record.status === "string" ? record.status : String(record.status ?? "");
+  if (status === "parameters_saved") return "—";
+
+  const req = trainingRequest(record);
+  const startedRaw = req?.workshop_training_started_at ?? record.created_at;
+  const start = parseUnixSeconds(startedRaw);
+  if (start == null) return "—";
+
+  let end: number | null = null;
+  if (status === "running" || status === "pending") {
+    end = Date.now() / 1000;
+  } else {
+    end = parseUnixSeconds(record.finished_at);
+  }
+  if (end == null || end < start) return "—";
+
+  return formatElapsedSecondsZh(end - start);
+}
+
 /** 与后端 `TrainJob.status` 对齐，表格展示用中文 */
 export function formatJobStatus(status: unknown): string {
   const s = typeof status === "string" ? status.trim() : String(status ?? "").trim();
@@ -200,6 +259,7 @@ export function trainingJobCardMeta(
     },
     { label: "训练开始时间", value: formatJobTime(record.created_at) },
     { label: "训练结束时间", value: formatJobEnd(record.finished_at, status) },
+    { label: "训练用时", value: formatTrainingDuration(record) },
     {
       label: "合并后模型路径",
       value: mergedPathRow.value,

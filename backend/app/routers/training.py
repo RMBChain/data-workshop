@@ -286,7 +286,7 @@ async def retry_training_job(root: WorkspaceRoot, job_id: str) -> dict:
 
 
 @router.get("/training/jobs/{job_id}/metrics")
-async def get_training_metrics(job_id: str) -> dict:
+async def get_training_metrics(root: WorkspaceRoot, job_id: str) -> dict:
     j = _manager_singleton().get_job(job_id)
     if not j:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -322,7 +322,7 @@ async def get_training_metrics(job_id: str) -> dict:
         for stg in prog.get("stages") or []:
             if isinstance(stg, dict) and stg.get("id") == "train":
                 stg["label"] = base
-    return {"job_id": job_id, "series": parse_training_log_metrics(text), "progress": prog}
+    return {"job_id": job_id, "series": parse_training_log_metrics(text, workspace=root), "progress": prog}
 
 
 class TrainJobRenameBody(BaseModel):

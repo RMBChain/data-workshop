@@ -591,17 +591,58 @@ async function updateChart() {
   if (!chartRef.value) return;
   const s = m.data.series as {
     train_loss: { step: number; value: number }[];
-    learning_rate: { value: number }[];
+    learning_rate: { step: number; value: number }[];
   };
   if (!chart) chart = echarts.init(chartRef.value);
   chart.setOption({
-    title: { text: "训练指标（自日志解析）" },
+    title: { text: "训练指标（自日志解析）", left: "center", top: 6 },
+    legend: {
+      orient: "horizontal",
+      left: "center",
+      bottom: 4,
+      itemGap: 28,
+      data: ["训练损失（train_loss · 左轴）", "学习率（lr · 右轴）"],
+      textStyle: { fontSize: 12 },
+    },
+    grid: {
+      left: "3%",
+      right: "72px",
+      top: "88px",
+      bottom: "56px",
+      containLabel: true,
+    },
     tooltip: { trigger: "axis" },
-    xAxis: { type: "value" },
-    yAxis: [{ type: "value", name: "loss" }, { type: "value", name: "lr" }],
+    xAxis: { type: "value", name: "global_step" },
+    yAxis: [
+      {
+        type: "value",
+        name: "训练损失（loss）",
+        nameLocation: "end",
+        nameGap: 48,
+        nameTextStyle: { lineHeight: 16 },
+      },
+      {
+        type: "value",
+        name: "学习率（lr）",
+        nameLocation: "end",
+        nameGap: 48,
+        nameTextStyle: { lineHeight: 16 },
+      },
+    ],
     series: [
-      { name: "train_loss", type: "line", data: s.train_loss?.map((x) => [x.step, x.value]) ?? [] },
-      { name: "lr", type: "line", yAxisIndex: 1, data: s.learning_rate?.map((x, i) => [i, x.value]) ?? [] },
+      {
+        name: "训练损失（train_loss · 左轴）",
+        type: "line",
+        showSymbol: true,
+        data: s.train_loss?.map((x) => [x.step, x.value]) ?? [],
+      },
+      {
+        name: "学习率（lr · 右轴）",
+        type: "line",
+        yAxisIndex: 1,
+        showSymbol: true,
+        data: s.learning_rate?.map((x) => [x.step, x.value]) ?? [],
+      },
     ],
   });
 }
@@ -1739,7 +1780,7 @@ watch(
           >{{ logText }}</pre
         >
         <a-typography-title :level="5" style="margin-top: 12px">曲线</a-typography-title>
-        <div ref="chartRef" style="height: 280px" />
+        <div ref="chartRef" style="height: 500px" />
       </a-col>
     </a-row>
     </div>
