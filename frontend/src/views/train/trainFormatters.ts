@@ -227,7 +227,6 @@ export function mergeConfirmDescription(record: Record<string, unknown>): string
   return [
     "请确认：合并仅针对「本卡片」当前训练任务的结果，与其它训练任务无关。",
     `任务名称：${name}`,
-    `训练任务 ID：${id}`,
     `${loraHint}。`,
     `合并产物写入：${outRel}`,
   ].join("\n");

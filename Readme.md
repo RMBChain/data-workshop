@@ -16,7 +16,6 @@ curl http://39.101.168.205:8080
 
 ```
 
-
 - backend
 ```bash
 cd /data-workshop
