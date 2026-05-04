@@ -18,6 +18,13 @@ type HubModelRow = {
   download_record?: HubDownloadRecord;
 };
 
+/** 训练下拉仅展示下载成功或从未走下载流水（无记录）的目录；隐藏下载中/中断/失败 */
+function hubModelIsDownloadComplete(m: HubModelRow): boolean {
+  const rec = m.download_record;
+  if (!rec) return true;
+  return rec.status === "completed";
+}
+
 const props = withDefaults(
   defineProps<{
     jobs: Record<string, unknown>[];
@@ -154,6 +161,8 @@ const bnbComputeDtypeOptions = [
 ];
 
 let logPoll: ReturnType<typeof setInterval> | null = null;
+/** 递增以丢弃重叠的 refreshLogs / updateChart 响应，避免旧请求覆盖新进度与日志 */
+let logPollRefreshEpoch = 0;
 const workspaceRootAbs = ref("");
 const chartRef = ref<HTMLDivElement | null>(null);
 let chart: echarts.ECharts | null = null;
@@ -202,9 +211,16 @@ const currentJobNameDisplay = computed(() => {
   return "";
 });
 
-/** 下拉与起训校验均以 GET /api/models/hub 返回的目录为准（与「模型管理」同源），不按 download_record 再筛一层。 */
+const hubModelsReady = computed(() => hubModels.value.filter(hubModelIsDownloadComplete));
+
+/** 无模型时仍允许点击按钮以弹出说明；有模型时必须已选 model */
+const startTrainingButtonDisabled = computed(
+  () => loadingHub.value || (hubModelsReady.value.length > 0 && !(form.model ?? "").trim()),
+);
+
+/** 仅含下载完成（或无下载记录）的 hub 项，与起训可选范围一致 */
 const modelSelectOptions = computed(() =>
-  hubModels.value.map((m) => ({
+  hubModelsReady.value.map((m) => ({
     value: m.model_id,
     label: `${m.model_id} · ${formatBytes(m.size_bytes)}`,
   })),
@@ -245,7 +261,7 @@ async function loadWorkspacePaths() {
 }
 
 function syncModelFromHub() {
-  const list = hubModels.value;
+  const list = hubModels.value.filter(hubModelIsDownloadComplete);
   const ids = new Set(list.map((m) => m.model_id));
   if (form.model && ids.has(form.model)) return;
   form.model = list[0]?.model_id ?? "";
@@ -533,6 +549,17 @@ function stopLogPoll() {
   }
 }
 
+/** 对同一 job 重新开始训练时 currentJobId 不会变，watch 不会触发，需显式重启轮询。 */
+function startLogPolling() {
+  const id = (currentJobId.value ?? "").trim();
+  if (!id) return;
+  stopLogPoll();
+  logPoll = setInterval(() => {
+    void refreshLogs();
+  }, 1500);
+  void refreshLogs();
+}
+
 function onLogScroll() {
   const el = logPre.value;
   if (!el) return;
@@ -557,7 +584,7 @@ async function applyYaml() {
     await loadDatasetVersions({ forceSelectActive: true });
     await loadHubModels();
     const m = (form as { model?: string }).model;
-    if (m && !hubModels.value.some((h) => h.model_id === m)) {
+    if (m && !hubModelsReady.value.some((h) => h.model_id === m)) {
       syncModelFromHub();
     }
     message.success("已应用 YAML 到表单");
@@ -571,9 +598,16 @@ function downloadYaml() {
   window.open(`/api/training/config/yaml/export${q}`, "_blank");
 }
 
-async function updateChart() {
-  if (!currentJobId.value) return;
-  const m = await http.get(`/api/training/jobs/${currentJobId.value}/metrics`);
+/** @param sync 存在时仅在该次轮询仍有效时写入 UI（防并发旧响应覆盖） */
+async function updateChart(sync?: { epoch: number; jobId: string }) {
+  const jid = (sync?.jobId ?? currentJobId.value ?? "").trim();
+  if (!jid) return;
+  const m = await http.get(`/api/training/jobs/${encodeURIComponent(jid)}/metrics`, {
+    params: { _: Date.now() },
+  });
+  if (sync && (logPollRefreshEpoch !== sync.epoch || currentJobId.value !== sync.jobId)) {
+    return;
+  }
   const pr = m.data.progress as
     | { percent: number | null; label?: string; stages?: ProgressStage[] }
     | undefined;
@@ -593,6 +627,9 @@ async function updateChart() {
     }
   }
   if (!chartRef.value) return;
+  if (sync && (logPollRefreshEpoch !== sync.epoch || currentJobId.value !== sync.jobId)) {
+    return;
+  }
   const s = m.data.series as {
     train_loss: { step: number; value: number }[];
     learning_rate: { step: number; value: number }[];
@@ -653,28 +690,51 @@ async function updateChart() {
 
 async function refreshLogs() {
   if (!currentJobId.value) return;
-  const st = await http.get<{
-    status: string;
-    error_message?: string | null;
-  }>(`/api/training/jobs/${currentJobId.value}`);
-  jobStatus.value = String(st.data.status);
-  jobError.value = st.data.error_message != null && String(st.data.error_message).trim() ? String(st.data.error_message) : "";
-  const logs = await http.get<{ text: string; truncated: boolean }>(
-    `/api/training/jobs/${currentJobId.value}/logs`,
-  );
-  logText.value = logs.data.truncated ? `…（仅显示末尾）\n${logs.data.text}` : logs.data.text;
-  if (stick.value) {
-    requestAnimationFrame(() => {
-      if (logPre.value) logPre.value.scrollTop = logPre.value.scrollHeight;
-    });
-  }
+  const epoch = ++logPollRefreshEpoch;
+  const jobIdSnapshot = currentJobId.value;
+  const q = { _: Date.now() };
   try {
-    await updateChart();
+    const st = await http.get<{
+      status: string;
+      error_message?: string | null;
+    }>(`/api/training/jobs/${encodeURIComponent(jobIdSnapshot)}`, { params: q });
+    if (epoch !== logPollRefreshEpoch || currentJobId.value !== jobIdSnapshot) {
+      return;
+    }
+    jobStatus.value = String(st.data.status);
+    jobError.value =
+      st.data.error_message != null && String(st.data.error_message).trim()
+        ? String(st.data.error_message)
+        : "";
+    const logs = await http.get<{ text: string; truncated: boolean }>(
+      `/api/training/jobs/${encodeURIComponent(jobIdSnapshot)}/logs`,
+      { params: q },
+    );
+    if (epoch !== logPollRefreshEpoch || currentJobId.value !== jobIdSnapshot) {
+      return;
+    }
+    logText.value = logs.data.truncated ? `…（仅显示末尾）\n${logs.data.text}` : logs.data.text;
+    if (stick.value) {
+      requestAnimationFrame(() => {
+        if (epoch !== logPollRefreshEpoch || currentJobId.value !== jobIdSnapshot) {
+          return;
+        }
+        if (logPre.value) logPre.value.scrollTop = logPre.value.scrollHeight;
+      });
+    }
+    try {
+      await updateChart({ epoch, jobId: jobIdSnapshot });
+    } catch {
+      /* ignore */
+    }
+    if (epoch !== logPollRefreshEpoch || currentJobId.value !== jobIdSnapshot) {
+      return;
+    }
+    if (["succeeded", "failed", "cancelled"].includes(String(st.data.status))) {
+      stopLogPoll();
+    }
   } catch {
-    /* ignore */
-  }
-  if (["succeeded", "failed", "cancelled"].includes(String(st.data.status))) {
-    stopLogPoll();
+    /* 轮询中非致命失败 */
   }
 }
 
@@ -809,7 +869,7 @@ async function initCascadeFromExistingJob(jobId: string) {
 }
 
 watch(
-  () => [panelOpen.value, currentJobId.value] as const,
+  () => [panelOpen.value, currentJobId.value, props.newTrainOpenSeq] as const,
   async ([visible, jid]) => {
     if (!visible) return;
     try {
@@ -839,7 +899,19 @@ watch(
 );
 
 async function startTraining() {
-  if (hubModels.value.length === 0 || !form.model || !hubModels.value.some((m) => m.model_id === form.model)) {
+  if (hubModelsReady.value.length === 0) {
+    if (hubModels.value.length > 0) {
+      message.warning(
+        "当前没有已下载完成的模型（可能有任务仍在下载或已中断）。请到「设置 → 模型管理」确认完成后再训练。",
+      );
+    } else {
+      message.warning("暂无可用的本机 hub 模型，请前往「设置 → 模型管理」下载模型后再开始训练。");
+    }
+    return;
+  }
+  const mid = (form.model ?? "").trim();
+  if (!mid || !hubModelsReady.value.some((m) => m.model_id === mid)) {
+    message.warning("请从「基于模型」列表中选择一项（仅显示下载已完成的模型）。");
     return;
   }
   if (!form.train_dataset.trim() || !form.val_dataset.trim()) {
@@ -872,7 +944,7 @@ async function startTraining() {
           : "";
       const jn = (form.job_name || "").trim();
       message.success(ro ? `已开始训练：${jn || "任务"}（${ro}）` : `已开始训练：${jn || "任务"}`);
-      void refreshLogs();
+      startLogPolling();
     } else {
       const requestBody = buildTrainJobRequestBody();
       const resolvedJobName = String((requestBody.job_name as string) ?? form.job_name ?? "");
@@ -892,6 +964,7 @@ async function startTraining() {
       form.job_name = defaultNewTrainJobName();
       message.success(ro ? `任务已创建：${resolvedJobName}（${ro}）` : `任务已创建：${resolvedJobName}`);
       currentJobId.value = r.data.id;
+      startLogPolling();
     }
     emit("refresh-jobs");
   } catch (e: unknown) {
@@ -937,11 +1010,7 @@ watch(
       const dvid = typeof req?.dataset_version_id === "string" ? req.dataset_version_id.trim() : "";
       form.output_dir = od || (dvid ? `train/${dvid}` : "train/");
     }
-    stopLogPoll();
-    logPoll = setInterval(() => {
-      void refreshLogs();
-    }, 1500);
-    void refreshLogs();
+    startLogPolling();
   },
 );
 
@@ -1003,7 +1072,7 @@ watch(
             type="primary"
             size="small"
             :loading="submitting"
-            :disabled="loadingHub || !hubModels.length || !form.model"
+            :disabled="startTrainingButtonDisabled"
             @click="startTraining"
             >开始训练</a-button
           >
@@ -1039,7 +1108,7 @@ watch(
             <template #label>
               <span style="display: inline-flex; align-items: center; gap: 4px">
                 基于模型
-                <a-tooltip title="与「设置 → 模型管理」同源，列出 hub/models 下已存在的目录">
+                <a-tooltip title="与「设置 → 模型管理」同源；此处仅列出下载已完成（或无下载记录的本机目录）的模型">
                   <InfoCircleOutlined
                     style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
                     aria-label="关于本机模型列表"
@@ -1056,7 +1125,7 @@ watch(
                 :disabled="loadingHub"
                 show-search
                 option-filter-prop="label"
-                placeholder="选择本机 hub 模型"
+                placeholder="选择已下载完成的模型"
                 style="flex: 1; min-width: 0"
               />
               <a-tooltip title="刷新模型列表">
@@ -1073,6 +1142,13 @@ watch(
                 </a-button>
               </a-tooltip>
             </div>
+            <a-alert
+              v-if="!loadingHub && !hubModels.length"
+              type="warning"
+              show-icon
+              style="margin-top: 8px"
+              message="暂无可用的本机 hub 模型，请前往「设置 → 模型管理」下载后再开始训练。"
+            />
           </a-form-item>
         </a-col>
         <a-col :span="16">

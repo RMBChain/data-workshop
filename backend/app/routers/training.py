@@ -22,6 +22,8 @@ from backend.app.services.training_metrics import (
 
 router = APIRouter(tags=["training"])
 
+_NO_CACHE_HEADERS = {"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"}
+
 _MAX_SAVED_FORM_PARAMS_BYTES = 400_000
 
 def _manager_singleton() -> TrainingJobManager:
@@ -205,13 +207,14 @@ async def patch_training_job(job_id: str, body: TrainJobRenameBody) -> dict:
 
 
 @router.get("/training/jobs/{job_id}")
-async def get_training_job(root: WorkspaceRoot, job_id: str) -> dict:
+async def get_training_job(root: WorkspaceRoot, job_id: str) -> JSONResponse:
     job = _manager_singleton().get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
     req = job.request or {}
     pt, dn, tr_n, va_n = _display_names_for_job_request(root, req)
-    return {
+    return JSONResponse(
+        content={
         "id": job.id,
         "status": job.status,
         "created_at": job.created_at,
@@ -225,16 +228,21 @@ async def get_training_job(root: WorkspaceRoot, job_id: str) -> dict:
         "val_count": va_n,
         "output_dir": _output_dir_from_request(req),
         "request": req,
-    }
+        },
+        headers=_NO_CACHE_HEADERS,
+    )
 
 
 @router.get("/training/jobs/{job_id}/logs")
-async def get_training_logs(job_id: str) -> dict:
+async def get_training_logs(job_id: str) -> JSONResponse:
     job = _manager_singleton().get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
     text, truncated = _manager_singleton().read_log(job_id)
-    return {"text": text, "truncated": truncated}
+    return JSONResponse(
+        content={"text": text, "truncated": truncated},
+        headers=_NO_CACHE_HEADERS,
+    )
 
 
 @router.post("/training/jobs/{job_id}/cancel")
@@ -254,7 +262,7 @@ async def delete_training_job(job_id: str) -> dict:
 
 
 @router.get("/training/jobs/{job_id}/metrics")
-async def get_training_metrics(root: WorkspaceRoot, job_id: str) -> dict:
+async def get_training_metrics(root: WorkspaceRoot, job_id: str) -> JSONResponse:
     j = _manager_singleton().get_job(job_id)
     if not j:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -290,7 +298,10 @@ async def get_training_metrics(root: WorkspaceRoot, job_id: str) -> dict:
         for stg in prog.get("stages") or []:
             if isinstance(stg, dict) and stg.get("id") == "train":
                 stg["label"] = base
-    return {"job_id": job_id, "series": parse_training_log_metrics(text, workspace=root), "progress": prog}
+    return JSONResponse(
+        content={"job_id": job_id, "series": parse_training_log_metrics(text, workspace=root), "progress": prog},
+        headers=_NO_CACHE_HEADERS,
+    )
 
 
 class TrainJobRenameBody(BaseModel):
@@ -299,9 +310,6 @@ class TrainJobRenameBody(BaseModel):
 
 class YamlBody(BaseModel):
     yaml: str = Field(..., min_length=1, description="训练 YAML 文本")
-
-
-_NO_CACHE_HEADERS = {"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"}
 
 
 @router.post("/training/config/yaml/parse")

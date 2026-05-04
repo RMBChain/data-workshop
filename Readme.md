@@ -53,7 +53,9 @@
 ## 下载代码
 ```bash
 cd /
-git clone git@git-spooner:68a7e1d75ca26351a77c73b9/llm-train-learning/data-workshop.git
+# git clone git@git-spooner:68a7e1d75ca26351a77c73b9/
+git clone git@github.com:RMBChain/data-workshop.git
+
 ```
 
 ## label studio
@@ -74,6 +76,7 @@ curl http://39.101.168.205:8080
 ```
 
 ## backend
+- Python 依赖清单：仓库根目录 `requirements.txt`（标准 pip 要求格式；安装见下）。
 - 创建环境
 ```bash
 cd /data-workshop
@@ -84,32 +87,14 @@ conda create -n data-workshop-py3.10 python=3.10.8 -y
 source /root/miniconda3/etc/profile.d/conda.sh
 conda activate data-workshop-py3.10
 
-export PYTORCH_CPU_FIND_LINKS=https://mirrors.aliyun.com/pytorch-wheels/cpu
 export PYPI_INDEX=https://mirrors.aliyun.com/pypi/simple/
 
 pip install --no-cache-dir uv -i  ${PYPI_INDEX}
 # uv cache clean
 uv venv
 uv pip install pip setuptools wheel -i ${PYPI_INDEX}
-uv pip install torch==2.6.0+cu118 torchvision==0.21.0+cu118 torchaudio==2.6.0+cu118 --index-url https://download.pytorch.org/whl/cu118
-uv pip install "ms-swift[all]==4.0.3"   -i ${PYPI_INDEX}
-uv pip install opencv-python-headless==4.13.0.92   -i ${PYPI_INDEX}
-uv pip install transformers==5.3.0   -i ${PYPI_INDEX}
-uv pip install "huggingface_hub>=0.20"   -i ${PYPI_INDEX}
-uv pip install qwen_vl_utils==0.0.14   -i ${PYPI_INDEX}
-uv pip install tensorboard==2.20.0   -i ${PYPI_INDEX}
-uv pip install decord==0.6.0   -i ${PYPI_INDEX}
-uv pip install cleanvision==0.3.7   -i ${PYPI_INDEX}
-uv pip install jinja2==3.1.6   -i ${PYPI_INDEX}
-uv pip install "bitsandbytes>=0.43.0"   -i ${PYPI_INDEX}
-uv pip install "nvidia-ml-py>=12.560.0"   -i ${PYPI_INDEX}
-uv pip install "fastapi>=0.115"   -i ${PYPI_INDEX}
-uv pip install "uvicorn[standard]>=0.32"   -i ${PYPI_INDEX}
-uv pip install python-multipart   -i ${PYPI_INDEX}
-uv pip install pyyaml   -i ${PYPI_INDEX}
-uv pip install httpx   -i ${PYPI_INDEX}
-uv pip install "pydantic-settings>=2.0"   -i ${PYPI_INDEX}
-uv pip install "psutil>=5.9"   -i ${PYPI_INDEX}
+uv pip install -r requirements.txt -i ${PYPI_INDEX}
+
 ```
 
 - 运行
@@ -121,13 +106,26 @@ uv run uvicorn backend.app.main:app --app-dir /data-workshop --host "0.0.0.0" --
 ```
 
 ## frontend
+- 安装nvm
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+# 新开终端，或在本终端执行：
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+nvm install 24.15.0
+
+```
+
+- 开发
 ```bash
 cd /data-workshop/frontend
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 nvm use 24.15.0
 npm install
 npm run dev -- --host 0.0.0.0 --port 6006
 
 curl http://localhost:6006
-curl https://u871016-c7kl-88856538.bjb1.seetacloud.com:8443/
+curl https://u871016-gxz9-10f52e8a.bjb1.seetacloud.com:8443
 
 ```
