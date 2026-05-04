@@ -47,13 +47,27 @@ def _resolve_base_dir(workspace: Path, base_model: str) -> str:
     return out
 
 
+def _inference_device_and_dtype():
+    """有 CUDA 时用 GPU + bf16/fp16，否则 CPU + float32。"""
+    import torch
+
+    if torch.cuda.is_available():
+        dtype = (
+            torch.bfloat16
+            if torch.cuda.is_bf16_supported()
+            else torch.float16
+        )
+        return torch.device("cuda"), dtype
+    return torch.device("cpu"), torch.float32
+
+
 def ensure_model(
     workspace: Path,
     *,
     base_model: str = "Qwen/Qwen3-VL-2B-Instruct",
     adapter_rel: str | None = None,
 ) -> tuple[object, object]:
-    """在 CPU 上懒加载模型（单例，按 base+adapter 维度缓存）。依赖 torch/transformers 等，仅在调用时加载。"""
+    """懒加载模型（单例，按 base+adapter 缓存）；若 torch.cuda.is_available() 则放到 GPU，否则 CPU。"""
     import torch
     from peft import PeftModel
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
@@ -72,16 +86,19 @@ def ensure_model(
             except Exception:
                 pass
 
+        device, dtype = _inference_device_and_dtype()
         base_path = _resolve_base_dir(workspace, base_model)
         _log.info(
-            "正在将基座权重从磁盘载入内存（进度条「Loading weights」属此步骤，非重新下载；体量大约数 GB 时首次需数十秒）"
+            "正在将基座权重载入设备 %s（dtype=%s；「Loading weights」属此步骤，非重新下载）",
+            device,
+            dtype,
         )
         model = Qwen3VLForConditionalGeneration.from_pretrained(
             base_path,
-            torch_dtype=torch.float32,
+            torch_dtype=dtype,
             trust_remote_code=True,
         )
-        model = model.to("cpu")
+        model = model.to(device)
         if adapter_rel:
             adapter_path = resolve_under_workspace(workspace, adapter_rel)
             if not adapter_path.is_dir():
