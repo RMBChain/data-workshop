@@ -18,7 +18,9 @@ from pydantic import BaseModel, Field
 
 from backend.app.config import get_settings
 from backend.app.db import get_connection, json_dumps
+from backend.app.subprocess_thread_env import sanitize_thread_limit_env
 from backend.app.services import modelscope_manager as mscm
+from backend.app.services.gpu_detection import resolve_training_cuda_visible_devices
 from backend.app.services.paths import resolve_under_workspace
 
 
@@ -79,6 +81,11 @@ class TrainJobCreate(BaseModel):
     tuner_backend: str = ""
     merge_lora: bool = False
     adapters: str = Field(default="", description="逗号分隔的 adapter 路径，传给 swift --adapters")
+    # 留空 / auto：启动时探测，有 GPU 用 0 号卡，否则纯 CPU；cpu/none/- 强制仅 CPU；0 / 0,1 为显式指定
+    cuda_visible_devices: str = Field(
+        default="",
+        description="CUDA；空/auto 自动选用；cpu 强制 CPU；0 为第一块 GPU，多卡逗号分隔",
+    )
     # 与 ms-swift 一致；断点续训（手动指定）时写入，为相对工作区根目录的 checkpoint 路径
     resume_from_checkpoint: str | None = Field(default=None, description="从该 checkpoint 目录继续，如 train/.../checkpoint-8")
     # 仅用于列表/展示，不参与 train.py 命令行
@@ -494,14 +501,19 @@ class TrainingJobManager:
             self._save_job_to_db(self._jobs[job_id])
             return self._jobs[job_id]
 
-        cmd = self._build_command(body)
+        resolved_cvd = resolve_training_cuda_visible_devices(body.cuda_visible_devices)
+        body_run = body.model_copy(update={"cuda_visible_devices": resolved_cvd})
+        cmd = self._build_command(body_run)
         env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = ""
+        cvd = (resolved_cvd or "").strip()
+        if cvd:
+            env["CUDA_VISIBLE_DEVICES"] = cvd
+        else:
+            env["CUDA_VISIBLE_DEVICES"] = ""
         env.setdefault("PYTHONUNBUFFERED", "1")
         # 降低多线程与 glibc arena 的内存尖峰，利于小内存 / 容器内训练
         env.setdefault("MALLOC_ARENA_MAX", "2")
-        env.setdefault("OMP_NUM_THREADS", "1")
-        env.setdefault("MKL_NUM_THREADS", "1")
+        sanitize_thread_limit_env(env)
 
         log_path = job.log_path
         log_f = open(log_path, "w", encoding="utf-8")
@@ -843,6 +855,8 @@ class TrainingJobManager:
             if parts:
                 cmd.append("--adapters")
                 cmd.extend(parts)
+        cvd = (p.get("cuda_visible_devices") or "").strip()
+        cmd.extend(["--cuda_visible_devices", cvd])
 
         # 子进程里 train.py 的补全可能因 import/异常被跳过；在发起任务时同步写入本地 hub 的 config.json
         if mt and Path(model_arg).is_dir():

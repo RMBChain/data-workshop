@@ -18,6 +18,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from backend.app.config import get_settings
+from backend.app.subprocess_thread_env import sanitize_thread_limit_env
 from backend.app.db import (
     get_connection,
     json_dumps,
@@ -443,6 +444,7 @@ class MergeJobManager:
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = ""
         env.setdefault("PYTHONUNBUFFERED", "1")
+        sanitize_thread_limit_env(env)
         env["WORKSHOP_MERGE_JOB_ID"] = job_id
         tid0 = (body.training_job_id or "").strip() if body.training_job_id else ""
         if tid0:

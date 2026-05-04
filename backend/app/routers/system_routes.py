@@ -8,31 +8,12 @@ from fastapi import APIRouter
 
 from backend.app.deps import WorkspaceRoot
 from backend.app.services import modelscope_manager as mscm
+from backend.app.services.gpu_detection import collect_gpu_devices, get_torch
 
 router = APIRouter(tags=["system"])
 
-# 延迟到首次需要时再 import torch，使 main 里对 torch.cuda 的 filterwarnings 已生效
-_torch_mod: object | None = None
-_torch_load_failed: bool = False
 
-
-def _get_torch() -> object | None:
-    global _torch_mod, _torch_load_failed
-    if _torch_load_failed:
-        return None
-    if _torch_mod is not None:
-        return _torch_mod
-    try:
-        import torch as _t
-
-        _torch_mod = _t
-    except Exception:
-        _torch_load_failed = True
-        _torch_mod = None
-    return _torch_mod
-
-
-def _gpu_devices_via_nvml() -> list[dict[str, Any]]:
+def _gpu_memory_usage_via_nvml() -> list[dict[str, Any]]:
     try:
         import pynvml
     except ImportError:
@@ -49,7 +30,14 @@ def _gpu_devices_via_nvml() -> list[dict[str, Any]]:
             raw = pynvml.nvmlDeviceGetName(h)
             name = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
             mem = pynvml.nvmlDeviceGetMemoryInfo(h)
-            out.append({"index": i, "name": name.strip(), "memory_total_bytes": int(mem.total)})
+            out.append(
+                {
+                    "index": i,
+                    "name": name.strip(),
+                    "used_bytes": int(mem.used),
+                    "total_bytes": int(mem.total),
+                }
+            )
     except Exception:
         return []
     finally:
@@ -60,8 +48,8 @@ def _gpu_devices_via_nvml() -> list[dict[str, Any]]:
     return out
 
 
-def _gpu_devices_via_torch() -> list[dict[str, Any]]:
-    t = _get_torch()
+def _gpu_memory_usage_via_torch() -> list[dict[str, Any]]:
+    t = get_torch()
     if t is None:
         return []
     try:
@@ -70,30 +58,28 @@ def _gpu_devices_via_torch() -> list[dict[str, Any]]:
         n = int(t.cuda.device_count())  # type: ignore[union-attr]
     except Exception:
         return []
+    mem_get = getattr(t.cuda, "mem_get_info", None)
+    if not callable(mem_get):
+        return []
     out: list[dict[str, Any]] = []
     for i in range(n):
         try:
+            free_b, total_b = mem_get(i)  # type: ignore[misc]
+            total_i = int(total_b)
+            used_i = max(0, total_i - int(free_b))
             p = t.cuda.get_device_properties(i)  # type: ignore[union-attr]
-            out.append(
-                {
-                    "index": i,
-                    "name": str(getattr(p, "name", f"cuda:{i}")).strip(),
-                    "memory_total_bytes": int(getattr(p, "total_memory", 0)),
-                }
-            )
+            name = str(getattr(p, "name", f"cuda:{i}")).strip()
+            out.append({"index": i, "name": name, "used_bytes": used_i, "total_bytes": total_i})
         except Exception:
             continue
     return out
 
 
-def _collect_gpu_devices() -> tuple[list[dict[str, Any]], str | None]:
-    gpus = _gpu_devices_via_nvml()
+def _gpu_memory_usage_snapshot() -> list[dict[str, Any]]:
+    gpus = _gpu_memory_usage_via_nvml()
     if gpus:
-        return gpus, None
-    gpus = _gpu_devices_via_torch()
-    if gpus:
-        return gpus, None
-    return [], "未检测到 NVIDIA GPU，或驱动 / NVML 不可用（非 NVIDIA 显卡本接口暂不枚举）。"
+        return gpus
+    return _gpu_memory_usage_via_torch()
 
 
 def _collect_static_hardware() -> dict[str, Any]:
@@ -102,7 +88,7 @@ def _collect_static_hardware() -> dict[str, Any]:
         import psutil
     except ImportError:
         out["hardware_note"] = "psutil 未安装，无法读取 CPU / 内存硬件信息。"
-        gpus, note = _collect_gpu_devices()
+        gpus, note = collect_gpu_devices()
         out["gpus"] = gpus
         if note:
             out["gpu_list_note"] = note
@@ -133,7 +119,7 @@ def _collect_static_hardware() -> dict[str, Any]:
     except Exception:
         out["memory_total_bytes"] = None
 
-    gpus, note = _collect_gpu_devices()
+    gpus, note = collect_gpu_devices()
     out["gpus"] = gpus
     if note:
         out["gpu_list_note"] = note
@@ -151,7 +137,7 @@ async def system_resources() -> dict[str, Any]:
             "note": "psutil 未安装，请在后端环境安装 `psutil` 以显示资源占用。",
         }
     m = psutil.virtual_memory()
-    return {
+    out: dict[str, Any] = {
         "cpu_percent": float(psutil.cpu_percent(interval=0.1)),
         "memory": {
             "used_bytes": int(m.used),
@@ -159,13 +145,25 @@ async def system_resources() -> dict[str, Any]:
             "percent": float(m.percent),
         },
     }
+    gpu_devs = _gpu_memory_usage_snapshot()
+    if gpu_devs:
+        used_sum = sum(int(d.get("used_bytes") or 0) for d in gpu_devs)
+        total_sum = sum(int(d.get("total_bytes") or 0) for d in gpu_devs)
+        pct = float(100.0 * used_sum / total_sum) if total_sum > 0 else 0.0
+        out["gpu_memory"] = {
+            "used_bytes": used_sum,
+            "total_bytes": total_sum,
+            "percent": pct,
+            "devices": gpu_devs,
+        }
+    return out
 
 
 @router.get("/system/info")
 async def system_info() -> dict[str, Any]:
     torch_ver = "未安装"
     cuda = False
-    t = _get_torch()
+    t = get_torch()
     if t is not None:
         torch_ver = str(getattr(t, "__version__", ""))
         try:

@@ -7,6 +7,12 @@ import { http } from "../api/http";
 type SystemResourcesPayload = {
   cpu_percent: number;
   memory: { used_bytes: number; total_bytes: number; percent: number };
+  gpu_memory?: {
+    used_bytes: number;
+    total_bytes: number;
+    percent: number;
+    devices: { index: number; name: string; used_bytes: number; total_bytes: number }[];
+  };
   note?: string;
 };
 
@@ -20,7 +26,7 @@ const PANEL_MIN_TOP = 72;
 const MIN_PANEL_W = 320;
 const MIN_PANEL_H = 220;
 const DEFAULT_PANEL_W = 948;
-const DEFAULT_PANEL_H = 340;
+const DEFAULT_PANEL_H = 520;
 
 const panelW = ref(DEFAULT_PANEL_W);
 const panelH = ref(DEFAULT_PANEL_H);
@@ -126,8 +132,10 @@ let resPoll: ReturnType<typeof setInterval> | null = null;
 const resourceSnapshot = ref<SystemResourcesPayload | null>(null);
 const resCpuChartRef = ref<HTMLDivElement | null>(null);
 const resMemChartRef = ref<HTMLDivElement | null>(null);
+const resGpuChartRef = ref<HTMLDivElement | null>(null);
 let resCpuChart: echarts.ECharts | null = null;
 let resMemChart: echarts.ECharts | null = null;
+let resGpuChart: echarts.ECharts | null = null;
 
 function formatBytes(n: number) {
   if (n < 1024) return `${n} B`;
@@ -151,7 +159,7 @@ function clamp01to100(n: number) {
 }
 
 const MAX_RESOURCE_LINE_POINTS = 150;
-const resourceTimeSeries: { t: number; cpu: number; memBytes: number }[] = [];
+const resourceTimeSeries: { t: number; cpu: number; memBytes: number; gpuMemBytes?: number }[] = [];
 
 function emptyCpuLineOption() {
   return {
@@ -161,10 +169,10 @@ function emptyCpuLineOption() {
   };
 }
 
-function emptyMemLineOption() {
+function emptyMemLineOption(yAxisName = "已用内存") {
   return {
     xAxis: { type: "time" as const },
-    yAxis: { type: "value" as const, name: "已用内存", min: 0 },
+    yAxis: { type: "value" as const, name: yAxisName, min: 0 },
     series: [],
   };
 }
@@ -208,6 +216,7 @@ function buildMemBytesLineOption(
   name: string,
   points: [number, number][],
   totalBytes?: number,
+  yAxisName = "已用内存",
 ) {
   const n = points.length;
   const showSymbol = n <= 3;
@@ -226,7 +235,7 @@ function buildMemBytesLineOption(
     xAxis: { type: "time" as const },
     yAxis: {
       type: "value" as const,
-      name: "已用内存",
+      name: yAxisName,
       min: 0,
       max: cap ?? (dataMax > 0 ? Math.ceil(dataMax * 1.08) : undefined),
       splitLine: { show: true, lineStyle: { type: "dashed" } },
@@ -258,6 +267,14 @@ function updateResourceLineCharts() {
   if (resourceTimeSeries.length === 0) {
     resCpuChart.setOption({ ...emptyCpuLineOption(), color: ["#5470c6"] }, true);
     resMemChart.setOption({ ...emptyMemLineOption(), color: ["#91cc75"] }, true);
+    const elGpuEmpty = resGpuChartRef.value;
+    if (elGpuEmpty) {
+      if (!resGpuChart) resGpuChart = echarts.init(elGpuEmpty);
+      resGpuChart.setOption({ ...emptyMemLineOption("已用显存"), color: ["#fac858"] }, true);
+    } else if (resGpuChart) {
+      resGpuChart.dispose();
+      resGpuChart = null;
+    }
     return;
   }
 
@@ -269,6 +286,32 @@ function updateResourceLineCharts() {
     buildMemBytesLineOption("#91cc75", "已用内存", memPts, typeof totalB === "number" ? totalB : undefined),
     true,
   );
+
+  const elGpu = resGpuChartRef.value;
+  if (resourceSnapshot.value?.gpu_memory && elGpu) {
+    if (!resGpuChart) resGpuChart = echarts.init(elGpu);
+    const gpuPts = resourceTimeSeries
+      .filter((p) => p.gpuMemBytes !== undefined)
+      .map((p) => [p.t, p.gpuMemBytes!] as [number, number]);
+    const totalGpu = resourceSnapshot.value.gpu_memory.total_bytes;
+    if (gpuPts.length === 0) {
+      resGpuChart.setOption({ ...emptyMemLineOption("已用显存"), color: ["#fac858"] }, true);
+    } else {
+      resGpuChart.setOption(
+        buildMemBytesLineOption(
+          "#fac858",
+          "已用显存",
+          gpuPts,
+          typeof totalGpu === "number" && totalGpu > 0 ? totalGpu : undefined,
+          "已用显存",
+        ),
+        true,
+      );
+    }
+  } else if (resGpuChart) {
+    resGpuChart.dispose();
+    resGpuChart = null;
+  }
 }
 
 async function loadSystemResources() {
@@ -278,16 +321,22 @@ async function loadSystemResources() {
     const t = Date.now();
     const cpu = clamp01to100(r.data.cpu_percent);
     const memBytes = Math.max(0, Math.floor(Number(r.data.memory?.used_bytes ?? 0)));
-    resourceTimeSeries.push({ t, cpu, memBytes });
+    const row: { t: number; cpu: number; memBytes: number; gpuMemBytes?: number } = { t, cpu, memBytes };
+    if (r.data.gpu_memory) {
+      row.gpuMemBytes = Math.max(0, Math.floor(Number(r.data.gpu_memory.used_bytes ?? 0)));
+    }
+    resourceTimeSeries.push(row);
     while (resourceTimeSeries.length > MAX_RESOURCE_LINE_POINTS) {
       resourceTimeSeries.shift();
     }
+    await nextTick();
     updateResourceLineCharts();
   } catch {
     resourceSnapshot.value = null;
     resourceTimeSeries.length = 0;
     resCpuChart?.clear();
     resMemChart?.clear();
+    resGpuChart?.clear();
   }
 }
 
@@ -295,6 +344,7 @@ function onChartsResize() {
   requestAnimationFrame(() => {
     resCpuChart?.resize();
     resMemChart?.resize();
+    resGpuChart?.resize();
   });
 }
 
@@ -320,6 +370,10 @@ function disposeCharts() {
   if (resMemChart) {
     resMemChart.dispose();
     resMemChart = null;
+  }
+  if (resGpuChart) {
+    resGpuChart.dispose();
+    resGpuChart = null;
   }
 }
 
@@ -425,6 +479,32 @@ onUnmounted(() => {
               </div>
             </div>
           </a-col>
+          <a-col v-if="resourceSnapshot?.gpu_memory" :span="24">
+            <div class="res-charts-gpu">
+              <div
+                style="
+                  display: flex;
+                  align-items: baseline;
+                  justify-content: space-between;
+                  gap: 8px;
+                  flex-wrap: wrap;
+                  margin-bottom: 4px;
+                "
+              >
+                <span style="font-size: 12px; color: rgba(0, 0, 0, 0.45)">GPU 显存（多卡为合计）</span>
+                <span
+                  style="font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; color: rgba(0, 0, 0, 0.88); text-align: right"
+                >
+                  {{ formatBytes(resourceSnapshot.gpu_memory.used_bytes) }}
+                  <template v-if="resourceSnapshot.gpu_memory.total_bytes > 0">
+                    &nbsp;/ {{ formatBytes(resourceSnapshot.gpu_memory.total_bytes) }}
+                  </template>
+                  &nbsp;（{{ resourceSnapshot.gpu_memory.percent.toFixed(1) }}%）
+                </span>
+              </div>
+              <div ref="resGpuChartRef" class="res-charts-pair__chart" />
+            </div>
+          </a-col>
         </a-row>
         <a-typography-text v-if="resourceSnapshot?.note" type="warning" style="display: block; margin-top: 4px; font-size: 12px">
           {{ resourceSnapshot.note }}
@@ -523,6 +603,12 @@ onUnmounted(() => {
     rgba(22, 119, 255, 0.45) 58%,
     transparent 58%
   );
+}
+.res-charts-gpu {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  box-sizing: border-box;
 }
 .res-charts-pair {
   display: flex;

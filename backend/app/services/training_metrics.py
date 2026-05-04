@@ -454,6 +454,16 @@ def _saw_log_downloading(log: str) -> bool:
     return re.search(r"Downloading", log) is not None
 
 
+def _swift_post_args_pre_train_begin(log: str) -> bool:
+    """
+    Swift 已打印 model_kwargs / 多模态超参，但 Trainer 尚未触发 [train_api] on_train_begin。
+    此阶段可能在 CPU + 4bit 下静默加载权重数分钟，无 tqdm、无 train_api 行；原逻辑会误判为「进度解析中」。
+    """
+    if re.search(r"\[train_api\]\s+on_train_begin", log):
+        return False
+    return bool(re.search(r"\[INFO:swift\]\s+model_kwargs\s*:", log))
+
+
 def _last_tail_pretrain_tqdm(
     log: str,
 ) -> tuple[str, float, str] | None:
@@ -509,8 +519,13 @@ def build_training_stages(
         name: str,
         percent: float | None,
         label: str,
+        *,
+        indeterminate: bool = False,
     ) -> dict[str, Any]:
-        return {"id": sid, "name": name, "percent": percent, "label": label}
+        o: dict[str, Any] = {"id": sid, "name": name, "percent": percent, "label": label}
+        if indeterminate:
+            o["indeterminate"] = True
+        return o
 
     def _vrow() -> dict[str, Any]:
         vi = _val_tqdm_from_tail(log)
@@ -578,6 +593,20 @@ def build_training_stages(
                 _row("train", "Train", p, short_lbl),
                 _vrow(),
             ]
+
+    if _swift_post_args_pre_train_begin(log):
+        return [
+            _row(
+                "download",
+                "加载模型",
+                None,
+                "正在加载模型权重与适配器（CPU/4bit 可能数分钟无新日志，非卡住）",
+                indeterminate=True,
+            ),
+            _row("map", "Map", None, "等待模型就绪后将映射数据集…", indeterminate=True),
+            _row("train", "Train", None, "等待训练循环开始…", indeterminate=True),
+            _vrow(),
+        ]
 
     tr_label = t_lbl if t_lbl else ("待开始" if not log.strip() else "—")
     return [
@@ -664,5 +693,11 @@ def parse_training_progress(
                 "percent": None,
                 "label": f"训练中，已 {gs} 步（总步数由 epoch/日志解析）",
             }
+
+    if _swift_post_args_pre_train_begin(log):
+        return {
+            "percent": None,
+            "label": "模型与数据准备中（出现 [train_api] on_train_begin 后将显示步进进度）",
+        }
 
     return {"percent": None, "label": "等待训练输出…" if not log.strip() else "进度解析中…"}

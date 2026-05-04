@@ -95,6 +95,7 @@ const form = reactive({
   image_max_token_num: 64,
   video_max_token_num: 16,
   dataloader_num_workers: 4,
+  cuda_visible_devices: "",
 });
 
 const activeDatasetHint = ref("");
@@ -158,7 +159,7 @@ const chartRef = ref<HTMLDivElement | null>(null);
 let chart: echarts.ECharts | null = null;
 const progressPercent = ref<number | null>(null);
 const progressLabel = ref("");
-type ProgressStage = { id: string; name: string; percent: number | null; label: string };
+type ProgressStage = { id: string; name: string; percent: number | null; label: string; indeterminate?: boolean };
 const progressStages = ref<ProgressStage[]>([]);
 const jobError = ref("");
 
@@ -585,6 +586,7 @@ async function updateChart() {
         name: String(s.name ?? ""),
         percent: typeof s.percent === "number" ? s.percent : null,
         label: typeof s.label === "string" ? s.label : "",
+        indeterminate: Boolean((s as { indeterminate?: unknown }).indeterminate),
       }));
     } else {
       progressStages.value = [];
@@ -1287,6 +1289,25 @@ watch(
                 <a-select v-model:value="form.attn_impl" :options="attnImplOptions" style="width: 100%" />
               </a-form-item>
             </a-col>
+            <a-col :xs="24" :sm="12" :md="12">
+              <a-form-item>
+                <template #label>
+                  <span style="display: inline-flex; align-items: center; gap: 4px">
+                    cuda_visible_devices
+                    <a-tooltip
+                      title="留空或填 auto：由后端探测，有 NVIDIA GPU 时自动用 0 号卡，否则纯 CPU。填 cpu / none / - 可强制仅 CPU。显式指定：0 或 0,1 等。需 GPU 训练时本机需 CUDA 版 PyTorch 与驱动。"
+                    >
+                      <QuestionCircleOutlined
+                        style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
+                        aria-label="cuda_visible_devices 说明"
+                        role="img"
+                      />
+                    </a-tooltip>
+                  </span>
+                </template>
+                <a-input v-model:value="form.cuda_visible_devices" placeholder="留空=自动；强制 CPU 填 cpu" allow-clear />
+              </a-form-item>
+            </a-col>
             <a-col :xs="24" :sm="12" :md="6">
               <a-form-item>
                 <template #label>
@@ -1704,7 +1725,7 @@ watch(
           <a-tag
             v-if="currentJobId && overallJobStatusLabel"
             :color="overallJobStatusTagColor"
-            style="margin: 0; line-height: 1.5; margin-right: 50px;""
+            style="margin: 0; line-height: 1.5; margin-right: 50px"
             >
             <span>整体：{{ overallJobStatusLabel }}</span>
           </a-tag>
@@ -1717,7 +1738,16 @@ watch(
         <div v-if="currentJobId" style="margin-bottom: 10px">
           <div v-for="s in progressStages" :key="s.id" style="margin-bottom: 12px">
             <div style="font-size: 12px; color: rgba(0, 0, 0, 0.65); margin-bottom: 4px"># {{ s.name }}</div>
+            <div
+              v-if="s.indeterminate"
+              class="training-stage-indeterminate"
+              role="progressbar"
+              aria-valuetext="进行中"
+            >
+              <div class="training-stage-indeterminate__bar" />
+            </div>
             <a-progress
+              v-else
               :percent="s.percent == null ? 0 : s.percent"
               :status="stageRowStatus(s.percent)"
               :show-info="s.percent != null"
@@ -1787,6 +1817,28 @@ watch(
 .training-form-grid-row.training-form-grid-row--qlora :deep(.ant-form-item-label) {
   flex: 0 0 260px;
   max-width: 55%;
+}
+.training-stage-indeterminate {
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+}
+.training-stage-indeterminate__bar {
+  height: 100%;
+  width: 36%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #1677ff, #69b1ff, #1677ff);
+  background-size: 200% 100%;
+  animation: training-stage-indeterminate-move 1.3s ease-in-out infinite;
+}
+@keyframes training-stage-indeterminate-move {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
 }
 </style>
 <style>

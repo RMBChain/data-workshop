@@ -1,5 +1,5 @@
 """
-使用 ms-swift 在纯 CPU 上对 Qwen3-VL-2B-Instruct 做 LoRA 微调。
+使用 ms-swift 做 LoRA 等微调；默认配置偏 CPU 安全（float32、eager），可按 cuda_visible_devices 使用 GPU。
 """
 from __future__ import annotations
 
@@ -16,6 +16,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _rp = str(_REPO_ROOT)
 if _rp not in sys.path:
     sys.path.insert(0, _rp)
+
+from backend.app.services.gpu_detection import resolve_training_cuda_visible_devices
+from backend.app.subprocess_thread_env import sanitize_thread_limit_env
 
 
 def _parse_cli_bool(value: str | bool) -> bool:
@@ -201,8 +204,14 @@ def train_with_swift(
     add_version = bool(kwargs.pop("add_version", True))
 
     env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = ""
     env.pop("NPROC_PER_NODE", None)
+    cvd = resolve_training_cuda_visible_devices(kwargs.get("cuda_visible_devices"))
+    kwargs["cuda_visible_devices"] = cvd
+    if cvd:
+        env["CUDA_VISIBLE_DEVICES"] = cvd
+    else:
+        env["CUDA_VISIBLE_DEVICES"] = ""
+    sanitize_thread_limit_env(env)
     env["IMAGE_MAX_TOKEN_NUM"] = str(kwargs.get("image_max_token_num", 64))
     env["VIDEO_MAX_TOKEN_NUM"] = str(kwargs.get("video_max_token_num", 16))
 
@@ -328,7 +337,10 @@ def train_with_swift(
         argv.extend(["--resume_from_checkpoint", str(resume)])
 
     print("=" * 80)
-    print("训练配置 (CPU)")
+    if cvd:
+        print("训练配置 (GPU)")
+    else:
+        print("训练配置 (CPU)")
     print(f"  模型: {model_name}")
     print(f"  dtype / attn: {kwargs.get('torch_dtype')} / {kwargs.get('attn_impl')}")
     print(f"  max_length: {kwargs.get('max_length', 2048)}")
@@ -340,7 +352,10 @@ def train_with_swift(
     print("环境变量:")
     print(f"  IMAGE_MAX_TOKEN_NUM={env['IMAGE_MAX_TOKEN_NUM']}")
     print(f"  VIDEO_MAX_TOKEN_NUM={env['VIDEO_MAX_TOKEN_NUM']}")
-    print(f"  CUDA_VISIBLE_DEVICES=(空，强制 CPU)")
+    if cvd:
+        print(f"  CUDA_VISIBLE_DEVICES={cvd}")
+    else:
+        print(f"  CUDA_VISIBLE_DEVICES=(空，仅 CPU)")
     print(f"  callbacks: {cb_names or '(无)'}")
     print("=" * 80)
     print()
@@ -369,7 +384,7 @@ def train_with_swift(
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="ms-swift CPU 微调 Qwen3-VL-2B-Instruct")
+    parser = argparse.ArgumentParser(description="ms-swift 微调（可 CPU 或 GPU，见 --cuda_visible_devices）")
     parser.add_argument("--model", type=str, default="Qwen/Qwen3-VL-2B-Instruct", help="模型名称或路径")
     parser.add_argument("--train_dataset", type=str, default="data/train.jsonl", help="训练集")
     parser.add_argument("--val_dataset", type=str, default="data/val.jsonl", help="验证集")
@@ -466,6 +481,12 @@ def main():
         type=str,
         default=None,
         help="从该目录恢复（与 ms-swift 一致，相对当前工作目录的路径）",
+    )
+    parser.add_argument(
+        "--cuda_visible_devices",
+        type=str,
+        default="",
+        help="留空或 auto：有 GPU 用 0 号卡，否则仅 CPU；cpu/none/- 强制仅 CPU；0 / 0,1 显式指定",
     )
 
     args = parser.parse_args()
