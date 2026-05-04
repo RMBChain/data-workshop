@@ -91,7 +91,7 @@ pip install --no-cache-dir uv -i  ${PYPI_INDEX}
 # uv cache clean
 uv venv
 uv pip install pip setuptools wheel -i ${PYPI_INDEX}
-uv pip install torch==2.6.0+cpu torchvision==0.21.0+cpu torchaudio==2.6.0+cpu -f ${PYTORCH_CPU_FIND_LINKS} -i ${PYPI_INDEX}
+uv pip install torch==2.6.0+cu118 torchvision==0.21.0+cu118 torchaudio==2.6.0+cu118 --index-url https://download.pytorch.org/whl/cu118
 uv pip install "ms-swift[all]==4.0.3"   -i ${PYPI_INDEX}
 uv pip install opencv-python-headless==4.13.0.92   -i ${PYPI_INDEX}
 uv pip install transformers==5.3.0   -i ${PYPI_INDEX}

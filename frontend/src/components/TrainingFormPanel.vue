@@ -1272,7 +1272,9 @@ watch(
                 <template #label>
                   <span style="display: inline-flex; align-items: center; gap: 4px">
                     bf16
-                    <a-tooltip title="与 torch_dtype 配合使用；GPU 上常用 bfloat16 + bf16 true。">
+                    <a-tooltip
+                      title="bf16 训练要求 GPU 支持 CUDA bfloat16（多为 NVIDIA Ampere SM≥8.0 及以上）。旧卡请保持关闭或改用 fp16；否则 HF Trainer 会报 bf16/gpu 不支持。"
+                    >
                       <QuestionCircleOutlined
                         style="color: rgba(0, 0, 0, 0.45); cursor: help; font-size: 14px; vertical-align: -0.125em"
                         aria-label="bf16 说明"

@@ -36,6 +36,62 @@ def _parse_cli_bool(value: str | bool) -> bool:
     raise ValueError(f"invalid boolean: {value!r}")
 
 
+def _cuda_supports_bf16_training() -> bool | None:
+    """
+    transformers TrainingArguments 在校验 bf16 时使用 torch.cuda.is_bf16_supported()；
+    不支持的老显卡上会报「Your setup doesn't support bf16/gpu」。
+    返回 None 表示当前未使用 CUDA 或无法探测。
+    """
+    try:
+        import torch
+    except ImportError:
+        return None
+    if not torch.cuda.is_available():
+        return None
+    try:
+        return bool(torch.cuda.is_bf16_supported())
+    except Exception:
+        return False
+
+
+def _adjust_precision_if_cuda_lacks_bf16(kwargs: dict, *, cuda_visible_devices: str) -> None:
+    """
+    在旧 NVIDIA GPU 上避免 HF Trainer「bf16/gpu not supported」。
+
+    ms-swift 在模型 config 为 bfloat16 时，若 `bf16` parsed 为 None，会在 `_init_mixed_precision` 里自动设 `bf16=True`；
+    HuggingFace `HfArgumentParser` 对 `Optional[bool]` 的 `--bf16 false` 在某些版本下仍可能得到 None。
+    因此在探测到 GPU 不支持 CUDA bf16 时，强制传入明确的 `--bf16 false`，并默认改用 fp16（除非用户已显式要 fp16）。
+    """
+    if not (cuda_visible_devices or "").strip():
+        return
+    if _cuda_supports_bf16_training() is not False:
+        return
+    kwargs["bf16"] = False
+    if not _parse_cli_bool(kwargs.get("fp16", False)):
+        kwargs["fp16"] = True
+        print(
+            "警告: 当前 GPU 不支持 transformers 的 CUDA bf16（多为 Ampere SM≥8.0 以下）。"
+            "已强制 --bf16 false，并启用 fp16，以防 ms-swift 按 bfloat16 权重默认打开 bf16 训练。"
+        )
+    else:
+        print(
+            "警告: 当前 GPU 不支持 CUDA bf16；已强制 --bf16 false（保持你已开启的 fp16）。"
+        )
+    qb = kwargs.get("quant_bits")
+    try:
+        q_on = qb is not None and int(qb) > 0
+    except (TypeError, ValueError):
+        q_on = False
+    if not q_on:
+        return
+    bnb_dt = (kwargs.get("bnb_4bit_compute_dtype") or "").strip().lower()
+    if bnb_dt in ("bfloat16", "bf16"):
+        kwargs["bnb_4bit_compute_dtype"] = "float16"
+        print(
+            "警告: 当前 GPU 不支持 CUDA bf16，已将 bnb_4bit_compute_dtype 改为 float16（QLoRA 计算 dtype）。"
+        )
+
+
 def _parse_torch_version() -> tuple[int, int, int] | None:
     s = torch.__version__.split("+", 1)[0]
     m = re.match(r"^(\d+)\.(\d+)\.(\d+)", s)
@@ -118,34 +174,101 @@ def _run_sft_main_api(argv: list[str], *, plugin_path: Path, callback_names: lis
     sft_main(argv)
 
 
-def _assert_local_hub_tokenizer_complete(model_dir: Path) -> None:
-    """
-    huggingface/tokenizers 在 BPE 上要求 vocab 与 merges 同来自文件或同来自内存；只缓存了其一
-    （或 tokenizer.json 损坏/过小）时会报 *vocab and merges must be both...*。
-    """
-    if not model_dir.is_dir():
-        return
-    tj = model_dir / "tokenizer.json"
-    vj = model_dir / "vocab.json"
-    mg = model_dir / "merges.txt"
-    ok_json = tj.is_file() and tj.stat().st_size > 64
-    has_v = vj.is_file() and vj.stat().st_size > 0
-    has_m = mg.is_file() and mg.stat().st_size > 0
-    if ok_json:
-        return
-    if has_v and has_m:
-        return
+def _hub_dirs_to_scan_for_tokenizer(model_dir: Path) -> list[Path]:
+    """Hub 常见布局：权重在根目录，或与 HF 类似放在 snapshots/<revision>/ 下。"""
+    roots: list[Path] = []
+    seen: set[str] = set()
+
+    def add(p: Path) -> None:
+        try:
+            key = str(p.resolve())
+        except OSError:
+            key = str(p)
+        if key not in seen:
+            seen.add(key)
+            roots.append(p)
+
+    add(model_dir.resolve())
+    snaps = model_dir / "snapshots"
+    if snaps.is_dir():
+        try:
+            for sub in sorted(snaps.iterdir(), key=lambda x: x.name):
+                if sub.is_dir() and not sub.name.startswith("."):
+                    add(sub.resolve())
+        except OSError:
+            pass
+    try:
+        for sub in sorted(model_dir.iterdir(), key=lambda x: x.name):
+            if not sub.is_dir() or sub.name.startswith("."):
+                continue
+            if sub.name in {"snapshots", "__pycache__"}:
+                continue
+            add(sub.resolve())
+    except OSError:
+        pass
+    return roots
+
+
+def _nonempty_file(p: Path) -> bool:
+    try:
+        return p.is_file() and p.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _dir_has_usable_tokenizer(d: Path) -> bool:
+    """足以让 Transformers 加载的常见分词器文件组合（含 SentencePiece）。"""
+    tj = d / "tokenizer.json"
+    if _nonempty_file(tj) and tj.stat().st_size > 64:
+        return True
+    if _nonempty_file(d / "vocab.json") and _nonempty_file(d / "merges.txt"):
+        return True
+    # LLaMA / Qwen 等 SPM；部分 T5 系为 spiece.model
+    if _nonempty_file(d / "tokenizer.model"):
+        return True
+    if _nonempty_file(d / "spiece.model"):
+        return True
+    return False
+
+
+def _maybe_raise_partial_bpe_error(d: Path, *, label: Path) -> None:
+    vj = d / "vocab.json"
+    mg = d / "merges.txt"
+    has_v = _nonempty_file(vj)
+    has_m = _nonempty_file(mg)
     if has_v ^ has_m:
         miss = "merges.txt" if has_v else "vocab.json"
         raise RuntimeError(
             "本机模型目录中 BPE 分词器文件不成对（缺 "
             f"{miss}），无法加载分词器。若曾中断下载，请在「模型管理」中删除该模型并重新完整下载。\n"
-            f"目录: {model_dir}"
+            f"目录: {label}"
         )
+
+
+def _assert_local_hub_tokenizer_complete(model_dir: Path) -> None:
+    """
+    huggingface/tokenizers 在 BPE 上要求 vocab 与 merges 同来自文件或同来自内存；只缓存了其一
+    （或 tokenizer.json 损坏/过小）时会报 *vocab and merges must be both...*。
+
+    此外兼容：SentencePiece（tokenizer.model）、HF hub snapshots/<hash>/ 与单层子目录布局。
+    """
+    if not model_dir.is_dir():
+        return
+    roots = _hub_dirs_to_scan_for_tokenizer(model_dir)
+    for d in roots:
+        if _dir_has_usable_tokenizer(d):
+            return
+    for d in roots:
+        _maybe_raise_partial_bpe_error(d, label=model_dir)
+    roots_hint = ", ".join(str(r) for r in roots[:6])
+    if len(roots) > 6:
+        roots_hint += ", ..."
     raise RuntimeError(
-        "本机模型目录中缺少可用的分词器文件：需要非空的 tokenizer.json，或同时存在 vocab.json 与 merges.txt。"
-        f"\n目录: {model_dir}\n"
-        "请在「模型管理」中重新完整下载该模型。"
+        "本机模型目录中未找到可用的分词器文件：请在某一子目录下包含其一——"
+        "非空的 tokenizer.json，或 vocab.json 与 merges.txt 成对，或非空的 tokenizer.model / spiece.model。"
+        f"\n模型根目录: {model_dir.resolve()}"
+        f"\n已检查路径: {roots_hint}"
+        "\n若为不完整下载或占位目录（如 damo/x），请在「模型管理」删除后重新下载完整模型。"
     )
 
 
@@ -211,6 +334,7 @@ def train_with_swift(
         env["CUDA_VISIBLE_DEVICES"] = cvd
     else:
         env["CUDA_VISIBLE_DEVICES"] = ""
+    _adjust_precision_if_cuda_lacks_bf16(kwargs, cuda_visible_devices=cvd)
     sanitize_thread_limit_env(env)
     env["IMAGE_MAX_TOKEN_NUM"] = str(kwargs.get("image_max_token_num", 64))
     env["VIDEO_MAX_TOKEN_NUM"] = str(kwargs.get("video_max_token_num", 16))
